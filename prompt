@@ -1,0 +1,109 @@
+{
+I want to add a layer feature, where each data display in the viewer will be selectable and the use can toggle visible or hide. 
+
+I want to add a button in the tool bar to add custom data trought the browser. This option should trigger a menu to either add a link to some data or to upload the data directly in the browser. 
+}
+
+{
+ok this is nice, it does exacly what I need, Now I dont like the rename button. I dont like that it's not a drag and drop. So two things :
+
+I'd like to have a 6 dots to the left where the user drag and drop like other drag and drop that exist on the web. I would like to have a smooth animation and I would like to have a smooth list where the element move when I hover in a place to let the new element drop in. I think this type of drag and drop exist online, if not we could program it. 
+Secondly, I'd like to have a 3 vertical dot at the end of the line for each element. This button on click should onpen a contextual menu where I can edit the name (rename), or delete. For now these will be the only two options.    
+}
+
+{
+In LayerPanel.tsx, I changed this:
+import {
+  closestCenter,
+  DndContext,
+  DragEndEvent,
+  DragOverlay,
+  MouseSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+
+to this:
+import {
+  closestCenter,
+  DndContext,
+  DragOverlay,
+  MouseSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import type { DragEndEvent } from "@dnd-kit/core";
+
+And I solve an error I had. 
+
+Now I have a few comments/correction on the current code, 
+(1) The drag and drop doesnt really works. when I try to drag the basic layer into a a new folder I juste created it refuse to do it. I think it's because the drag and drop try to put it as root. Ok so I juste tested and whe the basic slice plane is at root, now I can drag and drop and it works fine. So I guess I need a new feature where when I hove over a group, it should highlight the group and if I drop the layer, it should put the layer into this group. Or the user can also drag to the end of the list to put the layer in the root (nothing special here, the user is just moving hte layer to the bottom of the list and the layer is not on top of a group)  
+
+(2) When I click the 3 vertical points, the contextual menu appear, but when I onfocus this menu it should disappear automatically. Now it only dissapear if I click on an option or if I click on the 3 dots again. So now if I click on the 3 dots of every layer there's multiple contextual menu and it's not greate. Only one open at a time and one menu should close when click away. 
+
+(3) I dont need the "move to..." if the (1) is resolve where I can already move the layer to a group. 
+
+(4) I the user is trying to move a group it should move all the element under the group with it. this should also work if the user is movin an group into another group. 
+
+(5) Now the hide button does not work at all. The hide button should work for a single element and should also work for a group. So every element inside the group should be at the same state as the root of this group. The icon hide and visible should be synch (even if the user hide the group, the icon of the element inside should all switch to hidden). Finally the element should be highlighted when selected in the list of layer. the highlight should be apply to the element under the hirarchy.
+
+Can you correct all these points?
+
+
+}
+
+{
+ok one last thing the section of the layer is overflow-y:auto. I see the scrolling bar sometimes. I would prefer just visible. I dont care if it fell a bit ouside the componenent
+}
+
+
+{
+ok one more thing, for now when I have multiple layer inside. I want to be able to close the group. That way I wont always see every group and every layer. If the user hover over a group and it's close, it should open the groupe so the user can hover and open the group. A bit like the file architecture works in vscode. 
+}
+
+{
+I have a bug right now. When I have a layer inside a group adn the groupe is hidden, the user cannot make visible the element inside this group. It's a bit non intuitive to have to open the group visibility to see the element. Each element should have a state. and if the use ask to see the layer, it should show the layer by switching the elemtent to visibile. 
+
+Also now when I make on element visible, it make every layer underneeth visible too. But if the user have hide some elment inside the group, and make visible the top group, the groupe inside should say in the same state (hidden ins this case) so the user have a better controle and the setting should stay the same.   
+}
+
+
+[todo]{
+I also want to be able to close completely the layers section. For someone annotating it can be annoying to always see the layer section display. So I would like to have a nice animation to open and close the layer. When close it should be only one button with the layer icon.
+
+Also the layer section should have a max height and I would like to have a nice scroll bar that fist with the rest of the ui. Right now it's the basic white and gray full squared scroll bar and its ugly.  
+}
+
+[todo] add allen data 
+
+{
+ok greate thanks for the drawing comment I  will do it later. For now we are working on importing data. So there are some small tweak I want for the ui. 
+
+(1) For now the groupe have an arrow to open an close the group. The layer dont but there's is still a space like if it was a group, but there's now chevron to open and close. This is a bit confuising. The layers should not have this space. The 6 dots to drag and drop and the eye to toggle visible hidden should be side by side. 
+
+(2) For the add layer prompt, I would like to have a better visual. One thing we can do is to add icons to better guide the user. Can you add in front of the "Drwaing layer" a pencil, in front of the "Exterenal source" a link, and in front of the "custom data" a data icon.  
+
+(3) I dont really like the external source panel. Instead of having field the user has to complete, I would rather have a grid of clickable button. On the button I want to have icons and I want to have a the title of what the source is. For now the icon can be empty or a generic one, but I will create some icons for each time of source later. One a user click on one element in the grid it should select the element and the the user can click on add layer. The user can select multiple element at one to add layer, this should create multiple layers. In addition the user can link it's own external source, to do that there should be a button somewhere on this panel where the user can add a new extrenal source. Now the user will be ask to enter the url and the name of the source and the source should be add into the list of element in the grid. The icon for this new element should be a "custom" icon  
+
+Can you update these element, then we can actually do the data import into the viewer.
+}
+
+[HERE]
+{
+Yeah perfect a lot better like this.
+
+Now I need to add teh actual data in the viewer. at the moment when a source is added I see a square appearing in the browser, can you guide me how the browser can fetch data from the web and display them in the browser?
+
+I have a version of the allen average mouse brain as a zarr ome at this cloud console url : https://console.cloud.google.com/storage/browser/sbh-assistant-data 
+
+I dont know if that is the best way to fetch the data from a web browser. So here I need you to propose a best plan of a ction to actually get the data and show it in the broswer webgl 3d veiwer. 
+}
+
+{
+    Can you explain to me what is "Vol-E" and how I could use this in my current setup without breaking my current viewer?
+}
+
+[todo] upload data
+[todo] shared button 

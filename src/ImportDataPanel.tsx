@@ -1,0 +1,749 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+type LayerCreationMode = "drawing" | "external" | "custom";
+
+type ExternalSourceItem = {
+  id: string;
+  name: string;
+  url: string;
+  icon: "generic" | "custom";
+  builtIn?: boolean;
+};
+
+function PencilIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 113 3L7 19l-4 1 1-4 12.5-12.5z" />
+    </svg>
+  );
+}
+
+function LinkIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10 13a5 5 0 007.07 0l2.83-2.83a5 5 0 10-7.07-7.07L11 4" />
+      <path d="M14 11a5 5 0 00-7.07 0L4.1 13.83a5 5 0 107.07 7.07L13 20" />
+    </svg>
+  );
+}
+
+function DataIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <ellipse cx="12" cy="5" rx="7" ry="3" />
+      <path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5" />
+      <path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
+    </svg>
+  );
+}
+
+function SourceGenericIcon() {
+  return (
+    <div
+      style={{
+        width: 34,
+        height: 34,
+        borderRadius: 10,
+        border: "1px solid rgba(255,255,255,0.10)",
+        background: "rgba(255,255,255,0.05)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <DataIcon />
+    </div>
+  );
+}
+
+function SourceCustomIcon() {
+  return (
+    <div
+      style={{
+        width: 34,
+        height: 34,
+        borderRadius: 10,
+        border: "1px solid rgba(255,255,255,0.10)",
+        background: "rgba(120,190,255,0.12)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M12 5v14" />
+        <path d="M5 12h14" />
+        <path d="M19 16.5V19a1 1 0 01-1 1h-2.5" />
+        <path d="M5 7.5V5a1 1 0 011-1h2.5" />
+        <path d="M16.5 5H19a1 1 0 011 1v2.5" />
+        <path d="M7.5 19H5a1 1 0 01-1-1v-2.5" />
+      </svg>
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  title,
+  subtitle,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  title: string;
+  subtitle: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        borderRadius: 14,
+        border: active
+          ? "1px solid rgba(160,220,255,0.75)"
+          : "1px solid rgba(255,255,255,0.10)",
+        background: active
+          ? "rgba(120,190,255,0.16)"
+          : "rgba(255,255,255,0.04)",
+        color: "white",
+        textAlign: "left",
+        padding: 12,
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 9,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(255,255,255,0.05)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          {icon}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>{title}</div>
+          <div style={{ fontSize: 11, opacity: 0.72, marginTop: 4 }}>{subtitle}</div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
+  {
+    id: "allen-average-brain",
+    name: "Allen Average Mouse Brain",
+    url: "https://storage.googleapis.com/sbh-assistant-data/allen-average-mouse-brain",
+    icon: "generic",
+    builtIn: true,
+  },
+  {
+    id: "allen-annotation",
+    name: "Allen Annotation Atlas",
+    url: "https://storage.googleapis.com/sbh-assistant-data/allen-annotation",
+    icon: "generic",
+    builtIn: true,
+  },
+];
+
+export default function ImportDataPanel({
+  open,
+  onClose,
+  onAddDrawingLayer,
+  onAddExternalSources,
+  onAddFiles,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAddDrawingLayer: (name?: string) => void;
+  onAddExternalSources: (
+    sources: Array<{
+      id: string;
+      name: string;
+      url: string;
+      icon?: "generic" | "custom";
+    }>
+  ) => void;
+  onAddFiles: (files: FileList | null) => void;
+}) {
+  const [mode, setMode] = useState<LayerCreationMode>("external");
+  const [drawingName, setDrawingName] = useState("Drawing Layer");
+  const [isDragging, setIsDragging] = useState(false);
+
+  const [externalSources, setExternalSources] = useState<ExternalSourceItem[]>(
+    INITIAL_EXTERNAL_SOURCES
+  );
+  const [selectedExternalIds, setSelectedExternalIds] = useState<string[]>([]);
+  const [showAddExternalForm, setShowAddExternalForm] = useState(false);
+  const [newExternalName, setNewExternalName] = useState("");
+  const [newExternalUrl, setNewExternalUrl] = useState("");
+
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setMode("external");
+      setDrawingName("Drawing Layer");
+      setIsDragging(false);
+      setSelectedExternalIds([]);
+      setShowAddExternalForm(false);
+      setNewExternalName("");
+      setNewExternalUrl("");
+    }
+  }, [open]);
+
+  const selectedExternalSources = useMemo(
+    () => externalSources.filter((item) => selectedExternalIds.includes(item.id)),
+    [externalSources, selectedExternalIds]
+  );
+
+  if (!open) return null;
+
+  function toggleExternalSelection(id: string) {
+    setSelectedExternalIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }
+
+  function handleAddCustomExternalSource() {
+    const name = newExternalName.trim();
+    const url = newExternalUrl.trim();
+    if (!name || !url) return;
+
+    const newItem: ExternalSourceItem = {
+      id: `custom-${Math.random().toString(36).slice(2, 10)}`,
+      name,
+      url,
+      icon: "custom",
+      builtIn: false,
+    };
+
+    setExternalSources((prev) => [...prev, newItem]);
+    setSelectedExternalIds((prev) => [...prev, newItem.id]);
+    setShowAddExternalForm(false);
+    setNewExternalName("");
+    setNewExternalUrl("");
+  }
+
+  function handleSubmit() {
+    if (mode === "drawing") {
+      onAddDrawingLayer(drawingName);
+      return;
+    }
+
+    if (mode === "external") {
+      if (!selectedExternalSources.length) return;
+      onAddExternalSources(
+        selectedExternalSources.map((item) => ({
+          id: item.id,
+          name: item.name,
+          url: item.url,
+          icon: item.icon,
+        }))
+      );
+      return;
+    }
+  }
+
+  function handleDrop(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    onAddFiles(files);
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "absolute",
+        inset: 0,
+        zIndex: 40,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(860px, calc(100vw - 32px))",
+          maxHeight: "min(88vh, 920px)",
+          overflowY: "auto",
+          borderRadius: 20,
+          border: "1px solid rgba(255,255,255,0.10)",
+          background: "rgba(12,14,18,0.96)",
+          backdropFilter: "blur(14px)",
+          boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
+          color: "white",
+          fontFamily: "sans-serif",
+          padding: 18,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 16,
+            marginBottom: 18,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>Add layer</div>
+            <div style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
+              Choose the type of layer you want to add to the viewer.
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(255,255,255,0.04)",
+              color: "white",
+              cursor: "pointer",
+              fontSize: 18,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
+          <TabButton
+            active={mode === "drawing"}
+            title="Drawing layer"
+            subtitle="Create a user annotation layer"
+            icon={<PencilIcon />}
+            onClick={() => setMode("drawing")}
+          />
+          <TabButton
+            active={mode === "external"}
+            title="External source"
+            subtitle="Select one or more hosted sources"
+            icon={<LinkIcon />}
+            onClick={() => setMode("external")}
+          />
+          <TabButton
+            active={mode === "custom"}
+            title="Custom data"
+            subtitle="Upload your own files"
+            icon={<DataIcon />}
+            onClick={() => setMode("custom")}
+          />
+        </div>
+
+        {mode === "drawing" && (
+          <div
+            style={{
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(255,255,255,0.03)",
+              padding: 16,
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
+              Create drawing layer
+            </div>
+
+            <label style={{ display: "block", fontSize: 12, opacity: 0.78, marginBottom: 6 }}>
+              Layer name
+            </label>
+            <input
+              value={drawingName}
+              onChange={(e) => setDrawingName(e.target.value)}
+              placeholder="Drawing Layer"
+              style={{
+                width: "100%",
+                height: 40,
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.12)",
+                background: "rgba(255,255,255,0.05)",
+                color: "white",
+                padding: "0 12px",
+                boxSizing: "border-box",
+                outline: "none",
+              }}
+            />
+          </div>
+        )}
+
+        {mode === "external" && (
+          <div
+            style={{
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(255,255,255,0.03)",
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 14,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>
+                  Select external sources
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>
+                  You can select multiple sources and add them all at once.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowAddExternalForm((prev) => !prev)}
+                style={{
+                  height: 36,
+                  padding: "0 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "white",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                + Add external source
+              </button>
+            </div>
+
+            {showAddExternalForm && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.04)",
+                  padding: 14,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>
+                  Add custom external source
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1.4fr auto",
+                    gap: 10,
+                  }}
+                >
+                  <input
+                    value={newExternalName}
+                    onChange={(e) => setNewExternalName(e.target.value)}
+                    placeholder="Source name"
+                    style={{
+                      width: "100%",
+                      height: 40,
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: "rgba(255,255,255,0.05)",
+                      color: "white",
+                      padding: "0 12px",
+                      boxSizing: "border-box",
+                      outline: "none",
+                    }}
+                  />
+
+                  <input
+                    value={newExternalUrl}
+                    onChange={(e) => setNewExternalUrl(e.target.value)}
+                    placeholder="https://..."
+                    style={{
+                      width: "100%",
+                      height: 40,
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: "rgba(255,255,255,0.05)",
+                      color: "white",
+                      padding: "0 12px",
+                      boxSizing: "border-box",
+                      outline: "none",
+                    }}
+                  />
+
+                  <button
+                    type="button"
+                    onClick={handleAddCustomExternalSource}
+                    disabled={!newExternalName.trim() || !newExternalUrl.trim()}
+                    style={{
+                      height: 40,
+                      padding: "0 14px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(160,220,255,0.35)",
+                      background: "rgba(120,190,255,0.18)",
+                      color: "white",
+                      cursor: "pointer",
+                      opacity: !newExternalName.trim() || !newExternalUrl.trim() ? 0.5 : 1,
+                    }}
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {externalSources.map((item) => {
+                const selected = selectedExternalIds.includes(item.id);
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => toggleExternalSelection(item.id)}
+                    style={{
+                      minHeight: 108,
+                      borderRadius: 16,
+                      border: selected
+                        ? "1px solid rgba(160,220,255,0.85)"
+                        : "1px solid rgba(255,255,255,0.10)",
+                      background: selected
+                        ? "rgba(120,190,255,0.14)"
+                        : "rgba(255,255,255,0.04)",
+                      color: "white",
+                      cursor: "pointer",
+                      padding: 14,
+                      textAlign: "left",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      gap: 12,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      {item.icon === "custom" ? <SourceCustomIcon /> : <SourceGenericIcon />}
+
+                      <div
+                        style={{
+                          width: 18,
+                          height: 18,
+                          borderRadius: 999,
+                          border: selected
+                            ? "1px solid rgba(160,220,255,0.95)"
+                            : "1px solid rgba(255,255,255,0.24)",
+                          background: selected ? "rgba(160,220,255,0.90)" : "transparent",
+                          flexShrink: 0,
+                          marginTop: 2,
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+                        {item.name}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          opacity: 0.6,
+                          marginTop: 6,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {item.builtIn ? "Built-in source" : "Custom external source"}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {mode === "custom" && (
+          <div
+            style={{
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(255,255,255,0.03)",
+              padding: 16,
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
+              Upload custom data
+            </div>
+
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragging(false);
+                handleDrop(e.dataTransfer.files);
+              }}
+              onClick={() => inputRef.current?.click()}
+              style={{
+                minHeight: 180,
+                borderRadius: 16,
+                border: isDragging
+                  ? "1px solid rgba(130,240,190,0.85)"
+                  : "1px dashed rgba(255,255,255,0.20)",
+                background: isDragging
+                  ? "rgba(90,210,160,0.12)"
+                  : "rgba(255,255,255,0.02)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                textAlign: "center",
+                padding: 24,
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 700 }}>
+                Drag and drop files here
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.68, marginTop: 8 }}>
+                or click to browse and add one or more files
+              </div>
+            </div>
+
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              onChange={(e) => {
+                handleDrop(e.target.files);
+                e.currentTarget.value = "";
+              }}
+              style={{ display: "none" }}
+            />
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+            marginTop: 18,
+          }}
+        >
+          <div style={{ fontSize: 12, opacity: 0.62 }}>
+            {mode === "external" && selectedExternalSources.length > 0
+              ? `${selectedExternalSources.length} source${selectedExternalSources.length > 1 ? "s" : ""} selected`
+              : "\u00A0"}
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                height: 40,
+                padding: "0 14px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                color: "white",
+                cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+
+            {mode !== "custom" && (
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={
+                  (mode === "drawing" && !drawingName.trim()) ||
+                  (mode === "external" && selectedExternalSources.length === 0)
+                }
+                style={{
+                  height: 40,
+                  padding: "0 14px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(160,220,255,0.35)",
+                  background: "rgba(120,190,255,0.18)",
+                  color: "white",
+                  cursor: "pointer",
+                  opacity:
+                    (mode === "drawing" && !drawingName.trim()) ||
+                    (mode === "external" && selectedExternalSources.length === 0)
+                      ? 0.5
+                      : 1,
+                }}
+              >
+                Add layer
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
