@@ -1,16 +1,56 @@
 export type LayerKind = "group" | "layer";
 
+export type SlicePlane = "xy" | "xz" | "yz";
+
+export type AxisSliceLayerParams = {
+  mode?: "axis";
+  plane: SlicePlane;
+  index: number;
+  opacity?: number;
+};
+
+export type ObliqueSliceLayerParams = {
+  mode: "oblique";
+  normal: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  offset?: number;
+  width?: number;
+  height?: number;
+  opacity?: number;
+};
+
+export type SliceLayerParams =
+  | AxisSliceLayerParams
+  | ObliqueSliceLayerParams;
+
+export type CustomSliceSource = {
+  volumeLayerId: string;
+};
+
 export type LayerRenderType =
   | "primitive"
   | "file"
   | "remote"
-  | "annotation";
+  | "annotation"
+  | "custom-slice";
 
 export type LayerSourceKind =
   | "built-in"
   | "external"
   | "custom-upload"
   | "drawing";
+
+export type RemoteDataFormat =
+  | "generic"
+  | "ome-zarr";
+
+export type RemoteRenderMode =
+  | "auto"
+  | "slices"
+  | "volume";
 
 type BaseNode = {
   id: string;
@@ -27,10 +67,17 @@ export type LayerGroupNode = BaseNode & {
 export type LayerItemNode = BaseNode & {
   kind: "layer";
   type: LayerRenderType;
-  source: string | File;
+  source: string | File | CustomSliceSource;
   sourceKind?: LayerSourceKind;
   mimeType?: string;
   description?: string;
+
+  // For remote layers
+  remoteFormat?: RemoteDataFormat;
+  renderMode?: RemoteRenderMode;
+
+  // For custom slices
+  sliceParams?: SliceLayerParams;
 };
 
 export type LayerTreeNode = LayerGroupNode | LayerItemNode;
@@ -53,6 +100,24 @@ export function isGroupNode(node: LayerTreeNode): node is LayerGroupNode {
 
 export function isLayerNode(node: LayerTreeNode): node is LayerItemNode {
   return node.kind === "layer";
+}
+
+export function isCustomSliceLayer(
+  node: LayerTreeNode | null | undefined
+): node is LayerItemNode {
+  return !!node && node.kind === "layer" && node.type === "custom-slice";
+}
+
+export function isRemoteOmeLayer(
+  node: LayerTreeNode | null | undefined
+): node is LayerItemNode {
+  return (
+    !!node &&
+    node.kind === "layer" &&
+    node.type === "remote" &&
+    typeof node.source === "string" &&
+    node.remoteFormat === "ome-zarr"
+  );
 }
 
 export function findNodeById(
@@ -211,6 +276,20 @@ export function collectLayerIdsInSubtree(node: LayerTreeNode): string[] {
     out.push(...collectLayerIdsInSubtree(child));
   }
   return out;
+}
+
+export function collectAllLayerItems(nodes: LayerTreeNode[]): LayerItemNode[] {
+  const result: LayerItemNode[] = [];
+
+  for (const node of nodes) {
+    if (isGroupNode(node)) {
+      result.push(...collectAllLayerItems(node.children));
+    } else {
+      result.push(node);
+    }
+  }
+
+  return result;
 }
 
 export function insertIntoGroup(

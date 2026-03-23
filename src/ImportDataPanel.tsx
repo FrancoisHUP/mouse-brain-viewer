@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { RemoteRenderMode } from "./layerTypes";
 
 type LayerCreationMode = "drawing" | "external" | "custom";
 
@@ -8,6 +9,7 @@ type ExternalSourceItem = {
   url: string;
   icon: "generic" | "custom";
   builtIn?: boolean;
+  renderMode?: RemoteRenderMode;
 };
 
 function PencilIcon() {
@@ -179,18 +181,20 @@ function TabButton({
 
 const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
   {
-    id: "allen-average-brain",
-    name: "Allen Average Mouse Brain",
-    url: "https://storage.googleapis.com/sbh-assistant-data/allen-average-mouse-brain",
+    id: "allen-average-brain-volume",
+    name: "Allen Average Mouse Brain (Volume)",
+    url: "https://storage.googleapis.com/sbh-assistant-data/allen_average_template.ome.zarr/",
     icon: "generic",
     builtIn: true,
+    renderMode: "volume",
   },
   {
-    id: "allen-annotation",
-    name: "Allen Annotation Atlas",
-    url: "https://storage.googleapis.com/sbh-assistant-data/allen-annotation",
+    id: "allen-average-brain-slices",
+    name: "Allen Average Mouse Brain (Slices)",
+    url: "https://storage.googleapis.com/sbh-assistant-data/allen_average_template.ome.zarr/",
     icon: "generic",
     builtIn: true,
+    renderMode: "slices",
   },
 ];
 
@@ -210,6 +214,7 @@ export default function ImportDataPanel({
       name: string;
       url: string;
       icon?: "generic" | "custom";
+      renderMode?: RemoteRenderMode;
     }>
   ) => void;
   onAddFiles: (files: FileList | null) => void;
@@ -264,6 +269,7 @@ export default function ImportDataPanel({
       url,
       icon: "custom",
       builtIn: false,
+      renderMode: "auto",
     };
 
     setExternalSources((prev) => [...prev, newItem]);
@@ -287,6 +293,7 @@ export default function ImportDataPanel({
           name: item.name,
           url: item.url,
           icon: item.icon,
+          renderMode: item.renderMode,
         }))
       );
       return;

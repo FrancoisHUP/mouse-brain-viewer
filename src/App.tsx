@@ -1,16 +1,24 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type ToolId } from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
-import type { LayerTreeNode } from "./layerTypes";
+import SliceToolPopover from "./SliceToolPopover";
+import type {
+  LayerTreeNode,
+  RemoteDataFormat,
+  RemoteRenderMode,
+  SliceLayerParams,
+} from "./layerTypes";
 import {
+  collectAllLayerItems,
   collectGroups,
   deleteNodeById,
   findNodeById,
   getFirstLayerId,
   insertIntoGroup,
   isGroupNode,
+  isRemoteOmeLayer,
   moveNodeBeforeNode,
   moveNodeToGroup,
   renameNodeById,
@@ -28,6 +36,26 @@ type ExternalSourceDraft = {
   name: string;
   url: string;
   icon?: "generic" | "custom";
+  renderMode?: RemoteRenderMode;
+};
+
+type AddSliceOptions = {
+  volumeLayerId: string;
+  sliceParams: SliceLayerParams;
+  name?: string;
+};
+
+type ViewerStartupSlice = {
+  volumeLayerId?: string;
+  volumeUrl?: string;
+  plane: SlicePlane;
+  index: number;
+  name?: string;
+  opacity?: number;
+};
+
+type AppProps = {
+  startupSlices?: ViewerStartupSlice[];
 };
 
 const INITIAL_TREE: LayerTreeNode[] = [
@@ -51,7 +79,11 @@ const INITIAL_TREE: LayerTreeNode[] = [
   },
 ];
 
-export default function App() {
+function detectRemoteFormat(url: string): RemoteDataFormat {
+  return url.includes(".ome.zarr") ? "ome-zarr" : "generic";
+}
+
+export default function App({ startupSlices = [] }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolId>("mouse");
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [layerTree, setLayerTree] = useState<LayerTreeNode[]>(INITIAL_TREE);
@@ -59,15 +91,111 @@ export default function App() {
     getFirstLayerId(INITIAL_TREE)
   );
 
+  const initializedStartupSlicesRef = useRef(false);
+
+  const [sliceVolumeLayerId, setSliceVolumeLayerId] = useState<string>("");
+  const [sliceName, setSliceName] = useState<string>("");
+
+  const [sliceParamsDraft, setSliceParamsDraft] = useState<SliceLayerParams>({
+    mode: "axis",
+    plane: "xy",
+    index: 0,
+    opacity: 0.92,
+  });
+
   const groupOptions = useMemo(() => collectGroups(layerTree), [layerTree]);
 
+  const allLayers = useMemo(() => collectAllLayerItems(layerTree), [layerTree]);
+
+  const omeLayers = useMemo(
+    () => allLayers.filter(isRemoteOmeLayer),
+    [allLayers]
+  );
+
+  const selectedNode = useMemo(
+    () => (selectedNodeId ? findNodeById(layerTree, selectedNodeId) : null),
+    [layerTree, selectedNodeId]
+  );
+
+  useEffect(() => {
+    if (selectedNode && isRemoteOmeLayer(selectedNode)) {
+      setSliceVolumeLayerId(selectedNode.id);
+      return;
+    }
+
+    if (!sliceVolumeLayerId && omeLayers.length > 0) {
+      setSliceVolumeLayerId(omeLayers[0].id);
+    }
+  }, [selectedNode, sliceVolumeLayerId, omeLayers]);
+
+  useEffect(() => {
+    if (initializedStartupSlicesRef.current) return;
+    if (!startupSlices.length) return;
+
+    setLayerTree((prev) => {
+      let next = prev;
+      const nextAllLayers = () => collectAllLayerItems(next);
+
+      for (const item of startupSlices) {
+        let targetVolumeId: string | null = null;
+
+        if (item.volumeLayerId) {
+          const node = findNodeById(next, item.volumeLayerId);
+          if (node && isRemoteOmeLayer(node)) {
+            targetVolumeId = node.id;
+          }
+        }
+
+        if (!targetVolumeId && item.volumeUrl) {
+          const match = nextAllLayers().find(
+            (node) =>
+              node.type === "remote" &&
+              typeof node.source === "string" &&
+              node.source === item.volumeUrl &&
+              node.remoteFormat === "ome-zarr"
+          );
+
+          if (match) {
+            targetVolumeId = match.id;
+          }
+        }
+
+        if (!targetVolumeId) continue;
+
+        next = [
+          ...next,
+          {
+            id: createId(),
+            kind: "layer",
+            name: item.name?.trim() || `${item.plane.toUpperCase()} @ ${item.index}`,
+            type: "custom-slice",
+            visible: true,
+            source: { volumeLayerId: targetVolumeId },
+            sourceKind: "built-in",
+            description: "Startup custom slice",
+            sliceParams: {
+              mode: "axis",
+              plane: item.plane,
+              index: item.index,
+              opacity: item.opacity ?? 0.92,
+            },
+          },
+        ];
+      }
+
+      return next;
+    });
+
+    initializedStartupSlicesRef.current = true;
+  }, [startupSlices]);
+
   function handleToolChange(tool: ToolId) {
-    if (tool === "add-data") {
+    if (tool === "data") {
       setIsImportPanelOpen(true);
       return;
     }
 
-    setActiveTool(tool);
+    setActiveTool((prev) => (prev === tool && tool === "slice" ? "mouse" : tool));
   }
 
   function handleToggleVisible(nodeId: string) {
@@ -77,6 +205,7 @@ export default function App() {
       return setNodeVisibleState(prev, nodeId, !target.visible);
     });
   }
+
   function handleSelectNode(nodeId: string) {
     setSelectedNodeId(nodeId);
   }
@@ -99,8 +228,6 @@ export default function App() {
 
       return [...prev, newNode];
     });
-
-    setSelectedNodeId(newNode.id);
   }
 
   function handleAddFromUrl(url: string, name?: string) {
@@ -126,6 +253,8 @@ export default function App() {
       source: trimmed,
       sourceKind: "external",
       description: "Remote data source",
+      remoteFormat: detectRemoteFormat(trimmed),
+      renderMode: detectRemoteFormat(trimmed) === "ome-zarr" ? "volume" : "auto",
     });
 
     setIsImportPanelOpen(false);
@@ -160,10 +289,6 @@ export default function App() {
         }
 
         lastAddedId = node.id;
-      }
-
-      if (lastAddedId) {
-        setSelectedNodeId(lastAddedId);
       }
 
       return next;
@@ -242,15 +367,20 @@ export default function App() {
       let lastAddedId: string | null = null;
 
       for (const item of sources) {
+        const trimmedUrl = item.url.trim();
         const node: LayerTreeNode = {
           id: createId(),
           kind: "layer",
           name: item.name.trim() || "Remote Data",
           type: "remote",
           visible: true,
-          source: item.url.trim(),
+          source: trimmedUrl,
           sourceKind: "external",
           description: item.icon === "custom" ? "Custom external source" : "External data source",
+          remoteFormat: detectRemoteFormat(trimmedUrl),
+          renderMode:
+            item.renderMode ??
+            (detectRemoteFormat(trimmedUrl) === "ome-zarr" ? "volume" : "auto"),
         };
 
         const selected = selectedNodeId ? findNodeById(next, selectedNodeId) : null;
@@ -264,14 +394,86 @@ export default function App() {
         lastAddedId = node.id;
       }
 
-      if (lastAddedId) {
-        setSelectedNodeId(lastAddedId);
-      }
-
       return next;
     });
 
     setIsImportPanelOpen(false);
+  }
+
+  function handleAddCustomSlice(options: AddSliceOptions) {
+    const volumeNode = findNodeById(layerTree, options.volumeLayerId);
+
+    if (!volumeNode || !isRemoteOmeLayer(volumeNode)) {
+      console.warn("Cannot create slice: target volume layer not found or not OME-Zarr");
+      return;
+    }
+
+    const defaultName =
+      options.sliceParams.mode === "oblique"
+        ? `${volumeNode.name} Oblique Slice`
+        : `${volumeNode.name} ${options.sliceParams.plane.toUpperCase()} @ ${options.sliceParams.index}`;
+
+    addNodeAtBestLocation({
+      id: createId(),
+      kind: "layer",
+      name: options.name?.trim() || defaultName,
+      type: "custom-slice",
+      visible: true,
+      source: {
+        volumeLayerId: options.volumeLayerId,
+      },
+      sourceKind: "built-in",
+      description:
+        options.sliceParams.mode === "oblique"
+          ? "Custom oblique slice"
+          : "Custom slice",
+      sliceParams: options.sliceParams,
+    });
+  }
+
+  function handleCreateSliceFromUi() {
+    if (!sliceVolumeLayerId) return;
+
+    let normalizedParams: SliceLayerParams;
+
+    if (sliceParamsDraft.mode === "oblique") {
+      const nx = Number(sliceParamsDraft.normal.x);
+      const ny = Number(sliceParamsDraft.normal.y);
+      const nz = Number(sliceParamsDraft.normal.z);
+
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (!Number.isFinite(len) || len < 1e-8) return;
+
+      normalizedParams = {
+        mode: "oblique",
+        normal: {
+          x: nx / len,
+          y: ny / len,
+          z: nz / len,
+        },
+        offset: Number.isFinite(sliceParamsDraft.offset ?? 0)
+          ? sliceParamsDraft.offset ?? 0
+          : 0,
+        width: Math.max(8, Math.round(sliceParamsDraft.width ?? 256)),
+        height: Math.max(8, Math.round(sliceParamsDraft.height ?? 256)),
+        opacity: Math.max(0, Math.min(1, sliceParamsDraft.opacity ?? 0.92)),
+      };
+    } else {
+      normalizedParams = {
+        mode: "axis",
+        plane: sliceParamsDraft.plane,
+        index: Math.round(sliceParamsDraft.index),
+        opacity: Math.max(0, Math.min(1, sliceParamsDraft.opacity ?? 0.92)),
+      };
+    }
+
+    handleAddCustomSlice({
+      volumeLayerId: sliceVolumeLayerId,
+      sliceParams: normalizedParams,
+      name: sliceName.trim() || undefined,
+    });
+
+    setSliceName("");
   }
 
   return (
@@ -319,6 +521,115 @@ export default function App() {
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
+        slicePopoverOpen={activeTool === "slice"}
+        onRequestCloseSlicePopover={() => setActiveTool("mouse")}
+        slicePopoverContent={
+          omeLayers.length > 0 ? (
+            <div style={{ fontFamily: "sans-serif" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "92px 1fr",
+                  gap: 8,
+                  alignItems: "center",
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ fontSize: 12, opacity: 0.8 }}>Volume</div>
+                <select
+                  value={sliceVolumeLayerId}
+                  onChange={(e) => setSliceVolumeLayerId(e.target.value)}
+                  style={{
+                    height: 32,
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    padding: "0 8px",
+                  }}
+                >
+                  {omeLayers.map((layer) => (
+                    <option key={layer.id} value={layer.id} style={{ color: "black" }}>
+                      {layer.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <SliceToolPopover
+                  value={sliceParamsDraft}
+                  onChange={setSliceParamsDraft}
+                />
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "92px 1fr",
+                  gap: 8,
+                  alignItems: "center",
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ fontSize: 12, opacity: 0.8 }}>Name</div>
+                <input
+                  value={sliceName}
+                  onChange={(e) => setSliceName(e.target.value)}
+                  placeholder="Optional custom name"
+                  style={{
+                    height: 32,
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    padding: "0 10px",
+                    outline: "none",
+                  }}
+                />
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  alignItems: "center",
+                  marginTop: 12,
+                  gap: 10,
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={handleCreateSliceFromUi}
+                  style={{
+                    height: 34,
+                    padding: "0 12px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(120,190,255,0.18)",
+                    color: "white",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Add Slice Layer
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              style={{
+                fontFamily: "sans-serif",
+                fontSize: 13,
+                opacity: 0.8,
+                lineHeight: 1.5,
+              }}
+            >
+              Import an OME-Zarr volume first to create slice layers.
+            </div>
+          )
+        }
       />
     </div>
   );

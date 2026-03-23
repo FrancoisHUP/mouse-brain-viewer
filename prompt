@@ -70,14 +70,13 @@ Also now when I make on element visible, it make every layer underneeth visible 
 }
 
 
-[todo]{
+{
 I also want to be able to close completely the layers section. For someone annotating it can be annoying to always see the layer section display. So I would like to have a nice animation to open and close the layer. When close it should be only one button with the layer icon.
 
 Also the layer section should have a max height and I would like to have a nice scroll bar that fist with the rest of the ui. Right now it's the basic white and gray full squared scroll bar and its ugly.  
 }
 
-[todo] add allen data 
-
+[todo] add allen data (volumetric and layer at high resolution)
 {
 ok greate thanks for the drawing comment I  will do it later. For now we are working on importing data. So there are some small tweak I want for the ui. 
 
@@ -90,20 +89,79 @@ ok greate thanks for the drawing comment I  will do it later. For now we are wor
 Can you update these element, then we can actually do the data import into the viewer.
 }
 
+{
+alright not perfect, but a good start. Now the first we need to fix is the slices view. At the moment, when I select the allen average mouse brain (slices) I see the three main axis image on the bottom right and I also see the three main axis in the 3d view. I want to have the images in the 3d view. The goal here is to display the data in 3d and the user could change the slice as he want to see the data. So the user can change the cut into  the brain to see the data of the average mouse brain at a specific slice. For now I only want to have the 3 main slices with the 3 main axis. We can add the custom slice and how the user move the slice in dpeth later.    
+}
+
+{
+    alright it works, but there one axis that is in the wrong orientation. The axis back of the brain to front of the brain is in the wron orientation. Could it be because in the zarr format, there's one axis that is suppose ot be flipped ? Do you think the probleme is in the dat or in the vewer? Can you fix the orientation on this axis? 
+}
+
+{
+    hum ok the render does flip the image, but the image is display on a slice (3d rectangle) but this rectangle does not change at all and since it's a rectangle not all side are the same dimension, the image get deformed. So it's not much a problem of the renderer is more a problem of the data not being displayed correctly. I feel like the current solution is a bit invasive where we need to add custom transformation directly into the webgl viewer instead of having tranformation for the data. Overall web gl was doing it's job of displaying the data, it's more a probleme with how we want to display the data and it seems the allen mouse brain has one axis that does not match with the other which should be flip and 90 rotated. 
+
+    Can you propose a better solution ?  and maybe reverting some of the change in the webgl renderer ?
+}
+{
+  alright now I have a strange thing that happen. the axe we just corrected ia bit to small compare to the other axis. The volume is 3d rectangle and right now one axis is smaller and it does not create a rectangle box. Can you check in the code what is happening and correct the probleme ? 
+}
 [HERE]
+
+[todo] add a custom cut the user want to load in the viewer.
 {
-Yeah perfect a lot better like this.
+alright not bad for a start. Now there's a couple thing wrong with this : 
 
-Now I need to add teh actual data in the viewer. at the moment when a source is added I see a square appearing in the browser, can you guide me how the browser can fetch data from the web and display them in the browser?
+(1) I need to add custom slice at differnete orientation. So right now we only allow these 3 axis xy,xz,yz. I need more. I want the user to define any slice at any angle of orientation. So here is my situation. I want to be able to define any slice in the 3D space. Can you recommend me a way for the user to define this 3d plane intuatively and easly. I wush the user could only use it's mouse and key board to do that. 
 
-I have a version of the allen average mouse brain as a zarr ome at this cloud console url : https://console.cloud.google.com/storage/browser/sbh-assistant-data 
-
-I dont know if that is the best way to fetch the data from a web browser. So here I need you to propose a best plan of a ction to actually get the data and show it in the broswer webgl 3d veiwer. 
+(2) the panel for "custom slice" is nice, but right now it's in the way and it's always on. Instead of that, I have a tool bar where I define some tools. The slice will be added as a tool. So I want you to move this panel to the tool bar with the other tool. When click on the icon (we should find an icon suitable to represent the slicing tool) ther panel to contruct the slice should appear on top with a nice smooth transition. Then the user can add the parameter for the slice a click on create. This menu should be close if unfocus. 
 }
 
 {
-    Can you explain to me what is "Vol-E" and how I could use this in my current setup without breaking my current viewer?
+ok that's nice now the tool bar has the tool. For starter now the slices added image are not synch with the allen aberage mouse brain (slice) volume. I need both source of data to be in the same orientation and now when I add a slice I see that the orientation of the brain is flipped. Can you fix that so the image are in the same position as the average mouse brain (slice)? 
+
+Make sure the slice generator generate slice with the same data pattern as the allen average mouse brain (slice). The slice generator should be synch and the pixel of a slice should be an extraction of the whole volume. At the moment the front and back of the mouse are inverted. Do not change the webgl viewer. This change should be done related to the data and not the webgl viewer (I mean it's possible this fix has to touche to the webgl, but right now it's not webgl the problem)
+
+Also. I dont like the icon. I would rather have a cut icon.  
+
+can you fix these first and then we can continue with the any planes feature? 
 }
 
+{
+    alright so it did add a custom angle which is nice, now we have a probleme with the image flip or rotation still with this new feature. We had this kind of prebleme before and we solve it using a custom load sequece to make sure every pixel is in the right place. We user this setting to load the allen data  : 
+
+    export const ALLEN_VIEWER_PROFILE: ViewerOrientationProfile = {
+  xy: {
+    reverseIndex: true,
+    flipX: true,
+  },
+  xz: {
+    flipY: true,
+  },
+  yz: {
+    rotate90: true,
+    reverseIndex: true,
+  },
+};
+
+I think we need to use this exact setting so the image extracted fits because right now its upside down.  
+
+I also have a scaling problem. I check on the Z axis and extracted a slice at 0 and compare this slice to the allen template I have and the extracted image was smaller. Can you also make sure the scaling is good too ? 
+
+Here are my current code files : 
+// src/omeZarr.ts
+// src/WebGLCanvas.tsx
+
+}
+{
+    Ok now it works... almost ! The scale is ok . Now the only thing that is missing is now the front and the back of the brain are flipped. This only happens when I select custom orientation. When I extract with the three main axis the orientation is good, but with the custom orientation i messes the orientation where the back on the brain is in the front comapre to the allen averame mouse brain slice. Can you check where this miss match can come front and adjsut the code ?  
+}
+{
+    You will be mad, becaus nothing has changed for my problem. So I did a little more testing and I realize the it's only when I extract a slice in the y axis that I have a flip. When I extract data from any other axis everything run smoothly, But as soon as the y axis is not 0 I got a flip. Can you check more spcifically for a bug with the y axis of the costum orientation? 
+}
+[todo] save and update the state of browser (viewer) (export). 
+[todo] the user should be able to change the current cuts how he likes.  
+
+[todo] volumetric
 [todo] upload data
 [todo] shared button 
+
