@@ -1,40 +1,24 @@
-[todo] controllable interface where I can set the state (this state could be use as a memory and export format)
+[todo] Object control. The user should be able to change the current cuts how he likes.  The user should be able to change the orientations and position of objects in the scene. He should also be able to group things togheter. 
 {
-    Alrigt so I am working on a visualizer for the allen web data. I want to be able to vizualise slice in a 3D space. I use webgl with react to build this visuallizer. Now I am pretty much done with the viewer. Now I need to embedd this viewer inside of a demo. The demo is a 2d to 3D localisation. It take a 2d image and it predict which slice in the 3D volume it is. I have done the demo and now I get a top k slices. What I need now is the user to click on one slice and I need to load this slice in the 3D viewer. To do that I have to pass parameter of the slice to the viewer. Basically I want the viewer to have an api so the deom can call this api to controle the 3D view. For example, the top-k the first slice hase the paremeters : row_idx,source,rank,patch_id,patch_path,score,rerank_score,order_by,primary_score,query_angle_deg,q_normal_x,q_normal_y,q_normal_z,q_depth_vox,q_rot_deg,q_is_crop,q_crop_area_frac,normal_idx,depth_idx,rot_idx,normal_x,normal_y,normal_z,depth_vox,rotation_deg,scale,patch_row,patch_col,x0,y0,x1,y1,patch_h,patch_w,corner_chamfer_3pt_um,geom_dist_vox,gt_tau_vox,gt_logit,gt_prob 0,allen,1,7848,,0.7747805118560791,0.3785114884376526,rerank_score,0.3785114884376526,90.0,0.8237258152653704,0.15091858832784577,0.5465339522486513,147.93162707016944,9.003871880160098,False,1.0,10.0,18.0,0.0,-0.9477945559013159,0.06347621445882563,-0.3124999999996875,-128.09146767364973,0.0,2.0,1.0,1.0,192.0,192.0,448.0,448.0,256.0,256.0,6471.8236623164485,96.43297023747154,95.5511991860346,-1.0092282573002582,0.03928569255654651 At the moment the vierwer is able to create the slice with the normal and and offset parameter. So the normal is in the data (3 number experssing in which direction the image is taken from the center). And the offset is the depth of the slice along this axis. So the real feature here is I need to add an api and a state to the viewer so that a program can set the state to see one slice in the viewer. The viewer is completely empty from the start. So I also first need add the allen data in the viewer and a custom slice both at the same time so the user can locate itself in the allen average mouse brain. Here is my current code in file linked.
+    That is absolutely perfect. Now I want to start a new feature ! 
+    
+    I want the user to be able to apply rotation and translation to an object of the scene. I also want the user to be able to group object togeter. I want the grouping to be apply in the layer too. So if a user click to select multiple object and group them (which should be an option with the right click of the mouse) the groupe should aslo happen in the layers panel. This will help the user to align thing togheter and move things around.
+
+    Alright here is the more specific requirements :
+    (1) I need to add a tool in the bottom tool bar. This one will be selection with an appropriate icon.  
+    (2) When the selection sool is selected in the toolbar, the controle should switch to other then typical the moving controle. I need to have these controls : left click to select the object in the position of the mouse; left drag and drop to select multiple object at the same time (this should display a square between the mouse click and hold to the current mouse position) - while the user hold and move the mouse, it should hightlight the selected object - every object that fall into the square should be slected - on release of the mouse, it should have selected all the object in the square; the right mouse button should not be the typcial chrome menu - the right mouse click should open a contextual menu with these option : ["delete", "group"]. and object can be a group of objects. When the user select one single object (which can be a group of sub-object, but we count it as one obejct since they are grouped), then the ui will highlight this object and arrows will appear. In a case where the user select muliple non group object, the arrow still appears and the object behave as they where a group temprarly. In total there's 6 arrows to controle the translation in each main direction (x,y,z), plus I could like to have 6 more arrows to controle the orientation and finally I need 6 arrows to control the rotation on one axis. These arrow should be place like this : for all object selected, we should create an ivisible cube that contains all the objects selected - all the obejct should be inside this invisible cube - then we take 3 side of this cube (the 3 side closer to the camera) and at the center of the face of the invisible cube we add the arrow to control the position. if that make sense. Basiaclly the same thing as every CAD sofware that exists. I would like to have the objects snap to the orthogonal angles, so its easier for the user to get perfect angles. 
 }
-{
-ok all of this sounds good. But I got a few more thing I need to add before continuing. 
 
-I like the way you said that we could add the whole top k in the viewer once and have the layer to see each top. One thing to add, we should be able to controle which top k is visible and hidden the orther top k. That would ba good way for the user to compare the slices viewer to see some of them of click to see all of the topk.
 
-Also in the state I want to have information about the layout. At the moment I only have one toggle button for the layout, where I can hid or show the layout panel. I would like to set it (show or hide) in the api as well. 
 
-at the moment I dont need to focus on the demo side, But I do need to test the api. So I need a way simluate the call to the viewer like if I was passing parameter to the api and load a state of a viewer. 
-
-Finally, I want the user to be able to load the state of a viewer by passing the paremeter. I want to have some kind of copy paste, so people can load the viewer only by copying the state. This will turned out to be really usefull later if I want to save some views and reload by copy pasting the state of the viewer and also it will be a good way to be able to save the state for user (when the user feature and login wil be implpementd which is not now, now just focus on the data and viewer state).
-
-Does that make sense? 
-}
-{
-Ok so here is the game plan. I have kind of two features in this. 
-
-(1) I want the viewer to have a state. The vewer should be able to load any state by copy pasting in a import export feature. 
-(2) I want to have an api where the user can push a state of the viewer. So I can push any state programmatically (the case of the my demo). 
-
-So First I need to implement a state holder or something like that. I need this state to contain the whole layers data, the camera position, the settings if there are (at the moment there are not, but I could imagine later I want to add shader to the layer or brightness. for now I just need the state holder to be able to expand to the settings to or other things realted to the state i would want to add later). Basically the state should have everything to reproduce the viewer. I need to have an import export section. This should be done in the 'src/BottomToolbar.tsx' file where I have an export button. I think a clearer version would be to have an export and import button where the export will contain the current state and the import will contain a copy past box where the user can load a state. 
-
-Once this is done we can focus later on the api and how the we could programmatically controle the state from outside. 
-
-Can you give me the code to acheive this? 
-}
-{
-    This is really nice, now I want to add the api external controle so I can create a state of the viewer and be able to create and I fram in my other project and use this webgl viewer to display a state. Can you add this esternal api using the current state controle ? 
-}
-[todo] save and update the state of browser (viewer) (export). 
-[todo] the user should be able to change the current cuts how he likes.  
-[todo] import more precise allen volume (25um, 10um?)
+[todo] add a temporary visualize of the cut slice : this visual shoul be a normal poiting in the direction with the depth. The image should be display and with the new parameter, it should adjust the image slice. Instead of number, it should be a slider or something easyer to play with. (rework the icon too, mabe a 3D cube with a cut? create it with bananas)
 
 [todo] volumetric data, align syn and rework
+
+
+[todo] import more precise allen volume (25um, 10um?)
+[todo] import a skeleton of the allen average mouse brain. 
+
 [todo] draw (annotations) with AI 3D assistance 
 [todo] upload data
 [todo] shared button 
@@ -42,4 +26,6 @@ Can you give me the code to acheive this?
 -----
 [?] move the serach button in the data ?
 
-[NTH] change hte camera controle (flying, or the others)
+[NTH] change the camera controle (flying, or the others)
+[NTH] add a docs route where the user can see all the controls on this web demo. 
+

@@ -1,17 +1,36 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import WebGLCanvas from "./WebGLCanvas";
-import BottomToolbar, { type ToolId } from "./BottomToolbar";
+import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import SliceToolPopover from "./SliceToolPopover";
 import {
+  ALLEN_VIEWER_EMBED_NAMESPACE,
+  type ViewerEmbedMessage,
+  type ViewerEmbedRequest,
+  type ViewerEmbedResponse,
+} from "./viewerEmbedApi";
+import {
   DEFAULT_CAMERA_STATE,
   createViewerState,
   isSerializableLayerTree,
+  mergeViewerState,
   parseViewerState,
   type SerializableCameraState,
+  type ViewerStatePatchV1,
+  type ViewerStateV1,
 } from "./viewerState";
+import {
+  VIEWER_HISTORY_STORAGE_KEY,
+  clampHistoryStack,
+  clearPersistedViewerHistory,
+  createViewerHistoryEntry,
+  hashViewerStateForHistory,
+  loadPersistedViewerHistory,
+  savePersistedViewerHistory,
+  type ViewerHistoryEntry,
+} from "./viewerHistory";
 import type {
   LayerTreeNode,
   RemoteDataFormat,
@@ -35,6 +54,27 @@ import {
   setNodeVisibleState,
   toggleGroupExpandedById,
 } from "./layerTypes";
+
+declare global {
+  interface Window {
+    AllenViewerApi?: {
+      ping: () => boolean;
+      getState: () => ViewerStateV1;
+      getStateJson: () => string;
+      setState: (state: ViewerStateV1) => ViewerStateV1;
+      setStateJson: (stateJson: string) => ViewerStateV1;
+      patchState: (patch: ViewerStatePatchV1) => ViewerStateV1;
+      setLayoutCollapsed: (collapsed: boolean) => ViewerStateV1;
+      selectNode: (nodeId: string | null) => ViewerStateV1;
+      openExport: () => void;
+      openImport: () => void;
+      closeDialogs: () => void;
+      undo: () => ViewerStateV1 | null;
+      redo: () => ViewerStateV1 | null;
+      clearHistory: () => ViewerStateV1;
+    };
+  }
+}
 
 function createId() {
   return Math.random().toString(36).slice(2, 10);
@@ -92,6 +132,37 @@ function detectRemoteFormat(url: string): RemoteDataFormat {
   return url.includes(".ome.zarr") ? "ome-zarr" : "generic";
 }
 
+function decodeBase64Url(input: string): string {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return atob(normalized + padding);
+}
+
+function readInitialStateFromLocation(): ViewerStateV1 | null {
+  if (typeof window === "undefined") return null;
+
+  const params = new URLSearchParams(window.location.search);
+  const rawState = params.get("viewerState");
+  if (rawState) {
+    try {
+      return parseViewerState(rawState);
+    } catch (error) {
+      console.warn("Failed to parse viewerState query parameter.", error);
+    }
+  }
+
+  const rawState64 = params.get("viewerState64");
+  if (rawState64) {
+    try {
+      return parseViewerState(decodeBase64Url(rawState64));
+    } catch (error) {
+      console.warn("Failed to parse viewerState64 query parameter.", error);
+    }
+  }
+
+  return null;
+}
+
 const secondaryButtonStyle: CSSProperties = {
   height: 34,
   padding: "0 12px",
@@ -128,12 +199,21 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [isClearHistoryConfirmOpen, setIsClearHistoryConfirmOpen] = useState(false);
 
   const initializedStartupSlicesRef = useRef(false);
+  const initializedLocationStateRef = useRef(false);
+  const hasHydratedHistoryRef = useRef(false);
+  const autoCommitTimeoutRef = useRef<number | null>(null);
+  const suppressNextAutoCommitRef = useRef(false);
+  const pastStatesRef = useRef<ViewerHistoryEntry[]>([]);
+  const futureStatesRef = useRef<ViewerHistoryEntry[]>([]);
+  const lastCommittedStateRef = useRef<ViewerStateV1 | null>(null);
+  const lastCommittedHashRef = useRef<string>("");
 
   const [sliceVolumeLayerId, setSliceVolumeLayerId] = useState<string>("");
   const [sliceName, setSliceName] = useState<string>("");
-
   const [sliceParamsDraft, setSliceParamsDraft] = useState<SliceLayerParams>({
     mode: "axis",
     plane: "xy",
@@ -142,18 +222,211 @@ export default function App({ startupSlices = [] }: AppProps) {
   });
 
   const groupOptions = useMemo(() => collectGroups(layerTree), [layerTree]);
-
   const allLayers = useMemo(() => collectAllLayerItems(layerTree), [layerTree]);
-
-  const omeLayers = useMemo(
-    () => allLayers.filter(isRemoteOmeLayer),
-    [allLayers]
-  );
+  const omeLayers = useMemo(() => allLayers.filter(isRemoteOmeLayer), [allLayers]);
 
   const selectedNode = useMemo(
     () => (selectedNodeId ? findNodeById(layerTree, selectedNodeId) : null),
     [layerTree, selectedNodeId]
   );
+
+  const currentViewerState = useMemo(
+    () =>
+      createViewerState({
+        activeTool,
+        selectedNodeId,
+        layerTree,
+        sliceVolumeLayerId,
+        sliceName,
+        sliceParamsDraft,
+        layerPanelCollapsed: isLayerPanelCollapsed,
+        camera: cameraState,
+      }),
+    [
+      activeTool,
+      selectedNodeId,
+      layerTree,
+      sliceVolumeLayerId,
+      sliceName,
+      sliceParamsDraft,
+      isLayerPanelCollapsed,
+      cameraState,
+    ]
+  );
+
+  const currentViewerHash = useMemo(
+    () => hashViewerStateForHistory(currentViewerState),
+    [currentViewerState]
+  );
+
+  const canUndo = pastStatesRef.current.length > 0;
+  const canRedo = futureStatesRef.current.length > 0;
+  const canClearHistory = canUndo || canRedo;
+
+  function formatHistoryTimestamp(timestamp: number) {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const sameDay =
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+
+    return sameDay
+      ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      : date.toLocaleString([], {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+  }
+
+  function buildStateHistoryLabel(entry: ViewerHistoryEntry) {
+    const state = entry.state;
+    const selectedName = state.scene.selectedNodeId
+      ? findNodeById(state.scene.layerTree, state.scene.selectedNodeId)?.name ?? state.scene.selectedNodeId
+      : "No selection";
+    const layerCount = collectAllLayerItems(state.scene.layerTree).length;
+    const layoutLabel = state.layout.layerPanelCollapsed ? "panel hidden" : "panel visible";
+    return {
+      label: selectedName,
+      meta: `${formatHistoryTimestamp(entry.committedAt)} · ${layerCount} layers · ${layoutLabel}`,
+    };
+  }
+
+  const undoItems = useMemo<HistoryMenuItem[]>(() => {
+    void historyRevision;
+    const states = [...pastStatesRef.current].reverse();
+    return states.map((entry, index) => {
+      const info = buildStateHistoryLabel(entry);
+      return {
+        id: `undo-${index}-${hashViewerStateForHistory(entry.state).slice(0, 12)}`,
+        label: info.label,
+        meta: info.meta,
+      };
+    });
+  }, [historyRevision]);
+
+  const redoItems = useMemo<HistoryMenuItem[]>(() => {
+    void historyRevision;
+    const states = futureStatesRef.current;
+    return states.map((entry, index) => {
+      const info = buildStateHistoryLabel(entry);
+      return {
+        id: `redo-${index}-${hashViewerStateForHistory(entry.state).slice(0, 12)}`,
+        label: info.label,
+        meta: info.meta,
+      };
+    });
+  }, [historyRevision]);
+
+  function bumpHistoryRevision() {
+    setHistoryRevision((value) => value + 1);
+  }
+
+  function persistHistorySnapshot(presentState: ViewerStateV1, committedAt: number = Date.now()) {
+    if (!isSerializableLayerTree(presentState.scene.layerTree)) {
+      clearPersistedViewerHistory();
+      return;
+    }
+
+    const serializablePast = pastStatesRef.current.filter((entry) =>
+      isSerializableLayerTree(entry.state.scene.layerTree)
+    );
+    const serializableFuture = futureStatesRef.current.filter((entry) =>
+      isSerializableLayerTree(entry.state.scene.layerTree)
+    );
+
+    savePersistedViewerHistory({
+      version: 2,
+      past: serializablePast,
+      present: createViewerHistoryEntry(presentState, committedAt),
+      future: serializableFuture,
+    });
+  }
+
+  function flushPendingAutoCommit() {
+    if (autoCommitTimeoutRef.current === null) return;
+
+    window.clearTimeout(autoCommitTimeoutRef.current);
+    autoCommitTimeoutRef.current = null;
+
+    if (currentViewerHash === lastCommittedHashRef.current) {
+      return;
+    }
+
+    const committed = lastCommittedStateRef.current;
+    if (committed) {
+      pastStatesRef.current = clampHistoryStack([
+        ...pastStatesRef.current,
+        createViewerHistoryEntry(committed),
+      ]);
+    }
+
+    futureStatesRef.current = [];
+    lastCommittedStateRef.current = currentViewerState;
+    lastCommittedHashRef.current = currentViewerHash;
+    persistHistorySnapshot(currentViewerState);
+    bumpHistoryRevision();
+  }
+
+  function applyViewerState(nextState: ViewerStateV1, options?: { suppressAutoCommit?: boolean }) {
+    if (options?.suppressAutoCommit) {
+      suppressNextAutoCommitRef.current = true;
+    }
+
+    setActiveTool(nextState.scene.activeTool);
+    setSelectedNodeId(nextState.scene.selectedNodeId);
+    setLayerTree(nextState.scene.layerTree);
+    setSliceVolumeLayerId(nextState.ui.sliceVolumeLayerId ?? "");
+    setSliceName(nextState.ui.sliceName ?? "");
+    setSliceParamsDraft(nextState.ui.sliceParamsDraft);
+    setIsLayerPanelCollapsed(nextState.layout.layerPanelCollapsed);
+    setCameraState(nextState.camera);
+    setStateError(null);
+    return nextState;
+  }
+
+  function applyHistoricalViewerState(nextState: ViewerStateV1) {
+    const preservedCameraState = currentViewerState.camera;
+    return applyViewerState(
+      {
+        ...nextState,
+        camera: preservedCameraState,
+      },
+      { suppressAutoCommit: true }
+    );
+  }
+
+  function commitCurrentStateNow(nextState: ViewerStateV1) {
+    const nextHash = hashViewerStateForHistory(nextState);
+    const committed = lastCommittedStateRef.current;
+
+    if (committed && nextHash === lastCommittedHashRef.current) {
+      return applyViewerState(nextState, { suppressAutoCommit: true });
+    }
+
+    if (committed) {
+      pastStatesRef.current = clampHistoryStack([...pastStatesRef.current, createViewerHistoryEntry(committed)]);
+    }
+
+    futureStatesRef.current = [];
+    lastCommittedStateRef.current = nextState;
+    lastCommittedHashRef.current = nextHash;
+    bumpHistoryRevision();
+    persistHistorySnapshot(nextState);
+    return applyViewerState(nextState, { suppressAutoCommit: true });
+  }
+
+  function applyViewerStatePatch(patch: ViewerStatePatchV1) {
+    const nextState = mergeViewerState(currentViewerState, patch);
+    return commitCurrentStateNow(nextState);
+  }
+
+  function buildHistoryDebugLabel() {
+    return `${pastStatesRef.current.length}:${futureStatesRef.current.length}:${VIEWER_HISTORY_STORAGE_KEY}`;
+  }
 
   useEffect(() => {
     if (selectedNode && isRemoteOmeLayer(selectedNode)) {
@@ -165,6 +438,75 @@ export default function App({ startupSlices = [] }: AppProps) {
       setSliceVolumeLayerId(omeLayers[0].id);
     }
   }, [selectedNode, sliceVolumeLayerId, omeLayers]);
+
+  useEffect(() => {
+    if (hasHydratedHistoryRef.current) return;
+    hasHydratedHistoryRef.current = true;
+
+    const stateFromLocation = readInitialStateFromLocation();
+    if (stateFromLocation) {
+      lastCommittedStateRef.current = stateFromLocation;
+      lastCommittedHashRef.current = hashViewerStateForHistory(stateFromLocation);
+      applyViewerState(stateFromLocation, { suppressAutoCommit: true });
+      pastStatesRef.current = [];
+      futureStatesRef.current = [];
+      bumpHistoryRevision();
+      persistHistorySnapshot(stateFromLocation);
+      return;
+    }
+
+    const persistedHistory = loadPersistedViewerHistory();
+    if (persistedHistory) {
+      pastStatesRef.current = persistedHistory.past;
+      futureStatesRef.current = persistedHistory.future;
+      lastCommittedStateRef.current = persistedHistory.present.state;
+      lastCommittedHashRef.current = hashViewerStateForHistory(persistedHistory.present.state);
+      applyViewerState(persistedHistory.present.state, { suppressAutoCommit: true });
+      bumpHistoryRevision();
+      return;
+    }
+
+    lastCommittedStateRef.current = currentViewerState;
+    lastCommittedHashRef.current = currentViewerHash;
+    persistHistorySnapshot(currentViewerState);
+    bumpHistoryRevision();
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedHistoryRef.current) return;
+
+    if (suppressNextAutoCommitRef.current) {
+      suppressNextAutoCommitRef.current = false;
+      lastCommittedStateRef.current = currentViewerState;
+      lastCommittedHashRef.current = currentViewerHash;
+      return;
+    }
+
+    if (currentViewerHash === lastCommittedHashRef.current) return;
+
+    if (autoCommitTimeoutRef.current !== null) {
+      window.clearTimeout(autoCommitTimeoutRef.current);
+    }
+
+    autoCommitTimeoutRef.current = window.setTimeout(() => {
+      const committed = lastCommittedStateRef.current;
+      if (committed) {
+        pastStatesRef.current = clampHistoryStack([...pastStatesRef.current, createViewerHistoryEntry(committed)]);
+      }
+      futureStatesRef.current = [];
+      lastCommittedStateRef.current = currentViewerState;
+      lastCommittedHashRef.current = currentViewerHash;
+      persistHistorySnapshot(currentViewerState);
+      bumpHistoryRevision();
+      autoCommitTimeoutRef.current = null;
+    }, 450);
+
+    return () => {
+      if (autoCommitTimeoutRef.current !== null) {
+        window.clearTimeout(autoCommitTimeoutRef.current);
+      }
+    };
+  }, [currentViewerHash, currentViewerState]);
 
   useEffect(() => {
     if (initializedStartupSlicesRef.current) return;
@@ -227,23 +569,113 @@ export default function App({ startupSlices = [] }: AppProps) {
     initializedStartupSlicesRef.current = true;
   }, [startupSlices]);
 
-  function buildCurrentViewerState() {
-    return createViewerState({
-      activeTool,
-      selectedNodeId,
-      layerTree,
-      sliceVolumeLayerId,
-      sliceName,
-      sliceParamsDraft,
-      layerPanelCollapsed: isLayerPanelCollapsed,
-      camera: cameraState,
-    });
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const isMeta = event.metaKey || event.ctrlKey;
+      if (!isMeta) return;
+
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      if ((key === "z" && event.shiftKey) || key === "y") {
+        event.preventDefault();
+        handleRedo();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [historyRevision]);
+
+  function handleUndo() {
+    flushPendingAutoCommit();
+    if (!pastStatesRef.current.length) return null;
+
+    const previousEntry = pastStatesRef.current[pastStatesRef.current.length - 1];
+    const current = currentViewerState;
+
+    pastStatesRef.current = pastStatesRef.current.slice(0, -1);
+    futureStatesRef.current = clampHistoryStack([
+      createViewerHistoryEntry(current),
+      ...futureStatesRef.current,
+    ]);
+    lastCommittedStateRef.current = previousEntry.state;
+    lastCommittedHashRef.current = hashViewerStateForHistory(previousEntry.state);
+    persistHistorySnapshot(previousEntry.state, previousEntry.committedAt);
+    bumpHistoryRevision();
+    return applyHistoricalViewerState(previousEntry.state);
   }
 
-  function handleOpenExportState() {
+  function handleRedo() {
+    flushPendingAutoCommit();
+    if (!futureStatesRef.current.length) return null;
+
+    const nextEntry = futureStatesRef.current[0];
+    const current = currentViewerState;
+
+    futureStatesRef.current = futureStatesRef.current.slice(1);
+    pastStatesRef.current = clampHistoryStack([
+      ...pastStatesRef.current,
+      createViewerHistoryEntry(current),
+    ]);
+    lastCommittedStateRef.current = nextEntry.state;
+    lastCommittedHashRef.current = hashViewerStateForHistory(nextEntry.state);
+    persistHistorySnapshot(nextEntry.state, nextEntry.committedAt);
+    bumpHistoryRevision();
+    return applyHistoricalViewerState(nextEntry.state);
+  }
+
+  function handleJumpUndo(steps: number) {
+    flushPendingAutoCommit();
+    if (steps <= 0 || steps > pastStatesRef.current.length) return null;
+
+    const current = currentViewerState;
+    const targetIndex = pastStatesRef.current.length - steps;
+    const previousEntry = pastStatesRef.current[targetIndex];
+    const movedFromPast = pastStatesRef.current.slice(targetIndex + 1);
+
+    pastStatesRef.current = pastStatesRef.current.slice(0, targetIndex);
+    futureStatesRef.current = clampHistoryStack([
+      ...movedFromPast,
+      createViewerHistoryEntry(current),
+      ...futureStatesRef.current,
+    ]);
+    lastCommittedStateRef.current = previousEntry.state;
+    lastCommittedHashRef.current = hashViewerStateForHistory(previousEntry.state);
+    persistHistorySnapshot(previousEntry.state, previousEntry.committedAt);
+    bumpHistoryRevision();
+    return applyHistoricalViewerState(previousEntry.state);
+  }
+
+  function handleJumpRedo(steps: number) {
+    flushPendingAutoCommit();
+    if (steps <= 0 || steps > futureStatesRef.current.length) return null;
+
+    const current = currentViewerState;
+    const nextEntry = futureStatesRef.current[steps - 1];
+    const movedFromFuture = futureStatesRef.current.slice(0, steps - 1);
+
+    futureStatesRef.current = futureStatesRef.current.slice(steps);
+    pastStatesRef.current = clampHistoryStack([
+      ...pastStatesRef.current,
+      createViewerHistoryEntry(current),
+      ...movedFromFuture,
+    ]);
+    lastCommittedStateRef.current = nextEntry.state;
+    lastCommittedHashRef.current = hashViewerStateForHistory(nextEntry.state);
+    persistHistorySnapshot(nextEntry.state, nextEntry.committedAt);
+    bumpHistoryRevision();
+    return applyHistoricalViewerState(nextEntry.state);
+  }
+
+  function openExportStateModal() {
     if (!isSerializableLayerTree(layerTree)) {
       setStateError(
-        "This viewer contains uploaded file layers. Copy-paste export currently supports only serializable layers like remote volumes, slices, and annotations."
+        "This viewer contains uploaded file layers. Undo/redo still works in memory, but browser persistence and copy-paste export support only serializable layers like remote volumes, slices, and annotations."
       );
       setStateModalMode("export");
       setStateTextDraft("");
@@ -251,33 +683,51 @@ export default function App({ startupSlices = [] }: AppProps) {
       return;
     }
 
-    const state = buildCurrentViewerState();
     setStateError(null);
     setStateModalMode("export");
-    setStateTextDraft(JSON.stringify(state, null, 2));
+    setStateTextDraft(JSON.stringify(currentViewerState, null, 2));
     setIsStateModalOpen(true);
   }
 
-  function handleOpenImportState() {
+  function openImportStateModal() {
     setStateError(null);
     setStateModalMode("import");
     setStateTextDraft("");
     setIsStateModalOpen(true);
   }
 
+  function closeDialogs() {
+    setIsImportPanelOpen(false);
+    setIsStateModalOpen(false);
+    setIsClearHistoryConfirmOpen(false);
+    setActiveTool((prev) => (prev === "slice" ? "mouse" : prev));
+  }
+
+  function openClearHistoryConfirm() {
+    if (!canClearHistory) return;
+    setIsClearHistoryConfirmOpen(true);
+  }
+
+  function handleConfirmClearHistory() {
+    flushPendingAutoCommit();
+    const baselineEntry = createViewerHistoryEntry(currentViewerState);
+
+    pastStatesRef.current = [];
+    futureStatesRef.current = [];
+    lastCommittedStateRef.current = baselineEntry.state;
+    lastCommittedHashRef.current = hashViewerStateForHistory(baselineEntry.state);
+
+    persistHistorySnapshot(baselineEntry.state, baselineEntry.committedAt);
+    bumpHistoryRevision();
+    setIsClearHistoryConfirmOpen(false);
+
+    return baselineEntry.state;
+  }
+
   function handleApplyImportedState() {
     try {
       const parsed = parseViewerState(stateTextDraft);
-
-      setActiveTool(parsed.scene.activeTool);
-      setSelectedNodeId(parsed.scene.selectedNodeId);
-      setLayerTree(parsed.scene.layerTree);
-      setSliceVolumeLayerId(parsed.ui.sliceVolumeLayerId ?? "");
-      setSliceName(parsed.ui.sliceName ?? "");
-      setSliceParamsDraft(parsed.ui.sliceParamsDraft);
-      setIsLayerPanelCollapsed(parsed.layout.layerPanelCollapsed);
-      setCameraState(parsed.camera);
-      setStateError(null);
+      commitCurrentStateNow(parsed);
       setIsStateModalOpen(false);
     } catch (error) {
       setStateError(
@@ -298,7 +748,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
 
     if (tool === "export") {
-      handleOpenExportState();
+      openExportStateModal();
       return;
     }
 
@@ -337,42 +787,11 @@ export default function App({ startupSlices = [] }: AppProps) {
     });
   }
 
-  function handleAddFromUrl(url: string, name?: string) {
-    const trimmed = url.trim();
-    if (!trimmed) return;
-
-    const fallbackName = (() => {
-      try {
-        const parsed = new URL(trimmed);
-        const last = parsed.pathname.split("/").filter(Boolean).pop();
-        return last || parsed.hostname || "Remote Data";
-      } catch {
-        return "Remote Data";
-      }
-    })();
-
-    addNodeAtBestLocation({
-      id: createId(),
-      kind: "layer",
-      name: name?.trim() || fallbackName,
-      type: "remote",
-      visible: true,
-      source: trimmed,
-      sourceKind: "external",
-      description: "Remote data source",
-      remoteFormat: detectRemoteFormat(trimmed),
-      renderMode: detectRemoteFormat(trimmed) === "ome-zarr" ? "volume" : "auto",
-    });
-
-    setIsImportPanelOpen(false);
-  }
-
   function handleAddFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
 
     setLayerTree((prev) => {
       let next = prev;
-      let lastAddedId: string | null = null;
 
       for (const file of Array.from(files)) {
         const node: LayerTreeNode = {
@@ -394,8 +813,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         } else {
           next = [...next, node];
         }
-
-        lastAddedId = node.id;
       }
 
       return next;
@@ -471,7 +888,6 @@ export default function App({ startupSlices = [] }: AppProps) {
 
     setLayerTree((prev) => {
       let next = prev;
-      let lastAddedId: string | null = null;
 
       for (const item of sources) {
         const trimmedUrl = item.url.trim();
@@ -497,8 +913,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         } else {
           next = [...next, node];
         }
-
-        lastAddedId = node.id;
       }
 
       return next;
@@ -583,6 +997,228 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSliceName("");
   }
 
+  useEffect(() => {
+    const api = {
+      ping: () => true,
+      getState: () => currentViewerState,
+      getStateJson: () => JSON.stringify(currentViewerState, null, 2),
+      setState: (state: ViewerStateV1) => commitCurrentStateNow(state),
+      setStateJson: (stateJson: string) => commitCurrentStateNow(parseViewerState(stateJson)),
+      patchState: (patch: ViewerStatePatchV1) => applyViewerStatePatch(patch),
+      setLayoutCollapsed: (collapsed: boolean) =>
+        applyViewerStatePatch({
+          layout: { layerPanelCollapsed: collapsed },
+        }),
+      selectNode: (nodeId: string | null) =>
+        applyViewerStatePatch({
+          scene: { selectedNodeId: nodeId },
+        }),
+      openExport: () => openExportStateModal(),
+      openImport: () => openImportStateModal(),
+      closeDialogs: () => closeDialogs(),
+      undo: () => handleUndo(),
+      redo: () => handleRedo(),
+      clearHistory: () => {
+        openClearHistoryConfirm();
+        return currentViewerState;
+      },
+    };
+
+    window.AllenViewerApi = api;
+
+    return () => {
+      if (window.AllenViewerApi === api) {
+        delete window.AllenViewerApi;
+      }
+    };
+  }, [currentViewerState, historyRevision]);
+
+  useEffect(() => {
+    function reply(event: MessageEvent, response: ViewerEmbedResponse) {
+      if (!event.source || typeof (event.source as Window).postMessage !== "function") return;
+      (event.source as Window).postMessage(response, event.origin || "*");
+    }
+
+    function handleMessage(event: MessageEvent) {
+      const message = event.data as ViewerEmbedMessage | undefined;
+      if (!message || message.namespace !== ALLEN_VIEWER_EMBED_NAMESPACE) return;
+      if (message.type !== "request") return;
+
+      const request = message as ViewerEmbedRequest;
+
+      try {
+        switch (request.command) {
+          case "ping":
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { pong: true, history: buildHistoryDebugLabel() },
+            });
+            return;
+          case "getState":
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { state: currentViewerState },
+            });
+            return;
+          case "getStateJson":
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { stateJson: JSON.stringify(currentViewerState, null, 2) },
+            });
+            return;
+          case "setState": {
+            const incomingState = request.payload?.state as ViewerStateV1 | undefined;
+            if (!incomingState) throw new Error("Missing 'state' payload.");
+            const nextState = commitCurrentStateNow(incomingState);
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { state: nextState },
+            });
+            return;
+          }
+          case "setStateJson": {
+            const stateJson = request.payload?.stateJson;
+            if (typeof stateJson !== "string") throw new Error("Missing 'stateJson' payload.");
+            const nextState = commitCurrentStateNow(parseViewerState(stateJson));
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { state: nextState },
+            });
+            return;
+          }
+          case "patchState": {
+            const patch = request.payload?.patch as ViewerStatePatchV1 | undefined;
+            if (!patch) throw new Error("Missing 'patch' payload.");
+            const nextState = applyViewerStatePatch(patch);
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { state: nextState },
+            });
+            return;
+          }
+          case "setLayoutCollapsed": {
+            const collapsed = Boolean(request.payload?.collapsed);
+            const nextState = applyViewerStatePatch({
+              layout: { layerPanelCollapsed: collapsed },
+            });
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { state: nextState },
+            });
+            return;
+          }
+          case "selectNode": {
+            const nodeId = (request.payload?.nodeId as string | null | undefined) ?? null;
+            const nextState = applyViewerStatePatch({ scene: { selectedNodeId: nodeId } });
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { state: nextState },
+            });
+            return;
+          }
+          case "openExport":
+            openExportStateModal();
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+            });
+            return;
+          case "openImport":
+            openImportStateModal();
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+            });
+            return;
+          case "closeDialogs":
+            closeDialogs();
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+            });
+            return;
+          default:
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: false,
+              error: "Unsupported viewer command.",
+            });
+            return;
+        }
+      } catch (error) {
+        reply(event, {
+          namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+          type: "response",
+          command: request.command,
+          requestId: request.requestId,
+          ok: false,
+          error: error instanceof Error ? error.message : "Viewer command failed.",
+        });
+      }
+    }
+
+    window.addEventListener("message", handleMessage);
+
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(
+        {
+          namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+          type: "event",
+          event: "ready",
+        },
+        "*"
+      );
+    }
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+    };
+  }, [currentViewerState, historyRevision]);
+
   return (
     <div
       style={{
@@ -629,9 +1265,91 @@ export default function App({ startupSlices = [] }: AppProps) {
         onAddFiles={handleAddFiles}
       />
 
+      {isClearHistoryConfirmOpen ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 45,
+            background: "rgba(4,6,10,0.48)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            boxSizing: "border-box",
+          }}
+          onClick={() => setIsClearHistoryConfirmOpen(false)}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: "min(420px, 100%)",
+              borderRadius: 18,
+              background: "rgba(12,14,18,0.96)",
+              border: "1px solid rgba(255,255,255,0.10)",
+              boxShadow: "0 18px 48px rgba(0,0,0,0.42)",
+              padding: 18,
+              color: "white",
+            }}
+          >
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>
+              Delete history?
+            </div>
+            <div
+              style={{
+                fontSize: 13,
+                lineHeight: 1.55,
+                opacity: 0.78,
+              }}
+            >
+              Do you really want to delete the entire history? This operation cannot be undone.
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+                marginTop: 18,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setIsClearHistoryConfirmOpen(false)}
+                style={secondaryButtonStyle}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmClearHistory}
+                style={{
+                  ...primaryButtonStyle,
+                  border: "1px solid rgba(255,140,140,0.34)",
+                  background: "rgba(200,70,70,0.18)",
+                }}
+              >
+                Yes, delete history
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={() => handleUndo()}
+        onRedo={() => handleRedo()}
+        canClearHistory={canClearHistory}
+        onRequestClearHistory={openClearHistoryConfirm}
+        undoItems={undoItems}
+        redoItems={redoItems}
+        onJumpUndo={handleJumpUndo}
+        onJumpRedo={handleJumpRedo}
         slicePopoverOpen={activeTool === "slice"}
         onRequestCloseSlicePopover={() => setActiveTool("mouse")}
         slicePopoverContent={
@@ -760,10 +1478,10 @@ export default function App({ startupSlices = [] }: AppProps) {
               </div>
 
               <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" onClick={handleOpenExportState} style={secondaryButtonStyle}>
+                <button type="button" onClick={openExportStateModal} style={secondaryButtonStyle}>
                   Export
                 </button>
-                <button type="button" onClick={handleOpenImportState} style={secondaryButtonStyle}>
+                <button type="button" onClick={openImportStateModal} style={secondaryButtonStyle}>
                   Import
                 </button>
               </div>
@@ -773,9 +1491,7 @@ export default function App({ startupSlices = [] }: AppProps) {
               value={stateTextDraft}
               onChange={(e) => setStateTextDraft(e.target.value)}
               readOnly={stateModalMode === "export"}
-              placeholder={
-                stateModalMode === "import" ? "Paste a viewer state JSON here..." : ""
-              }
+              placeholder={stateModalMode === "import" ? "Paste a viewer state JSON here..." : ""}
               spellCheck={false}
               style={{
                 width: "100%",
@@ -817,7 +1533,7 @@ export default function App({ startupSlices = [] }: AppProps) {
               }}
             >
               <div style={{ fontSize: 12, opacity: 0.62 }}>
-                Versioned JSON state for copy-paste sharing.
+                Undo/redo snapshots are saved after actions settle and restored from browser storage.
               </div>
 
               <div style={{ display: "flex", gap: 8 }}>

@@ -4,4 +4,57 @@ body,
   width: 100%;
   height: 100%;
   margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  overflow: hidden;
+  background: #000;
+}
+
+body {
+  min-width: 0;
+  min-height: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+
+
+.layer-panel-scroll {
+  overflow-y: auto;
+  max-height: min(68vh, 720px);
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 190, 255, 0.45) rgba(255,255,255,0.06);
+}
+
+.layer-panel-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.layer-panel-scroll::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.05);
+  border-radius: 999px;
+}
+
+.layer-panel-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(140,190,255,0.52),
+    rgba(90,150,230,0.34)
+  );
+  border-radius: 999px;
+  border: 2px solid rgba(12,14,18,0.82);
+}
+
+.layer-panel-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(160,210,255,0.68),
+    rgba(110,170,245,0.48)
+  );
 }

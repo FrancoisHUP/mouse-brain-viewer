@@ -26,6 +26,14 @@ export type ViewerStateV1 = {
   };
 };
 
+export type ViewerStatePatchV1 = {
+  version?: 1;
+  layout?: Partial<ViewerStateV1["layout"]>;
+  camera?: Partial<ViewerStateV1["camera"]>;
+  scene?: Partial<ViewerStateV1["scene"]>;
+  ui?: Partial<ViewerStateV1["ui"]>;
+};
+
 export const DEFAULT_CAMERA_STATE: SerializableCameraState = {
   position: [0, 0, 5],
   yaw: -90,
@@ -78,6 +86,35 @@ export function createViewerState(params: {
       sliceVolumeLayerId: params.sliceVolumeLayerId,
       sliceName: params.sliceName,
       sliceParamsDraft: params.sliceParamsDraft,
+    },
+  };
+}
+
+export function mergeViewerState(
+  base: ViewerStateV1,
+  patch: ViewerStatePatchV1
+): ViewerStateV1 {
+  return {
+    version: 1,
+    layout: {
+      ...base.layout,
+      ...(patch.layout ?? {}),
+    },
+    camera: {
+      ...base.camera,
+      ...(patch.camera ?? {}),
+      position: (patch.camera?.position as [number, number, number] | undefined) ??
+        base.camera.position,
+    },
+    scene: {
+      ...base.scene,
+      ...(patch.scene ?? {}),
+      layerTree: patch.scene?.layerTree ?? base.scene.layerTree,
+    },
+    ui: {
+      ...base.ui,
+      ...(patch.ui ?? {}),
+      sliceParamsDraft: patch.ui?.sliceParamsDraft ?? base.ui.sliceParamsDraft,
     },
   };
 }

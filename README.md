@@ -71,3 +71,7 @@ export default defineConfig([
   },
 ])
 ```
+
+Available routes : 
+viewer : localhost:5173/
+external embed : localhost:5173/externalembedding
