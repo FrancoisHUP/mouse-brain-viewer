@@ -526,6 +526,8 @@ export default function LayerPanel({
   layerTree,
   selectedNodeId,
   groupOptions,
+  isCollapsed,
+  onSetCollapsed,
   onToggleVisible,
   onSelectNode,
   onToggleGroupExpanded,
@@ -541,6 +543,8 @@ export default function LayerPanel({
   layerTree: LayerTreeNode[];
   selectedNodeId: string | null;
   groupOptions: LayerGroupNode[];
+  isCollapsed: boolean;
+  onSetCollapsed: (collapsed: boolean) => void;
   onToggleVisible: (nodeId: string) => void;
   onSelectNode: (nodeId: string) => void;
   onToggleGroupExpanded: (groupId: string) => void;
@@ -560,7 +564,6 @@ export default function LayerPanel({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [isCollapsed, setIsCollapsed] = useState(false);
 
   const hoverExpandTimerRef = useRef<number | null>(null);
 
@@ -753,7 +756,7 @@ export default function LayerPanel({
             <button
               type="button"
               title="Open layers"
-              onClick={() => setIsCollapsed(false)}
+              onClick={() => onSetCollapsed(false)}
               style={{
                 width: 52,
                 height: 52,
@@ -843,7 +846,7 @@ export default function LayerPanel({
                   <button
                     type="button"
                     title="Close layers"
-                    onClick={() => setIsCollapsed(true)}
+                    onClick={() => onSetCollapsed(true)}
                     style={{
                       width: 32,
                       height: 32,

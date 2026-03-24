@@ -127,26 +127,23 @@ function ToolButton({
   return (
     <button
       type="button"
+      onClick={onClick}
       title={label}
       aria-label={label}
-      onClick={onClick}
       style={{
-        width: 48,
-        height: 48,
-        borderRadius: 12,
+        width: 44,
+        height: 44,
+        borderRadius: 14,
         border: active
-          ? "1px solid rgba(120,200,255,0.85)"
-          : "1px solid rgba(255,255,255,0.10)",
-        background: active
-          ? "rgba(80,160,255,0.20)"
-          : "rgba(255,255,255,0.04)",
-        color: active ? "#9bd3ff" : "rgba(255,255,255,0.92)",
+          ? "1px solid rgba(120,190,255,0.75)"
+          : "1px solid rgba(255,255,255,0.08)",
+        background: active ? "rgba(120,190,255,0.18)" : "rgba(255,255,255,0.03)",
+        color: active ? "#d7eeff" : "rgba(255,255,255,0.82)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         cursor: "pointer",
-        transition: "all 0.18s ease",
-        backdropFilter: "blur(6px)",
+        transition: "all 160ms ease",
       }}
     >
       <Icon id={id} />
@@ -160,28 +157,36 @@ export default function BottomToolbar({
   slicePopoverOpen = false,
   slicePopoverContent = null,
   onRequestCloseSlicePopover,
+  statePopoverOpen = false,
+  statePopoverContent = null,
+  onRequestCloseStatePopover,
 }: {
   activeTool: ToolId;
   onToolChange: (tool: ToolId) => void;
   slicePopoverOpen?: boolean;
   slicePopoverContent?: ReactNode;
   onRequestCloseSlicePopover?: () => void;
+  statePopoverOpen?: boolean;
+  statePopoverContent?: ReactNode;
+  onRequestCloseStatePopover?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!slicePopoverOpen) return;
+    if (!slicePopoverOpen && !statePopoverOpen) return;
 
     function handlePointerDown(event: PointerEvent) {
       const target = event.target as Node | null;
       if (!target) return;
       if (rootRef.current?.contains(target)) return;
       onRequestCloseSlicePopover?.();
+      onRequestCloseStatePopover?.();
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         onRequestCloseSlicePopover?.();
+        onRequestCloseStatePopover?.();
       }
     }
 
@@ -192,7 +197,12 @@ export default function BottomToolbar({
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [slicePopoverOpen, onRequestCloseSlicePopover]);
+  }, [
+    slicePopoverOpen,
+    statePopoverOpen,
+    onRequestCloseSlicePopover,
+    onRequestCloseStatePopover,
+  ]);
 
   return (
     <div
@@ -209,14 +219,40 @@ export default function BottomToolbar({
         style={{
           position: "absolute",
           left: "50%",
+          bottom: slicePopoverOpen ? "calc(100% + 260px)" : "calc(100% + 12px)",
+          transform: statePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)",
+          opacity: statePopoverOpen ? 1 : 0,
+          pointerEvents: statePopoverOpen ? "auto" : "none",
+          transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
+          visibility: statePopoverOpen ? "visible" : "hidden",
+        }}
+      >
+        <div
+          style={{
+            minWidth: 520,
+            maxWidth: 760,
+            borderRadius: 18,
+            background: "rgba(12,14,18,0.94)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
+            backdropFilter: "blur(14px)",
+            padding: 12,
+            color: "white",
+          }}
+        >
+          {statePopoverContent}
+        </div>
+      </div>
+
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
           bottom: "calc(100% + 12px)",
-          transform: slicePopoverOpen
-            ? "translate(-50%, 0)"
-            : "translate(-50%, 10px)",
+          transform: slicePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)",
           opacity: slicePopoverOpen ? 1 : 0,
           pointerEvents: slicePopoverOpen ? "auto" : "none",
-          transition:
-            "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
+          transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
           visibility: slicePopoverOpen ? "visible" : "hidden",
         }}
       >
@@ -253,7 +289,8 @@ export default function BottomToolbar({
         {TOOLS.map((tool) => {
           const isActive =
             activeTool === tool.id ||
-            (tool.id === "slice" && slicePopoverOpen);
+            (tool.id === "slice" && slicePopoverOpen) ||
+            (tool.id === "export" && statePopoverOpen);
 
           return (
             <ToolButton

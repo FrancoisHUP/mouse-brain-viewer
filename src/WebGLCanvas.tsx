@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { mat4, vec3 } from "gl-matrix";
+import type { SerializableCameraState } from "./viewerState";
 import type { ToolId } from "./BottomToolbar";
 import type { LayerTreeNode, LayerItemNode } from "./layerTypes";
 import {
@@ -120,12 +121,28 @@ export default function WebGLCanvas({
   activeTool,
   layerTree,
   selectedNodeId,
+  cameraState,
+  onCameraStateChange,
 }: {
   activeTool: ToolId;
   layerTree: LayerTreeNode[];
   selectedNodeId: string | null;
+  cameraState: SerializableCameraState;
+  onCameraStateChange?: (next: SerializableCameraState) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const cameraRef = useRef<CameraState>({
+    position: vec3.fromValues(
+      cameraState.position[0],
+      cameraState.position[1],
+      cameraState.position[2]
+    ),
+    yaw: cameraState.yaw,
+    pitch: cameraState.pitch,
+    fovDeg: cameraState.fovDeg,
+  });
+  const lastPublishedCameraRef = useRef("");
 
   const activeToolRef = useRef<ToolId>(activeTool);
   const layerTreeRef = useRef<LayerTreeNode[]>(layerTree);
@@ -142,6 +159,34 @@ export default function WebGLCanvas({
   useEffect(() => {
     layerTreeRef.current = layerTree;
   }, [layerTree]);
+
+  useEffect(() => {
+    cameraRef.current = {
+      position: vec3.fromValues(
+        cameraState.position[0],
+        cameraState.position[1],
+        cameraState.position[2]
+      ),
+      yaw: cameraState.yaw,
+      pitch: cameraState.pitch,
+      fovDeg: cameraState.fovDeg,
+    };
+  }, [cameraState]);
+
+  function publishCameraIfNeeded(camera: CameraState) {
+    const next: SerializableCameraState = {
+      position: [camera.position[0], camera.position[1], camera.position[2]],
+      yaw: camera.yaw,
+      pitch: camera.pitch,
+      fovDeg: camera.fovDeg,
+    };
+
+    const key = JSON.stringify(next);
+    if (key === lastPublishedCameraRef.current) return;
+
+    lastPublishedCameraRef.current = key;
+    onCameraStateChange?.(next);
+  }
 
   const selectedNode = useMemo(
     () => (selectedNodeId ? findNodeById(layerTree, selectedNodeId) : null),
@@ -590,14 +635,9 @@ export default function WebGLCanvas({
       return model;
     }
 
-    const camera: CameraState = {
-      position: vec3.fromValues(0, 0, 5),
-      yaw: -90,
-      pitch: 0,
-      fovDeg: 60,
-    };
+    const camera = cameraRef.current;
 
-    let targetFovDeg = 60;
+    let targetFovDeg = camera.fovDeg;
     const keys = new Set<string>();
     let dragging = false;
     let lastMouseX = 0;
@@ -635,6 +675,7 @@ export default function WebGLCanvas({
     function updateCamera(dt: number) {
       const speed = 3.0;
       const velocity = speed * dt;
+      let moved = false;
 
       const forward = getForward();
       const worldUp = vec3.fromValues(0, 1, 0);
@@ -642,12 +683,34 @@ export default function WebGLCanvas({
       vec3.cross(right, forward, worldUp);
       vec3.normalize(right, right);
 
-      if (keys.has("w")) vec3.scaleAndAdd(camera.position, camera.position, forward, velocity);
-      if (keys.has("s")) vec3.scaleAndAdd(camera.position, camera.position, forward, -velocity);
-      if (keys.has("a")) vec3.scaleAndAdd(camera.position, camera.position, right, -velocity);
-      if (keys.has("d")) vec3.scaleAndAdd(camera.position, camera.position, right, velocity);
-      if (keys.has("q")) camera.position[1] -= velocity;
-      if (keys.has("e")) camera.position[1] += velocity;
+      if (keys.has("w")) {
+        vec3.scaleAndAdd(camera.position, camera.position, forward, velocity);
+        moved = true;
+      }
+      if (keys.has("s")) {
+        vec3.scaleAndAdd(camera.position, camera.position, forward, -velocity);
+        moved = true;
+      }
+      if (keys.has("a")) {
+        vec3.scaleAndAdd(camera.position, camera.position, right, -velocity);
+        moved = true;
+      }
+      if (keys.has("d")) {
+        vec3.scaleAndAdd(camera.position, camera.position, right, velocity);
+        moved = true;
+      }
+      if (keys.has("q")) {
+        camera.position[1] -= velocity;
+        moved = true;
+      }
+      if (keys.has("e")) {
+        camera.position[1] += velocity;
+        moved = true;
+      }
+
+      if (moved) {
+        publishCameraIfNeeded(camera);
+      }
     }
 
     function drawColorPlane(
@@ -1008,6 +1071,7 @@ export default function WebGLCanvas({
       camera.yaw += dx * sensitivity;
       camera.pitch -= dy * sensitivity;
       camera.pitch = clamp(camera.pitch, -89, 89);
+      publishCameraIfNeeded(camera);
     }
 
     function onWheel(e: WheelEvent) {

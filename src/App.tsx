@@ -1,14 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type ToolId } from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import SliceToolPopover from "./SliceToolPopover";
+import {
+  DEFAULT_CAMERA_STATE,
+  createViewerState,
+  isSerializableLayerTree,
+  parseViewerState,
+  type SerializableCameraState,
+} from "./viewerState";
 import type {
   LayerTreeNode,
   RemoteDataFormat,
   RemoteRenderMode,
   SliceLayerParams,
+  SlicePlane,
 } from "./layerTypes";
 import {
   collectAllLayerItems,
@@ -83,6 +92,27 @@ function detectRemoteFormat(url: string): RemoteDataFormat {
   return url.includes(".ome.zarr") ? "ome-zarr" : "generic";
 }
 
+const secondaryButtonStyle: CSSProperties = {
+  height: 34,
+  padding: "0 12px",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background: "rgba(255,255,255,0.05)",
+  color: "white",
+  cursor: "pointer",
+};
+
+const primaryButtonStyle: CSSProperties = {
+  height: 34,
+  padding: "0 12px",
+  borderRadius: 10,
+  border: "1px solid rgba(160,220,255,0.35)",
+  background: "rgba(120,190,255,0.18)",
+  color: "white",
+  cursor: "pointer",
+  fontWeight: 600,
+};
+
 export default function App({ startupSlices = [] }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolId>("mouse");
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
@@ -90,6 +120,14 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     getFirstLayerId(INITIAL_TREE)
   );
+  const [isLayerPanelCollapsed, setIsLayerPanelCollapsed] = useState(false);
+  const [cameraState, setCameraState] = useState<SerializableCameraState>(
+    DEFAULT_CAMERA_STATE
+  );
+  const [isStateModalOpen, setIsStateModalOpen] = useState(false);
+  const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
+  const [stateTextDraft, setStateTextDraft] = useState("");
+  const [stateError, setStateError] = useState<string | null>(null);
 
   const initializedStartupSlicesRef = useRef(false);
 
@@ -189,9 +227,78 @@ export default function App({ startupSlices = [] }: AppProps) {
     initializedStartupSlicesRef.current = true;
   }, [startupSlices]);
 
+  function buildCurrentViewerState() {
+    return createViewerState({
+      activeTool,
+      selectedNodeId,
+      layerTree,
+      sliceVolumeLayerId,
+      sliceName,
+      sliceParamsDraft,
+      layerPanelCollapsed: isLayerPanelCollapsed,
+      camera: cameraState,
+    });
+  }
+
+  function handleOpenExportState() {
+    if (!isSerializableLayerTree(layerTree)) {
+      setStateError(
+        "This viewer contains uploaded file layers. Copy-paste export currently supports only serializable layers like remote volumes, slices, and annotations."
+      );
+      setStateModalMode("export");
+      setStateTextDraft("");
+      setIsStateModalOpen(true);
+      return;
+    }
+
+    const state = buildCurrentViewerState();
+    setStateError(null);
+    setStateModalMode("export");
+    setStateTextDraft(JSON.stringify(state, null, 2));
+    setIsStateModalOpen(true);
+  }
+
+  function handleOpenImportState() {
+    setStateError(null);
+    setStateModalMode("import");
+    setStateTextDraft("");
+    setIsStateModalOpen(true);
+  }
+
+  function handleApplyImportedState() {
+    try {
+      const parsed = parseViewerState(stateTextDraft);
+
+      setActiveTool(parsed.scene.activeTool);
+      setSelectedNodeId(parsed.scene.selectedNodeId);
+      setLayerTree(parsed.scene.layerTree);
+      setSliceVolumeLayerId(parsed.ui.sliceVolumeLayerId ?? "");
+      setSliceName(parsed.ui.sliceName ?? "");
+      setSliceParamsDraft(parsed.ui.sliceParamsDraft);
+      setIsLayerPanelCollapsed(parsed.layout.layerPanelCollapsed);
+      setCameraState(parsed.camera);
+      setStateError(null);
+      setIsStateModalOpen(false);
+    } catch (error) {
+      setStateError(
+        error instanceof Error ? error.message : "Failed to import viewer state."
+      );
+    }
+  }
+
+  async function handleCopyExportState() {
+    if (!stateTextDraft) return;
+    await navigator.clipboard.writeText(stateTextDraft);
+  }
+
   function handleToolChange(tool: ToolId) {
     if (tool === "data") {
       setIsImportPanelOpen(true);
+      return;
+    }
+
+    if (tool === "export") {
+      handleOpenExportState();
       return;
     }
 
@@ -491,12 +598,16 @@ export default function App({ startupSlices = [] }: AppProps) {
         activeTool={activeTool}
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
+        cameraState={cameraState}
+        onCameraStateChange={setCameraState}
       />
 
       <LayerPanel
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
         groupOptions={groupOptions}
+        isCollapsed={isLayerPanelCollapsed}
+        onSetCollapsed={setIsLayerPanelCollapsed}
         onToggleVisible={handleToggleVisible}
         onSelectNode={handleSelectNode}
         onToggleGroupExpanded={handleToggleGroupExpanded}
@@ -557,10 +668,7 @@ export default function App({ startupSlices = [] }: AppProps) {
               </div>
 
               <div style={{ marginBottom: 12 }}>
-                <SliceToolPopover
-                  value={sliceParamsDraft}
-                  onChange={setSliceParamsDraft}
-                />
+                <SliceToolPopover value={sliceParamsDraft} onChange={setSliceParamsDraft} />
               </div>
 
               <div
@@ -629,6 +737,104 @@ export default function App({ startupSlices = [] }: AppProps) {
               Import an OME-Zarr volume first to create slice layers.
             </div>
           )
+        }
+        statePopoverOpen={isStateModalOpen}
+        onRequestCloseStatePopover={() => setIsStateModalOpen(false)}
+        statePopoverContent={
+          <div style={{ fontFamily: "sans-serif" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>
+                  {stateModalMode === "export" ? "Export Viewer State" : "Import Viewer State"}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+                  Copy this state to reproduce the current viewer, or paste one to restore it.
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={handleOpenExportState} style={secondaryButtonStyle}>
+                  Export
+                </button>
+                <button type="button" onClick={handleOpenImportState} style={secondaryButtonStyle}>
+                  Import
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              value={stateTextDraft}
+              onChange={(e) => setStateTextDraft(e.target.value)}
+              readOnly={stateModalMode === "export"}
+              placeholder={
+                stateModalMode === "import" ? "Paste a viewer state JSON here..." : ""
+              }
+              spellCheck={false}
+              style={{
+                width: "100%",
+                minHeight: 260,
+                resize: "vertical",
+                borderRadius: 12,
+                border: "1px solid rgba(255,255,255,0.12)",
+                background: "rgba(255,255,255,0.05)",
+                color: "white",
+                padding: 12,
+                boxSizing: "border-box",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                fontSize: 12,
+                lineHeight: 1.45,
+                outline: "none",
+              }}
+            />
+
+            {stateError && (
+              <div
+                style={{
+                  marginTop: 10,
+                  fontSize: 12,
+                  color: "#ffb4b4",
+                  lineHeight: 1.4,
+                }}
+              >
+                {stateError}
+              </div>
+            )}
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginTop: 12,
+                gap: 10,
+              }}
+            >
+              <div style={{ fontSize: 12, opacity: 0.62 }}>
+                Versioned JSON state for copy-paste sharing.
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                {stateModalMode === "export" && (
+                  <button type="button" onClick={handleCopyExportState} style={primaryButtonStyle}>
+                    Copy
+                  </button>
+                )}
+
+                {stateModalMode === "import" && (
+                  <button type="button" onClick={handleApplyImportedState} style={primaryButtonStyle}>
+                    Load State
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         }
       />
     </div>

@@ -1,4 +1,6 @@
 aamb_multiscale_omezarr/
+*prompt*
+
 
 # Logs
 logs
@@ -24,5 +26,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-prompt
