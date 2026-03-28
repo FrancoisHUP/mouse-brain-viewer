@@ -1,3 +1,45 @@
+
+[todo] import a skeleton of the allen average mouse brain and the annotations (slices, volumetric and shell). 
+{
+    perfect I corrected small bugs, not I need to update my frontend code. RIght now the current state of my project dosent handle skeleton mesh. I can only load volumetric and allen average mouse brain (with the image on axis). So I need to add two things :
+
+    (1) I need to add the skeleton of the brain. For that I think I need to update the webgl component to render the skeleton on the scene and other files. 
+
+    (2) I need to add the annotations of the allen average mouse brain. FOR NOW DO NOT IMPLEMENT THIS ONE. Since this import have more requirements, we can ignore this one for now and come back at it later. 
+
+    Both of these has to be imported in the importpanel where I have the source the user whats to uplaod.  
+
+    Here are my current files. For now lets just focus on the skeleton render and import. 
+}
+{
+    ok so the "ALLEN_MESH_POSITION_OFFSET" is a bit wierd, I play with the numbers and I got to this point : 
+    const ALLEN_MESH_POSITION_OFFSET: [number, number, number] = [0, -7700, 0];
+    Where now the mesh is approximatly in hte right place. I feel like the -7700 is a bit wierd like a settings. 
+    But at this point the orientation is all fine, but theres one other thing that dont work : the scale is not right in the front and back axis of the brain. I need to scal only one axis. Can you fixed both of these. Also you are allow to refactor the code to streamline the setting and or refactor to have more clean code 
+}
+{
+    Now if you remeber, I was asking for the mesh and the annotations. Now let's move on to the annotation part. I have the ome zarr annotation file at this google cloud bucket path "https://storage.googleapis.com/sbh-assistant-data/allen_annotation.ome.zarr/". I need to add a new import to the import panel and I need to import the allen annotation. Now the transformation is always a pain in the ass. I would like to no have to do this. Opefully we already have the transformation I apply to the allen data in here "src/omeZarr.ts". So here is the requirements for the annotations :
+     
+    (2) I need to add the annotations of the allen average mouse brain. For this I want to be able to overlay the annotation on top of the allen averag emouse data. I know that if you place two 3d object at the same space, the webgl gub and we see artefact of both image, but it's not visually appealing, since we dont see clearly both. So here I need a way to view the annotations + the allen average mouse brain. I want the user to be able to chose the resolution of the import. Right now I have desable the 10um, beacause the file is to heavy for the browser. Let's do the same for the annotation. So even if the buckets have the 10um resolution, we dont show this resolution to the user, because the browser is not able to handle that amount of data. 
+}
+
+[todo] add all regions (annotation) at the same time in a three like structure into the layers panel 
+
+[todo] The layers should have some setting (opacity, any transformations) and infos (name slice, resolution, dimesnion). On selected layer, the ui should display some setting of this layer. This will also serve as a first step to the point, click and move object in 3D.  
+
+[todo] add a temporary visualize of the cut slice : this visual should be a normal poiting in the direction with the depth. The image should be display and with the new parameter, it should adjust the image slice. Instead of number, it should be a slider or something easyer to play with. (rework the icon too, mabe a 3D cube with a cut? create it with bananas)
+
+[todo] draw (annotations) with AI 3D assistance (where the annotations is save?, in the browser)
+[todo] upload data
+[todo] shared button 
+[todo] in the profil, the user can open saved states
+
+-----
+[?] move the search button in the data ?
+
+[NTH] change the camera controle (flying, or the others)
+[NTH] add a docs route where the user can see all the controls on this web demo. 
+
 [todo] Object control. The user should be able to change the current cuts how he likes.  The user should be able to change the orientations and position of objects in the scene. He should also be able to group things togheter. 
 {
     That is absolutely perfect. Now I want to start a new feature ! 
@@ -10,23 +52,11 @@
 }
 
 
-[todo] import a skeleton of the allen average mouse brain and the annotations (slices, volumetric and shell). 
-{
+--- BUG LIST
+[bug]{
 Alright now I have a bug relating the volumetric data. The problem is when a slice layer in order under the layer of the volumetric data, the slice does not appear. Its either the slice is there, but the rain volume is on top, or something worst...  
 }
-
-[todo] The layers should have some setting (opacity, any transformations) and infos (name slice, resolution, dimesnion)
-
-
-[todo] add a temporary visualize of the cut slice : this visual shoul be a normal poiting in the direction with the depth. The image should be display and with the new parameter, it should adjust the image slice. Instead of number, it should be a slider or something easyer to play with. (rework the icon too, mabe a 3D cube with a cut? create it with bananas)
-
-[todo] draw (annotations) with AI 3D assistance 
-[todo] upload data
-[todo] shared button 
-
------
-[?] move the serach button in the data ?
-
-[NTH] change the camera controle (flying, or the others)
-[NTH] add a docs route where the user can see all the controls on this web demo. 
+[bug]{
+    the ui when deleting the last row of the layers; we need to scrool to see the menu. 
+}
 

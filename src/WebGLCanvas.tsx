@@ -8,6 +8,7 @@ import {
   collectVisibleLayerItems,
   findNodeById,
   isCustomSliceLayer,
+  isRemoteMeshLayer,
 } from "./layerTypes";
 import {
   ALLEN_VIEWER_PROFILE,
@@ -24,6 +25,12 @@ import {
   type SlicePlane,
   type ViewerOrientationProfile,
 } from "./omeZarr";
+import {
+  getAllenMeshModelMatrix,
+  getMeshCacheKey,
+  loadObjMesh,
+  type LoadedMesh,
+} from "./allenMesh";
 
 type CameraState = {
   position: vec3;
@@ -107,6 +114,14 @@ function isOmeZarrLayer(layer: LayerItemNode): boolean {
   );
 }
 
+function isMeshLayer(layer: LayerItemNode): boolean {
+  return (
+    layer.type === "remote" &&
+    typeof layer.source === "string" &&
+    layer.remoteFormat === "mesh-obj"
+  );
+}
+
 function getRemoteLayerResolution(layer: LayerItemNode): RemoteOmeResolution {
   return layer.remoteResolution ?? "100um";
 }
@@ -185,6 +200,40 @@ function collectReferencedVolumeCacheKeys(nodes: LayerTreeNode[]): Set<string> {
   return keys;
 }
 
+function collectReferencedMeshCacheKeys(nodes: LayerTreeNode[]): Set<string> {
+  const keys = new Set<string>();
+
+  function visit(list: LayerTreeNode[]) {
+    for (const node of list) {
+      if (node.kind === "group") {
+        visit(node.children);
+        continue;
+      }
+
+      if (isRemoteMeshLayer(node) && typeof node.source === "string") {
+        keys.add(getMeshCacheKey(node.source));
+      }
+    }
+  }
+
+  visit(nodes);
+  return keys;
+}
+
+function getAllenReferenceDisplayScale() {
+  const vx = ALLEN_REFERENCE_DIMS_10UM.x;
+  const vy = ALLEN_REFERENCE_DIMS_10UM.y;
+  const vz = ALLEN_REFERENCE_DIMS_10UM.z;
+  const base = 1.6;
+
+  return {
+    sx: base,
+    sy: base * (vy / vx),
+    sz: base * (vz / vx),
+  };
+}
+
+
 function getPlaneSliceCount(volume: LoadedVolume, plane: SlicePlane): number {
   if (plane === "xy") return volume.dims.z;
   if (plane === "xz") return volume.dims.y;
@@ -254,7 +303,9 @@ export default function WebGLCanvas({
   const activeToolRef = useRef<ToolId>(activeTool);
   const layerTreeRef = useRef<LayerTreeNode[]>(layerTree);
   const volumeCacheRef = useRef<Map<string, LoadedVolume>>(new Map());
+  const meshCacheRef = useRef<Map<string, LoadedMesh>>(new Map());
   const loadingUrlsRef = useRef<Set<string>>(new Set());
+  const loadingMeshesRef = useRef<Set<string>>(new Set());
 
   const [loadTick, setLoadTick] = useState(0);
 
@@ -357,6 +408,20 @@ export default function WebGLCanvas({
     return Array.from(entries.values());
   }, [visibleLayers, layerTree]);
 
+  const meshesToLoad = useMemo(() => {
+    const entries = new Map<string, { cacheKey: string; url: string }>();
+
+    for (const layer of visibleLayers) {
+      if (!isMeshLayer(layer)) continue;
+
+      const url = layer.source as string;
+      const cacheKey = getMeshCacheKey(url);
+      entries.set(cacheKey, { cacheKey, url });
+    }
+
+    return Array.from(entries.values());
+  }, [visibleLayers]);
+
   useEffect(() => {
     for (const item of volumesToLoad) {
       if (volumeCacheRef.current.has(item.cacheKey)) continue;
@@ -383,8 +448,34 @@ export default function WebGLCanvas({
     }
   }, [volumesToLoad]);
 
+  useEffect(() => {
+    for (const item of meshesToLoad) {
+      if (meshCacheRef.current.has(item.cacheKey)) continue;
+      if (loadingMeshesRef.current.has(item.cacheKey)) continue;
+
+      loadingMeshesRef.current.add(item.cacheKey);
+
+      loadObjMesh(item.url)
+        .then((mesh) => {
+          meshCacheRef.current.set(item.cacheKey, mesh);
+          setLoadTick((v) => v + 1);
+        })
+        .catch((err) => {
+          console.error("Failed to load mesh:", item.url, err);
+        })
+        .finally(() => {
+          loadingMeshesRef.current.delete(item.cacheKey);
+        });
+    }
+  }, [meshesToLoad]);
+
   const retainedVolumeCacheKeys = useMemo(
     () => collectReferencedVolumeCacheKeys(layerTree),
+    [layerTree]
+  );
+
+  const retainedMeshCacheKeys = useMemo(
+    () => collectReferencedMeshCacheKeys(layerTree),
     [layerTree]
   );
 
@@ -403,6 +494,22 @@ export default function WebGLCanvas({
       setLoadTick((v) => v + 1);
     }
   }, [retainedVolumeCacheKeys]);
+
+  useEffect(() => {
+    let didEvict = false;
+
+    for (const cacheKey of Array.from(meshCacheRef.current.keys())) {
+      if (!retainedMeshCacheKeys.has(cacheKey)) {
+        meshCacheRef.current.delete(cacheKey);
+        loadingMeshesRef.current.delete(cacheKey);
+        didEvict = true;
+      }
+    }
+
+    if (didEvict) {
+      setLoadTick((v) => v + 1);
+    }
+  }, [retainedMeshCacheKeys]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -486,6 +593,14 @@ export default function WebGLCanvas({
     const uVolTexture = gl.getUniformLocation(volumeTextureProgram, "uTexture");
     const uVolAlpha = gl.getUniformLocation(volumeTextureProgram, "uAlpha");
     const uVolBrightness = gl.getUniformLocation(volumeTextureProgram, "uBrightness");
+
+    const maxVertexAttribs = gl.getParameter(gl.MAX_VERTEX_ATTRIBS) as number;
+
+    function resetVertexAttribArrays() {
+      for (let i = 0; i < maxVertexAttribs; i += 1) {
+        gl.disableVertexAttribArray(i);
+      }
+    }
 
     if (
       aColorPosition < 0 ||
@@ -848,7 +963,19 @@ export default function WebGLCanvas({
       }
     }
 
+    const meshBufferCache = new Map<
+      string,
+      {
+        lineBuffer: WebGLBuffer | null;
+        lineVertexCount: number;
+        triangleBuffer: WebGLBuffer | null;
+        triangleVertexCount: number;
+      }
+    >();
+
     function drawColorPlane(mvp: mat4, color: [number, number, number, number]) {
+      resetVertexAttribArrays();
+
       gl.useProgram(colorProgram);
       gl.uniformMatrix4fv(uColorMVP, false, mvp);
       gl.uniform4f(uColor, color[0], color[1], color[2], color[3]);
@@ -861,7 +988,71 @@ export default function WebGLCanvas({
       gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
     }
 
+    function getOrCreateMeshBuffer(mesh: LoadedMesh) {
+      const key = getMeshCacheKey(mesh.url);
+      const cached = meshBufferCache.get(key);
+      if (cached) return cached;
+
+      let lineBuffer: WebGLBuffer | null = null;
+      if (mesh.linePositions.length > 0) {
+        lineBuffer = gl.createBuffer();
+        if (!lineBuffer) {
+          throw new Error("Failed to create line mesh buffer");
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, mesh.linePositions, gl.STATIC_DRAW);
+      }
+
+      let triangleBuffer: WebGLBuffer | null = null;
+      if (mesh.trianglePositions.length > 0) {
+        triangleBuffer = gl.createBuffer();
+        if (!triangleBuffer) {
+          throw new Error("Failed to create triangle mesh buffer");
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, triangleBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, mesh.trianglePositions, gl.STATIC_DRAW);
+      }
+
+      const entry = {
+        lineBuffer,
+        lineVertexCount: mesh.linePositions.length / 3,
+        triangleBuffer,
+        triangleVertexCount: mesh.trianglePositions.length / 3,
+      };
+
+      meshBufferCache.set(key, entry);
+      return entry;
+    }
+
+    function drawMeshSurface(mesh: LoadedMesh, mvp: mat4, color: [number, number, number, number]) {
+      const entry = getOrCreateMeshBuffer(mesh);
+      if (!entry.triangleBuffer || entry.triangleVertexCount <= 0) {
+        return;
+      }
+
+      resetVertexAttribArrays();
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+
+      gl.useProgram(colorProgram);
+      gl.uniformMatrix4fv(uColorMVP, false, mvp);
+      gl.uniform4f(uColor, color[0], color[1], color[2], color[3]);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, entry.triangleBuffer);
+      gl.enableVertexAttribArray(aColorPosition);
+      gl.vertexAttribPointer(aColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.drawArrays(gl.TRIANGLES, 0, entry.triangleVertexCount);
+
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+    }
+
     function drawTexturedPlane(texture: WebGLTexture, mvp: mat4, alpha: number) {
+      resetVertexAttribArrays();
+
       gl.useProgram(textureProgram);
       gl.uniformMatrix4fv(uTexMVP, false, mvp);
       gl.uniform1f(uAlpha, alpha);
@@ -889,6 +1080,8 @@ export default function WebGLCanvas({
     }
 
     function drawVolumeSlice(texture: WebGLTexture, mvp: mat4, alpha: number) {
+      resetVertexAttribArrays();
+
       gl.useProgram(volumeTextureProgram);
       gl.uniformMatrix4fv(uVolTexMVP, false, mvp);
       gl.uniform1f(uVolAlpha, alpha);
@@ -998,6 +1191,27 @@ export default function WebGLCanvas({
       for (let i = 0; i < layers.length; i += 1) {
         const layer = layers[i];
         const isHighlighted = highlightedLayerIds.has(layer.id);
+
+        if (isMeshLayer(layer) && typeof layer.source === "string") {
+          const mesh = meshCacheRef.current.get(getMeshCacheKey(layer.source));
+
+          if (mesh) {
+            const model = getAllenMeshModelMatrix(mesh);
+            const mv = mat4.create();
+            const mvp = mat4.create();
+
+            mat4.multiply(mv, view, model);
+            mat4.multiply(mvp, projection, mv);
+
+            drawMeshSurface(
+              mesh,
+              mvp,
+              isHighlighted ? [0.72, 0.96, 1.0, 0.26] : [0.52, 0.72, 0.96, 0.16]
+            );
+          }
+
+          continue;
+        }
 
         if (isOmeZarrLayer(layer) && typeof layer.source === "string") {
           const volumeKey = getVolumeCacheKey(
@@ -1264,6 +1478,11 @@ export default function WebGLCanvas({
 
       for (const entry of volumeSliceTextureCache.values()) {
         gl.deleteTexture(entry.texture);
+      }
+
+      for (const entry of meshBufferCache.values()) {
+        if (entry.lineBuffer) gl.deleteBuffer(entry.lineBuffer);
+        if (entry.triangleBuffer) gl.deleteBuffer(entry.triangleBuffer);
       }
 
       gl.deleteBuffer(planeVertexBuffer);

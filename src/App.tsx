@@ -86,6 +86,7 @@ type ExternalSourceDraft = {
   name: string;
   url: string;
   icon?: "generic" | "custom";
+  remoteFormat?: RemoteDataFormat;
   renderMode?: RemoteRenderMode;
   remoteResolution?: RemoteOmeResolution;
 };
@@ -131,7 +132,12 @@ const INITIAL_TREE: LayerTreeNode[] = [
 ];
 
 function detectRemoteFormat(url: string): RemoteDataFormat {
-  return url.includes(".ome.zarr") ? "ome-zarr" : "generic";
+  const lower = url.toLowerCase();
+
+  if (lower.includes(".ome.zarr")) return "ome-zarr";
+  if (lower.endsWith(".obj")) return "mesh-obj";
+
+  return "generic";
 }
 
 function decodeBase64Url(input: string): string {
@@ -915,7 +921,7 @@ export default function App({ startupSlices = [] }: AppProps) {
 
       for (const item of sources) {
         const trimmedUrl = item.url.trim();
-        const remoteFormat = detectRemoteFormat(trimmedUrl);
+        const remoteFormat = item.remoteFormat ?? detectRemoteFormat(trimmedUrl);
         const node: LayerTreeNode = {
           id: createId(),
           kind: "layer",
@@ -924,11 +930,15 @@ export default function App({ startupSlices = [] }: AppProps) {
           visible: true,
           source: trimmedUrl,
           sourceKind: "external",
-          description: item.icon === "custom" ? "Custom external source" : "External data source",
+          description:
+            remoteFormat === "mesh-obj"
+              ? "External mesh source"
+              : item.icon === "custom"
+              ? "Custom external source"
+              : "External data source",
           remoteFormat,
           renderMode:
-            item.renderMode ??
-            (remoteFormat === "ome-zarr" ? "volume" : "auto"),
+            remoteFormat === "ome-zarr" ? item.renderMode ?? "volume" : undefined,
           remoteResolution:
             remoteFormat === "ome-zarr" ? item.remoteResolution ?? "100um" : undefined,
         };

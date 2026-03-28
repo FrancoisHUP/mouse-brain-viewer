@@ -45,7 +45,8 @@ export type LayerSourceKind =
 
 export type RemoteDataFormat =
   | "generic"
-  | "ome-zarr";
+  | "ome-zarr"
+  | "mesh-obj";
 
 export type RemoteRenderMode =
   | "auto"
@@ -124,6 +125,18 @@ export function isRemoteOmeLayer(
     node.type === "remote" &&
     typeof node.source === "string" &&
     node.remoteFormat === "ome-zarr"
+  );
+}
+
+export function isRemoteMeshLayer(
+  node: LayerTreeNode | null | undefined
+): node is LayerItemNode {
+  return (
+    !!node &&
+    node.kind === "layer" &&
+    node.type === "remote" &&
+    typeof node.source === "string" &&
+    node.remoteFormat === "mesh-obj"
   );
 }
 

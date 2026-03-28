@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RemoteOmeResolution, RemoteRenderMode } from "./layerTypes";
+import type { RemoteDataFormat, RemoteOmeResolution, RemoteRenderMode } from "./layerTypes";
 
 type LayerCreationMode = "drawing" | "external" | "custom";
 
@@ -9,6 +9,7 @@ type ExternalSourceItem = {
   url: string;
   icon: "generic" | "custom";
   builtIn?: boolean;
+  remoteFormat?: RemoteDataFormat;
   renderMode?: RemoteRenderMode;
   remoteResolution?: RemoteOmeResolution;
 };
@@ -185,7 +186,18 @@ function TabButton({
 const ALLEN_URL =
   "https://storage.googleapis.com/sbh-assistant-data/allen_average_template.ome.zarr/";
 
+const ALLEN_BRAIN_SKELETON_URL =
+  "https://storage.googleapis.com/sbh-assistant-data/allen_structure_meshes/obj/997.obj";
+
 const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
+  {
+    id: "allen-brain-skeleton-mesh",
+    name: "Allen Mouse Brain Skeleton Mesh",
+    url: ALLEN_BRAIN_SKELETON_URL,
+    icon: "generic",
+    builtIn: true,
+    remoteFormat: "mesh-obj",
+  },
   // {
   //   id: "allen-average-brain-volume-10um",
   //   name: "Allen Average Mouse Brain (Volume · 10 µm)",
@@ -276,6 +288,7 @@ export default function ImportDataPanel({
       name: string;
       url: string;
       icon?: "generic" | "custom";
+      remoteFormat?: RemoteDataFormat;
       renderMode?: RemoteRenderMode;
       remoteResolution?: RemoteOmeResolution;
     }>
@@ -332,6 +345,7 @@ export default function ImportDataPanel({
       url,
       icon: "custom",
       builtIn: false,
+      remoteFormat: undefined,
       renderMode: "auto",
     };
 
@@ -357,6 +371,7 @@ export default function ImportDataPanel({
           name: item.name,
           url: item.url,
           icon: item.icon,
+          remoteFormat: item.remoteFormat,
           renderMode: item.renderMode,
           remoteResolution: item.remoteResolution,
         }))

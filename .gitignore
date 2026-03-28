@@ -1,6 +1,7 @@
 aamb_multiscale_omezarr/
-*prompt*
-
+prompt
+allen_meshes
+aamb_annotation_omezarr
 
 # Logs
 logs
