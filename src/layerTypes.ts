@@ -52,6 +52,12 @@ export type RemoteRenderMode =
   | "slices"
   | "volume";
 
+export type RemoteOmeResolution =
+  | "10um"
+  | "25um"
+  | "50um"
+  | "100um";
+
 type BaseNode = {
   id: string;
   name: string;
@@ -75,6 +81,7 @@ export type LayerItemNode = BaseNode & {
   // For remote layers
   remoteFormat?: RemoteDataFormat;
   renderMode?: RemoteRenderMode;
+  remoteResolution?: RemoteOmeResolution;
 
   // For custom slices
   sliceParams?: SliceLayerParams;

@@ -10,14 +10,15 @@
 }
 
 
+[todo] import a skeleton of the allen average mouse brain and the annotations (slices, volumetric and shell). 
+{
+Alright now I have a bug relating the volumetric data. The problem is when a slice layer in order under the layer of the volumetric data, the slice does not appear. Its either the slice is there, but the rain volume is on top, or something worst...  
+}
+
+[todo] The layers should have some setting (opacity, any transformations) and infos (name slice, resolution, dimesnion)
+
 
 [todo] add a temporary visualize of the cut slice : this visual shoul be a normal poiting in the direction with the depth. The image should be display and with the new parameter, it should adjust the image slice. Instead of number, it should be a slider or something easyer to play with. (rework the icon too, mabe a 3D cube with a cut? create it with bananas)
-
-[todo] volumetric data, align syn and rework
-
-
-[todo] import more precise allen volume (25um, 10um?)
-[todo] import a skeleton of the allen average mouse brain. 
 
 [todo] draw (annotations) with AI 3D assistance 
 [todo] upload data

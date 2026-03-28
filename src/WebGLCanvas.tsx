@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { mat4, vec3 } from "gl-matrix";
 import type { SerializableCameraState } from "./viewerState";
 import type { ToolId } from "./BottomToolbar";
-import type { LayerTreeNode, LayerItemNode } from "./layerTypes";
+import type { LayerTreeNode, LayerItemNode, RemoteOmeResolution } from "./layerTypes";
 import {
   collectLayerIdsInSubtree,
   collectVisibleLayerItems,
@@ -11,13 +11,12 @@ import {
 } from "./layerTypes";
 import {
   ALLEN_VIEWER_PROFILE,
-  buildPointCloud,
   clampSliceIndex,
   extractObliqueSlice2D,
   extractOrientedCenterSlices,
   extractOrientedSlice2D,
   getObliquePlaneFrame,
-  loadLowestResolutionVolume,
+  loadVolumeAtResolution,
   mapDisplaySliceIndexToDataIndex,
   sliceToRgbaBytes,
   type LoadedVolume,
@@ -31,6 +30,21 @@ type CameraState = {
   yaw: number;
   pitch: number;
   fovDeg: number;
+};
+
+type SliceTextureSet = {
+  xy: WebGLTexture;
+  xz: WebGLTexture;
+  yz: WebGLTexture;
+  xySize: { width: number; height: number };
+  xzSize: { width: number; height: number };
+  yzSize: { width: number; height: number };
+};
+
+type AxisSliceTextureEntry = {
+  texture: WebGLTexture;
+  width: number;
+  height: number;
 };
 
 function createShader(
@@ -93,6 +107,28 @@ function isOmeZarrLayer(layer: LayerItemNode): boolean {
   );
 }
 
+function getRemoteLayerResolution(layer: LayerItemNode): RemoteOmeResolution {
+  return layer.remoteResolution ?? "100um";
+}
+
+function getRemoteLayerResolutionUm(layer: LayerItemNode): 10 | 25 | 50 | 100 {
+  switch (getRemoteLayerResolution(layer)) {
+    case "10um":
+      return 10;
+    case "25um":
+      return 25;
+    case "50um":
+      return 50;
+    case "100um":
+    default:
+      return 100;
+  }
+}
+
+function getVolumeCacheKey(url: string, resolutionUm: 10 | 25 | 50 | 100): string {
+  return `${url}::${resolutionUm}`;
+}
+
 function getVolumeDisplayScale(volume: LoadedVolume) {
   const vx = volume.dims.x;
   const vy = volume.dims.y;
@@ -107,15 +143,86 @@ function getVolumeDisplayScale(volume: LoadedVolume) {
   };
 }
 
-type SliceTextureSet = {
-  xy: WebGLTexture;
-  xz: WebGLTexture;
-  yz: WebGLTexture;
-  xySize: { width: number; height: number };
-  xzSize: { width: number; height: number };
-  yzSize: { width: number; height: number };
-};
+function collectReferencedVolumeCacheKeys(nodes: LayerTreeNode[]): Set<string> {
+  const keys = new Set<string>();
 
+  function visit(list: LayerTreeNode[]) {
+    for (const node of list) {
+      if (node.kind === "group") {
+        visit(node.children);
+        continue;
+      }
+
+      if (isOmeZarrLayer(node) && typeof node.source === "string") {
+        keys.add(getVolumeCacheKey(node.source, getRemoteLayerResolutionUm(node)));
+        continue;
+      }
+
+      if (isCustomSliceLayer(node)) {
+        const customSource =
+          typeof node.source === "object" && node.source !== null ? node.source : null;
+
+        const volumeNode = customSource?.volumeLayerId
+          ? findNodeById(nodes, customSource.volumeLayerId)
+          : null;
+
+        if (
+          volumeNode &&
+          volumeNode.kind === "layer" &&
+          volumeNode.type === "remote" &&
+          typeof volumeNode.source === "string" &&
+          volumeNode.remoteFormat === "ome-zarr"
+        ) {
+          keys.add(
+            getVolumeCacheKey(volumeNode.source, getRemoteLayerResolutionUm(volumeNode))
+          );
+        }
+      }
+    }
+  }
+
+  visit(nodes);
+  return keys;
+}
+
+function getPlaneSliceCount(volume: LoadedVolume, plane: SlicePlane): number {
+  if (plane === "xy") return volume.dims.z;
+  if (plane === "xz") return volume.dims.y;
+  return volume.dims.x;
+}
+
+function chooseVolumeRenderPlane(forward: vec3): SlicePlane {
+  const ax = Math.abs(forward[0]);
+  const ay = Math.abs(forward[1]);
+  const az = Math.abs(forward[2]);
+
+  if (az >= ax && az >= ay) return "xy";
+  if (ay >= ax && ay >= az) return "xz";
+  return "yz";
+}
+
+function buildVolumeDisplayIndices(total: number): number[] {
+  if (total <= 0) return [];
+
+  const maxSlices = 180;
+  const step = Math.max(1, Math.ceil(total / maxSlices));
+  const indices: number[] = [];
+
+  for (let i = 0; i < total; i += step) {
+    indices.push(i);
+  }
+
+  if (indices[indices.length - 1] !== total - 1) {
+    indices.push(total - 1);
+  }
+
+  return indices;
+}
+
+function getVolumeStackAlpha(sliceCount: number, highlighted: boolean): number {
+  const base = clamp(10 / Math.max(sliceCount, 1), 0.035, 0.12);
+  return highlighted ? Math.min(base * 1.15, 0.16) : base;
+}
 
 export default function WebGLCanvas({
   activeTool,
@@ -147,7 +254,6 @@ export default function WebGLCanvas({
   const activeToolRef = useRef<ToolId>(activeTool);
   const layerTreeRef = useRef<LayerTreeNode[]>(layerTree);
   const volumeCacheRef = useRef<Map<string, LoadedVolume>>(new Map());
-  const pointCloudCacheRef = useRef<Map<string, Float32Array>>(new Map());
   const loadingUrlsRef = useRef<Set<string>>(new Set());
 
   const [loadTick, setLoadTick] = useState(0);
@@ -205,12 +311,18 @@ export default function WebGLCanvas({
     [layerTree]
   );
 
-  const volumeUrlsToLoad = useMemo(() => {
-    const urls = new Set<string>();
+  const volumesToLoad = useMemo(() => {
+    const entries = new Map<
+      string,
+      { cacheKey: string; url: string; resolutionUm: 10 | 25 | 50 | 100 }
+    >();
 
     for (const layer of visibleLayers) {
       if (isOmeZarrLayer(layer)) {
-        urls.add(layer.source as string);
+        const url = layer.source as string;
+        const resolutionUm = getRemoteLayerResolutionUm(layer);
+        const cacheKey = getVolumeCacheKey(url, resolutionUm);
+        entries.set(cacheKey, { cacheKey, url, resolutionUm });
         continue;
       }
 
@@ -231,35 +343,66 @@ export default function WebGLCanvas({
           typeof volumeNode.source === "string" &&
           volumeNode.remoteFormat === "ome-zarr"
         ) {
-          urls.add(volumeNode.source);
+          const resolutionUm = getRemoteLayerResolutionUm(volumeNode);
+          const cacheKey = getVolumeCacheKey(volumeNode.source, resolutionUm);
+          entries.set(cacheKey, {
+            cacheKey,
+            url: volumeNode.source,
+            resolutionUm,
+          });
         }
       }
     }
 
-    return Array.from(urls);
+    return Array.from(entries.values());
   }, [visibleLayers, layerTree]);
 
   useEffect(() => {
-    for (const url of volumeUrlsToLoad) {
-      if (volumeCacheRef.current.has(url)) continue;
-      if (loadingUrlsRef.current.has(url)) continue;
+    for (const item of volumesToLoad) {
+      if (volumeCacheRef.current.has(item.cacheKey)) continue;
+      if (loadingUrlsRef.current.has(item.cacheKey)) continue;
 
-      loadingUrlsRef.current.add(url);
+      loadingUrlsRef.current.add(item.cacheKey);
 
-      loadLowestResolutionVolume(url)
+      loadVolumeAtResolution(item.url, item.resolutionUm)
         .then((volume) => {
-          volumeCacheRef.current.set(url, volume);
-          pointCloudCacheRef.current.set(url, buildPointCloud(volume, 0.12, 1));
+          volumeCacheRef.current.set(item.cacheKey, volume);
           setLoadTick((v) => v + 1);
         })
         .catch((err) => {
-          console.error("Failed to load OME-Zarr volume:", url, err);
+          console.error(
+            "Failed to load OME-Zarr volume:",
+            item.url,
+            item.resolutionUm,
+            err
+          );
         })
         .finally(() => {
-          loadingUrlsRef.current.delete(url);
+          loadingUrlsRef.current.delete(item.cacheKey);
         });
     }
-  }, [volumeUrlsToLoad]);
+  }, [volumesToLoad]);
+
+  const retainedVolumeCacheKeys = useMemo(
+    () => collectReferencedVolumeCacheKeys(layerTree),
+    [layerTree]
+  );
+
+  useEffect(() => {
+    let didEvict = false;
+
+    for (const cacheKey of Array.from(volumeCacheRef.current.keys())) {
+      if (!retainedVolumeCacheKeys.has(cacheKey)) {
+        volumeCacheRef.current.delete(cacheKey);
+        loadingUrlsRef.current.delete(cacheKey);
+        didEvict = true;
+      }
+    }
+
+    if (didEvict) {
+      setLoadTick((v) => v + 1);
+    }
+  }, [retainedVolumeCacheKeys]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -286,30 +429,6 @@ export default function WebGLCanvas({
       }
     `;
 
-    const pointVertexShaderSource = `
-      attribute vec4 aPoint;
-      uniform mat4 uMVP;
-      varying float vIntensity;
-      void main() {
-        gl_Position = uMVP * vec4(aPoint.xyz, 1.0);
-        gl_PointSize = 1.5 + 2.5 * aPoint.w;
-        vIntensity = aPoint.w;
-      }
-    `;
-
-    const pointFragmentShaderSource = `
-      precision mediump float;
-      varying float vIntensity;
-      void main() {
-        vec2 c = gl_PointCoord - vec2(0.5);
-        float r = dot(c, c);
-        if (r > 0.25) discard;
-
-        float alpha = 0.05 + 0.22 * vIntensity;
-        gl_FragColor = vec4(vIntensity, vIntensity, vIntensity, alpha);
-      }
-    `;
-
     const textureVertexShaderSource = `
       attribute vec3 aPosition;
       attribute vec2 aTexCoord;
@@ -332,16 +451,28 @@ export default function WebGLCanvas({
       }
     `;
 
+    const volumeFragmentShaderSource = `
+      precision mediump float;
+      varying vec2 vTexCoord;
+      uniform sampler2D uTexture;
+      uniform float uAlpha;
+      uniform float uBrightness;
+      void main() {
+        vec4 tex = texture2D(uTexture, vTexCoord);
+        float v = tex.r;
+        float alpha = v * uAlpha;
+        vec3 color = vec3(v * uBrightness);
+        gl_FragColor = vec4(color, alpha);
+      }
+    `;
+
     const colorProgram = createProgram(gl, colorVertexShaderSource, colorFragmentShaderSource);
-    const pointProgram = createProgram(gl, pointVertexShaderSource, pointFragmentShaderSource);
     const textureProgram = createProgram(gl, textureVertexShaderSource, textureFragmentShaderSource);
+    const volumeTextureProgram = createProgram(gl, textureVertexShaderSource, volumeFragmentShaderSource);
 
     const aColorPosition = gl.getAttribLocation(colorProgram, "aPosition");
     const uColorMVP = gl.getUniformLocation(colorProgram, "uMVP");
     const uColor = gl.getUniformLocation(colorProgram, "uColor");
-
-    const aPoint = gl.getAttribLocation(pointProgram, "aPoint");
-    const uPointMVP = gl.getUniformLocation(pointProgram, "uMVP");
 
     const aTexPosition = gl.getAttribLocation(textureProgram, "aPosition");
     const aTexCoord = gl.getAttribLocation(textureProgram, "aTexCoord");
@@ -349,17 +480,28 @@ export default function WebGLCanvas({
     const uTexture = gl.getUniformLocation(textureProgram, "uTexture");
     const uAlpha = gl.getUniformLocation(textureProgram, "uAlpha");
 
+    const aVolTexPosition = gl.getAttribLocation(volumeTextureProgram, "aPosition");
+    const aVolTexCoord = gl.getAttribLocation(volumeTextureProgram, "aTexCoord");
+    const uVolTexMVP = gl.getUniformLocation(volumeTextureProgram, "uMVP");
+    const uVolTexture = gl.getUniformLocation(volumeTextureProgram, "uTexture");
+    const uVolAlpha = gl.getUniformLocation(volumeTextureProgram, "uAlpha");
+    const uVolBrightness = gl.getUniformLocation(volumeTextureProgram, "uBrightness");
+
     if (
       aColorPosition < 0 ||
       !uColorMVP ||
       !uColor ||
-      aPoint < 0 ||
-      !uPointMVP ||
       aTexPosition < 0 ||
       aTexCoord < 0 ||
       !uTexMVP ||
       !uTexture ||
-      !uAlpha
+      !uAlpha ||
+      aVolTexPosition < 0 ||
+      aVolTexCoord < 0 ||
+      !uVolTexMVP ||
+      !uVolTexture ||
+      !uVolAlpha ||
+      !uVolBrightness
     ) {
       throw new Error("Failed to get shader locations");
     }
@@ -401,14 +543,8 @@ export default function WebGLCanvas({
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, planeIndices, gl.STATIC_DRAW);
 
     const sliceTextureCache = new Map<string, SliceTextureSet>();
-    const customSliceTextureCache = new Map<
-      string,
-      {
-        texture: WebGLTexture;
-        width: number;
-        height: number;
-      }
-    >();
+    const customSliceTextureCache = new Map<string, AxisSliceTextureEntry>();
+    const volumeSliceTextureCache = new Map<string, AxisSliceTextureEntry>();
 
     function createSliceTexture(width: number, height: number, pixels: Uint8Array): WebGLTexture {
       const tex = gl.createTexture();
@@ -439,29 +575,15 @@ export default function WebGLCanvas({
       return tex;
     }
 
-    function getOrCreateSliceTextures(url: string, volume: LoadedVolume): SliceTextureSet {
-      const cached = sliceTextureCache.get(url);
+    function getOrCreateSliceTextures(cacheKey: string, volume: LoadedVolume): SliceTextureSet {
+      const cached = sliceTextureCache.get(cacheKey);
       if (cached) return cached;
 
       const { xy, xz, yz } = extractOrientedCenterSlices(volume, ALLEN_VIEWER_PROFILE);
 
-      const xyTex = createSliceTexture(
-        xy.width,
-        xy.height,
-        sliceToRgbaBytes(xy.pixels)
-      );
-
-      const xzTex = createSliceTexture(
-        xz.width,
-        xz.height,
-        sliceToRgbaBytes(xz.pixels)
-      );
-
-      const yzTex = createSliceTexture(
-        yz.width,
-        yz.height,
-        sliceToRgbaBytes(yz.pixels)
-      );
+      const xyTex = createSliceTexture(xy.width, xy.height, sliceToRgbaBytes(xy.pixels));
+      const xzTex = createSliceTexture(xz.width, xz.height, sliceToRgbaBytes(xz.pixels));
+      const yzTex = createSliceTexture(yz.width, yz.height, sliceToRgbaBytes(yz.pixels));
 
       const set: SliceTextureSet = {
         xy: xyTex,
@@ -472,7 +594,7 @@ export default function WebGLCanvas({
         yzSize: { width: yz.width, height: yz.height },
       };
 
-      sliceTextureCache.set(url, set);
+      sliceTextureCache.set(cacheKey, set);
       return set;
     }
 
@@ -492,7 +614,7 @@ export default function WebGLCanvas({
             width?: number;
             height?: number;
           }
-    ) {
+    ): AxisSliceTextureEntry {
       const cached = customSliceTextureCache.get(cacheKey);
       if (cached) return cached;
 
@@ -515,11 +637,7 @@ export default function WebGLCanvas({
               ALLEN_VIEWER_PROFILE
             );
 
-      const texture = createSliceTexture(
-        slice.width,
-        slice.height,
-        sliceToRgbaBytes(slice.pixels)
-      );
+      const texture = createSliceTexture(slice.width, slice.height, sliceToRgbaBytes(slice.pixels));
 
       const entry = {
         texture,
@@ -528,6 +646,27 @@ export default function WebGLCanvas({
       };
 
       customSliceTextureCache.set(cacheKey, entry);
+      return entry;
+    }
+
+    function getOrCreateVolumeAxisSliceTexture(
+      cacheKey: string,
+      volume: LoadedVolume,
+      plane: SlicePlane,
+      index: number
+    ): AxisSliceTextureEntry {
+      const cached = volumeSliceTextureCache.get(cacheKey);
+      if (cached) return cached;
+
+      const slice = extractOrientedSlice2D(volume, plane, index, ALLEN_VIEWER_PROFILE);
+      const texture = createSliceTexture(slice.width, slice.height, sliceToRgbaBytes(slice.pixels));
+      const entry = {
+        texture,
+        width: slice.width,
+        height: slice.height,
+      };
+
+      volumeSliceTextureCache.set(cacheKey, entry);
       return entry;
     }
 
@@ -599,10 +738,7 @@ export default function WebGLCanvas({
       return Number.isFinite(tMax) ? tMax : 0;
     }
 
-    function makeObliqueSliceModelMatrix(
-      volume: LoadedVolume,
-      spec: ObliqueSliceSpec
-    ): mat4 {
+    function makeObliqueSliceModelMatrix(volume: LoadedVolume, spec: ObliqueSliceSpec): mat4 {
       const model = mat4.create();
 
       const { sx, sy, sz } = getVolumeDisplayScale(volume);
@@ -615,7 +751,6 @@ export default function WebGLCanvas({
       const halfSpanU = maxAbsPlaneExtentForObliqueWorld(volume, frame.u);
       const halfSpanV = maxAbsPlaneExtentForObliqueWorld(volume, frame.v);
 
-      // Plane local X axis = U, local Y axis = V
       const ux = (2 * sx * frame.u.x) / Math.max(volume.dims.x - 1, 1);
       const uy = (2 * sy * frame.u.y) / Math.max(volume.dims.y - 1, 1);
       const uz = (2 * sz * frame.u.z) / Math.max(volume.dims.z - 1, 1);
@@ -713,10 +848,7 @@ export default function WebGLCanvas({
       }
     }
 
-    function drawColorPlane(
-      mvp: mat4,
-      color: [number, number, number, number]
-    ) {
+    function drawColorPlane(mvp: mat4, color: [number, number, number, number]) {
       gl.useProgram(colorProgram);
       gl.uniformMatrix4fv(uColorMVP, false, mvp);
       gl.uniform4f(uColor, color[0], color[1], color[2], color[3]);
@@ -729,32 +861,7 @@ export default function WebGLCanvas({
       gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
     }
 
-    function drawPointCloud(mvp: mat4, points: Float32Array) {
-      const pointBuffer = gl.createBuffer();
-      if (!pointBuffer) return;
-
-      gl.useProgram(pointProgram);
-      gl.uniformMatrix4fv(uPointMVP, false, mvp);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, pointBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, points, gl.STATIC_DRAW);
-
-      gl.enableVertexAttribArray(aPoint);
-      gl.vertexAttribPointer(aPoint, 4, gl.FLOAT, false, 16, 0);
-
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-      gl.drawArrays(gl.POINTS, 0, points.length / 4);
-
-      gl.deleteBuffer(pointBuffer);
-    }
-
-    function drawTexturedPlane(
-      texture: WebGLTexture,
-      mvp: mat4,
-      alpha: number
-    ) {
+    function drawTexturedPlane(texture: WebGLTexture, mvp: mat4, alpha: number) {
       gl.useProgram(textureProgram);
       gl.uniformMatrix4fv(uTexMVP, false, mvp);
       gl.uniform1f(uAlpha, alpha);
@@ -779,6 +886,76 @@ export default function WebGLCanvas({
       gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
 
       gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    function drawVolumeSlice(texture: WebGLTexture, mvp: mat4, alpha: number) {
+      gl.useProgram(volumeTextureProgram);
+      gl.uniformMatrix4fv(uVolTexMVP, false, mvp);
+      gl.uniform1f(uVolAlpha, alpha);
+      gl.uniform1f(uVolBrightness, 1.12);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.uniform1i(uVolTexture, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
+      gl.enableVertexAttribArray(aVolTexPosition);
+      gl.vertexAttribPointer(aVolTexPosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, planeTexCoordBuffer);
+      gl.enableVertexAttribArray(aVolTexCoord);
+      gl.vertexAttribPointer(aVolTexCoord, 2, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
+
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    function renderVolumeLayer(
+      volumeKey: string,
+      volume: LoadedVolume,
+      highlighted: boolean,
+      forward: vec3,
+      view: mat4,
+      projection: mat4
+    ) {
+      const plane = chooseVolumeRenderPlane(forward);
+      const totalSlices = getPlaneSliceCount(volume, plane);
+      const displayIndices = buildVolumeDisplayIndices(totalSlices);
+      const alpha = getVolumeStackAlpha(displayIndices.length, highlighted);
+
+      const sortedIndices = [...displayIndices].sort((a, b) => {
+        const modelA = makeSliceModelMatrix(volume, plane, a, ALLEN_VIEWER_PROFILE);
+        const modelB = makeSliceModelMatrix(volume, plane, b, ALLEN_VIEWER_PROFILE);
+        const mvA = mat4.create();
+        const mvB = mat4.create();
+        mat4.multiply(mvA, view, modelA);
+        mat4.multiply(mvB, view, modelB);
+        return mvA[14] - mvB[14];
+      });
+
+      for (const displayIndex of sortedIndices) {
+        const sliceKey = `${volumeKey}|volume|${plane}|${displayIndex}`;
+        const sliceEntry = getOrCreateVolumeAxisSliceTexture(
+          sliceKey,
+          volume,
+          plane,
+          displayIndex
+        );
+
+        const model = makeSliceModelMatrix(volume, plane, displayIndex, ALLEN_VIEWER_PROFILE);
+        const mv = mat4.create();
+        const mvp = mat4.create();
+        mat4.multiply(mv, view, model);
+        mat4.multiply(mvp, projection, mv);
+
+        drawVolumeSlice(sliceEntry.texture, mvp, alpha);
+      }
     }
 
     function render(now: number) {
@@ -823,48 +1000,29 @@ export default function WebGLCanvas({
         const isHighlighted = highlightedLayerIds.has(layer.id);
 
         if (isOmeZarrLayer(layer) && typeof layer.source === "string") {
-          const volume = volumeCacheRef.current.get(layer.source);
+          const volumeKey = getVolumeCacheKey(
+            layer.source,
+            getRemoteLayerResolutionUm(layer)
+          );
+          const volume = volumeCacheRef.current.get(volumeKey);
 
           if (volume) {
             if (layer.renderMode === "volume") {
-              const points = pointCloudCacheRef.current.get(layer.source);
-              if (points) {
-                const model = mat4.create();
-                const mv = mat4.create();
-                const mvp = mat4.create();
-
-                const { sx, sy, sz } = getVolumeDisplayScale(volume);
-                mat4.scale(model, model, [sx, sy, sz]);
-
-                mat4.multiply(mv, view, model);
-                mat4.multiply(mvp, projection, mv);
-
-                drawPointCloud(mvp, points);
-              }
+              renderVolumeLayer(volumeKey, volume, isHighlighted, forward, view, projection);
             } else if (layer.renderMode === "slices") {
-              const textures = getOrCreateSliceTextures(layer.source, volume);
+              const textures = getOrCreateSliceTextures(volumeKey, volume);
               const alpha = isHighlighted ? 0.98 : 0.92;
 
               const { sx, sy, sz } = getVolumeDisplayScale(volume);
-
-            const xyScaleX = sx;
-            const xyScaleY = sy;
-
-            const xzScaleX = sx;
-            const xzScaleY = sz;
-
-            const yzScaleX = sz;
-            const yzScaleY = sy;
 
               {
                 const model = mat4.create();
                 const mv = mat4.create();
                 const mvp = mat4.create();
 
-                mat4.scale(model, model, [xyScaleX, xyScaleY, 1]);
+                mat4.scale(model, model, [sx, sy, 1]);
                 mat4.multiply(mv, view, model);
                 mat4.multiply(mvp, projection, mv);
-
                 drawTexturedPlane(textures.xy, mvp, alpha);
               }
 
@@ -874,10 +1032,9 @@ export default function WebGLCanvas({
                 const mvp = mat4.create();
 
                 mat4.rotateX(model, model, Math.PI / 2);
-                mat4.scale(model, model, [xzScaleX, xzScaleY, 1]);
+                mat4.scale(model, model, [sx, sz, 1]);
                 mat4.multiply(mv, view, model);
                 mat4.multiply(mvp, projection, mv);
-
                 drawTexturedPlane(textures.xz, mvp, alpha);
               }
 
@@ -887,25 +1044,22 @@ export default function WebGLCanvas({
                 const mvp = mat4.create();
 
                 mat4.rotateY(model, model, Math.PI / 2);
-                mat4.scale(model, model, [yzScaleX, yzScaleY, 1]);
+                mat4.scale(model, model, [sz, sy, 1]);
                 mat4.multiply(mv, view, model);
                 mat4.multiply(mvp, projection, mv);
-
                 drawTexturedPlane(textures.yz, mvp, alpha);
               }
             }
-
-            continue;
           }
+
+          continue;
         }
 
-        if (isCustomSliceLayer(layer)) {
-          const sliceSource =
+        if (layer.type === "custom-slice") {
+          const volumeLayerId =
             typeof layer.source === "object" && layer.source !== null
-              ? layer.source
+              ? layer.source.volumeLayerId
               : null;
-
-          const volumeLayerId = sliceSource?.volumeLayerId;
           const sliceParams = layer.sliceParams;
 
           if (!volumeLayerId || !sliceParams) {
@@ -924,19 +1078,16 @@ export default function WebGLCanvas({
             continue;
           }
 
-          const volume = volumeCacheRef.current.get(volumeNode.source);
+          const volumeKey = getVolumeCacheKey(
+            volumeNode.source,
+            getRemoteLayerResolutionUm(volumeNode)
+          );
+          const volume = volumeCacheRef.current.get(volumeKey);
           if (!volume) {
             continue;
           }
 
-          let sliceTex:
-            | {
-                texture: WebGLTexture;
-                width: number;
-                height: number;
-              }
-            | undefined;
-
+          let sliceTex: AxisSliceTextureEntry | undefined;
           let model: mat4;
 
           const isOblique =
@@ -944,7 +1095,7 @@ export default function WebGLCanvas({
             !!sliceParams.normal &&
             typeof sliceParams.normal.x === "number" &&
             typeof sliceParams.normal.y === "number" &&
-            typeof sliceParams.normal.z === "number"
+            typeof sliceParams.normal.z === "number";
 
           if (isOblique) {
             const nx = sliceParams.normal.x;
@@ -955,7 +1106,7 @@ export default function WebGLCanvas({
             const height = sliceParams.height ?? 256;
 
             const cacheKey = [
-              volumeNode.source,
+              volumeKey,
               "oblique",
               nx.toFixed(4),
               ny.toFixed(4),
@@ -981,7 +1132,7 @@ export default function WebGLCanvas({
             });
           } else {
             const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
-            const cacheKey = `${volumeNode.source}|${sliceParams.plane}|${safeIndex}`;
+            const cacheKey = `${volumeKey}|${sliceParams.plane}|${safeIndex}`;
 
             sliceTex = createCustomSliceTexture(cacheKey, volume, {
               mode: "axis",
@@ -1111,37 +1262,38 @@ export default function WebGLCanvas({
         gl.deleteTexture(entry.texture);
       }
 
+      for (const entry of volumeSliceTextureCache.values()) {
+        gl.deleteTexture(entry.texture);
+      }
+
       gl.deleteBuffer(planeVertexBuffer);
       gl.deleteBuffer(planeTexCoordBuffer);
       gl.deleteBuffer(planeIndexBuffer);
       gl.deleteProgram(colorProgram);
-      gl.deleteProgram(pointProgram);
       gl.deleteProgram(textureProgram);
+      gl.deleteProgram(volumeTextureProgram);
     };
   }, [selectedNodeId, highlightedLayerIds, loadTick]);
 
-  const selectedSliceLayer =
-    visibleLayers.find(
-      (layer) =>
-        layer.id === selectedNodeId &&
-        (layer.renderMode === "slices" || layer.type === "custom-slice")
-    ) ?? null;
+  const selectedDataLayer =
+    visibleLayers.find((layer) => layer.id === selectedNodeId && (isOmeZarrLayer(layer) || layer.type === "custom-slice")) ?? null;
 
   const selectedVolume =
-    selectedSliceLayer &&
+    selectedDataLayer &&
     (() => {
-      if (
-        selectedSliceLayer.type === "remote" &&
-        typeof selectedSliceLayer.source === "string"
-      ) {
-        return volumeCacheRef.current.get(selectedSliceLayer.source) ?? null;
+      if (selectedDataLayer.type === "remote" && typeof selectedDataLayer.source === "string") {
+        const resolutionUm = getRemoteLayerResolutionUm(selectedDataLayer);
+        return (
+          volumeCacheRef.current.get(
+            getVolumeCacheKey(selectedDataLayer.source, resolutionUm)
+          ) ?? null
+        );
       }
 
-      if (selectedSliceLayer.type === "custom-slice") {
+      if (selectedDataLayer.type === "custom-slice") {
         const customSource =
-          typeof selectedSliceLayer.source === "object" &&
-          selectedSliceLayer.source !== null
-            ? selectedSliceLayer.source
+          typeof selectedDataLayer.source === "object" && selectedDataLayer.source !== null
+            ? selectedDataLayer.source
             : null;
 
         const volumeNode = customSource?.volumeLayerId
@@ -1154,7 +1306,12 @@ export default function WebGLCanvas({
           volumeNode.type === "remote" &&
           typeof volumeNode.source === "string"
         ) {
-          return volumeCacheRef.current.get(volumeNode.source) ?? null;
+          const resolutionUm = getRemoteLayerResolutionUm(volumeNode);
+          return (
+            volumeCacheRef.current.get(
+              getVolumeCacheKey(volumeNode.source, resolutionUm)
+            ) ?? null
+          );
         }
       }
 
@@ -1163,10 +1320,7 @@ export default function WebGLCanvas({
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
-      <canvas
-        ref={canvasRef}
-        style={{ width: "100%", height: "100%", display: "block" }}
-      />
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
 
       <div
         style={{
@@ -1189,11 +1343,19 @@ export default function WebGLCanvas({
         <div>Pencil tool: annotation mode placeholder</div>
         {selectedVolume && (
           <>
-            <div>OME-Zarr level: {selectedVolume.datasetPath}</div>
+            <div>Requested resolution: {selectedVolume.requestedResolutionUm ?? "n/a"} µm</div>
+            <div>Resolved resolution: {selectedVolume.resolvedResolutionUm ?? "unknown"} µm</div>
+            <div>Dataset index: {selectedVolume.datasetIndex}</div>
+            <div>OME-Zarr path: {selectedVolume.datasetPath}</div>
+            <div>
+              Voxel size (z,y,x): {selectedVolume.voxelSizeUm.z ?? "?"},{" "}
+              {selectedVolume.voxelSizeUm.y ?? "?"}, {selectedVolume.voxelSizeUm.x ?? "?"} µm
+            </div>
             <div>
               Dims (z,y,x): {selectedVolume.dims.z}, {selectedVolume.dims.y},{" "}
               {selectedVolume.dims.x}
             </div>
+            <div>Raw shape: [{selectedVolume.rawShape.join(", ")}]</div>
           </>
         )}
       </div>

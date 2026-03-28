@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RemoteRenderMode } from "./layerTypes";
+import type { RemoteOmeResolution, RemoteRenderMode } from "./layerTypes";
 
 type LayerCreationMode = "drawing" | "external" | "custom";
 
@@ -10,6 +10,7 @@ type ExternalSourceItem = {
   icon: "generic" | "custom";
   builtIn?: boolean;
   renderMode?: RemoteRenderMode;
+  remoteResolution?: RemoteOmeResolution;
 };
 
 function PencilIcon() {
@@ -172,29 +173,90 @@ function TabButton({
         </div>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700 }}>{title}</div>
-          <div style={{ fontSize: 11, opacity: 0.72, marginTop: 4 }}>{subtitle}</div>
+          <div style={{ fontSize: 11, opacity: 0.72, marginTop: 4 }}>
+            {subtitle}
+          </div>
         </div>
       </div>
     </button>
   );
 }
 
+const ALLEN_URL =
+  "https://storage.googleapis.com/sbh-assistant-data/allen_average_template.ome.zarr/";
+
 const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
+  // {
+  //   id: "allen-average-brain-volume-10um",
+  //   name: "Allen Average Mouse Brain (Volume · 10 µm)",
+  //   url: ALLEN_URL,
+  //   icon: "generic",
+  //   builtIn: true,
+  //   renderMode: "volume",
+  //   remoteResolution: "10um",
+  // },
   {
-    id: "allen-average-brain-volume",
-    name: "Allen Average Mouse Brain (Volume)",
-    url: "https://storage.googleapis.com/sbh-assistant-data/allen_average_template.ome.zarr/",
+    id: "allen-average-brain-volume-25um",
+    name: "Allen Average Mouse Brain (Volume · 25 µm)",
+    url: ALLEN_URL,
     icon: "generic",
     builtIn: true,
     renderMode: "volume",
+    remoteResolution: "25um",
   },
   {
-    id: "allen-average-brain-slices",
-    name: "Allen Average Mouse Brain (Slices)",
-    url: "https://storage.googleapis.com/sbh-assistant-data/allen_average_template.ome.zarr/",
+    id: "allen-average-brain-volume-50um",
+    name: "Allen Average Mouse Brain (Volume · 50 µm)",
+    url: ALLEN_URL,
+    icon: "generic",
+    builtIn: true,
+    renderMode: "volume",
+    remoteResolution: "50um",
+  },
+  {
+    id: "allen-average-brain-volume-100um",
+    name: "Allen Average Mouse Brain (Volume · 100 µm)",
+    url: ALLEN_URL,
+    icon: "generic",
+    builtIn: true,
+    renderMode: "volume",
+    remoteResolution: "100um",
+  },
+  // {
+  //   id: "allen-average-brain-slices-10um",
+  //   name: "Allen Average Mouse Brain (Slices · 10 µm)",
+  //   url: ALLEN_URL,
+  //   icon: "generic",
+  //   builtIn: true,
+  //   renderMode: "slices",
+  //   remoteResolution: "10um",
+  // },
+  {
+    id: "allen-average-brain-slices-25um",
+    name: "Allen Average Mouse Brain (Slices · 25 µm)",
+    url: ALLEN_URL,
     icon: "generic",
     builtIn: true,
     renderMode: "slices",
+    remoteResolution: "25um",
+  },
+  {
+    id: "allen-average-brain-slices-50um",
+    name: "Allen Average Mouse Brain (Slices · 50 µm)",
+    url: ALLEN_URL,
+    icon: "generic",
+    builtIn: true,
+    renderMode: "slices",
+    remoteResolution: "50um",
+  },
+  {
+    id: "allen-average-brain-slices-100um",
+    name: "Allen Average Mouse Brain (Slices · 100 µm)",
+    url: ALLEN_URL,
+    icon: "generic",
+    builtIn: true,
+    renderMode: "slices",
+    remoteResolution: "100um",
   },
 ];
 
@@ -215,6 +277,7 @@ export default function ImportDataPanel({
       url: string;
       icon?: "generic" | "custom";
       renderMode?: RemoteRenderMode;
+      remoteResolution?: RemoteOmeResolution;
     }>
   ) => void;
   onAddFiles: (files: FileList | null) => void;
@@ -287,6 +350,7 @@ export default function ImportDataPanel({
 
     if (mode === "external") {
       if (!selectedExternalSources.length) return;
+
       onAddExternalSources(
         selectedExternalSources.map((item) => ({
           id: item.id,
@@ -294,6 +358,7 @@ export default function ImportDataPanel({
           url: item.url,
           icon: item.icon,
           renderMode: item.renderMode,
+          remoteResolution: item.remoteResolution,
         }))
       );
       return;
@@ -459,25 +524,23 @@ export default function ImportDataPanel({
                 type="button"
                 onClick={() => setShowAddExternalForm((prev) => !prev)}
                 style={{
-                  height: 36,
+                  height: 38,
                   padding: "0 12px",
                   borderRadius: 10,
                   border: "1px solid rgba(255,255,255,0.10)",
                   background: "rgba(255,255,255,0.05)",
                   color: "white",
                   cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 600,
                 }}
               >
-                + Add external source
+                {showAddExternalForm ? "Close" : "Add custom source"}
               </button>
             </div>
 
             {showAddExternalForm && (
               <div
                 style={{
-                  marginBottom: 16,
+                  marginBottom: 14,
                   borderRadius: 14,
                   border: "1px solid rgba(255,255,255,0.10)",
                   background: "rgba(255,255,255,0.04)",

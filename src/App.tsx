@@ -34,6 +34,7 @@ import {
 import type {
   LayerTreeNode,
   RemoteDataFormat,
+  RemoteOmeResolution,
   RemoteRenderMode,
   SliceLayerParams,
   SlicePlane,
@@ -86,6 +87,7 @@ type ExternalSourceDraft = {
   url: string;
   icon?: "generic" | "custom";
   renderMode?: RemoteRenderMode;
+  remoteResolution?: RemoteOmeResolution;
 };
 
 type AddSliceOptions = {
@@ -430,14 +432,31 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   useEffect(() => {
     if (selectedNode && isRemoteOmeLayer(selectedNode)) {
-      setSliceVolumeLayerId(selectedNode.id);
+      if (sliceVolumeLayerId !== selectedNode.id) {
+        setSliceVolumeLayerId(selectedNode.id);
+      }
       return;
     }
 
-    if (!sliceVolumeLayerId && omeLayers.length > 0) {
-      setSliceVolumeLayerId(omeLayers[0].id);
+    const currentSliceVolumeNode = sliceVolumeLayerId
+      ? findNodeById(layerTree, sliceVolumeLayerId)
+      : null;
+    const currentSliceVolumeIsValid =
+      !!currentSliceVolumeNode && isRemoteOmeLayer(currentSliceVolumeNode);
+
+    if (currentSliceVolumeIsValid) {
+      return;
     }
-  }, [selectedNode, sliceVolumeLayerId, omeLayers]);
+
+    if (omeLayers.length > 0) {
+      setSliceVolumeLayerId(omeLayers[0].id);
+      return;
+    }
+
+    if (sliceVolumeLayerId !== "") {
+      setSliceVolumeLayerId("");
+    }
+  }, [selectedNode, sliceVolumeLayerId, omeLayers, layerTree]);
 
   useEffect(() => {
     if (hasHydratedHistoryRef.current) return;
@@ -867,6 +886,11 @@ export default function App({ startupSlices = [] }: AppProps) {
         setSelectedNodeId(getFirstLayerId(next));
       }
 
+      if (sliceVolumeLayerId === nodeId) {
+        const nextOmeLayer = collectAllLayerItems(next).find(isRemoteOmeLayer) ?? null;
+        setSliceVolumeLayerId(nextOmeLayer?.id ?? "");
+      }
+
       return next;
     });
   }
@@ -891,6 +915,7 @@ export default function App({ startupSlices = [] }: AppProps) {
 
       for (const item of sources) {
         const trimmedUrl = item.url.trim();
+        const remoteFormat = detectRemoteFormat(trimmedUrl);
         const node: LayerTreeNode = {
           id: createId(),
           kind: "layer",
@@ -900,10 +925,12 @@ export default function App({ startupSlices = [] }: AppProps) {
           source: trimmedUrl,
           sourceKind: "external",
           description: item.icon === "custom" ? "Custom external source" : "External data source",
-          remoteFormat: detectRemoteFormat(trimmedUrl),
+          remoteFormat,
           renderMode:
             item.renderMode ??
-            (detectRemoteFormat(trimmedUrl) === "ome-zarr" ? "volume" : "auto"),
+            (remoteFormat === "ome-zarr" ? "volume" : "auto"),
+          remoteResolution:
+            remoteFormat === "ome-zarr" ? item.remoteResolution ?? "100um" : undefined,
         };
 
         const selected = selectedNodeId ? findNodeById(next, selectedNodeId) : null;

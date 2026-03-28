@@ -3,6 +3,14 @@ import * as zarr from "zarrita";
 export type LoadedVolume = {
   url: string;
   datasetPath: string;
+  datasetIndex: number;
+  requestedResolutionUm: number | null;
+  resolvedResolutionUm: number | null;
+  voxelSizeUm: {
+    z: number | null;
+    y: number | null;
+    x: number | null;
+  };
   shape: number[];
   rawShape: number[];
   dims: {
@@ -46,6 +54,8 @@ export type ObliqueSliceSpec = {
   width?: number;
   height?: number;
 };
+
+export type OMEResolutionMicrons = 10 | 25 | 50 | 100;
 
 type OMEAxis = {
   name?: string;
@@ -365,17 +375,32 @@ function getObliqueDisplayTransform(
   return {};
 }
 
-export async function loadLowestResolutionVolume(url: string): Promise<LoadedVolume> {
+function getDatasetPathForRequestedResolution(
+  requested: OMEResolutionMicrons
+): { index: number; path: string } {
+  switch (requested) {
+    case 10:
+      return { index: 0, path: "s0" };
+    case 25:
+      return { index: 1, path: "s1" };
+    case 50:
+      return { index: 2, path: "s2" };
+    case 100:
+    default:
+      return { index: 3, path: "s3" };
+  }
+}
+
+async function loadVolumeByDatasetPath(
+  url: string,
+  datasetIndex: number,
+  datasetPath: string,
+  requestedResolutionUm: OMEResolutionMicrons | null,
+  resolvedResolutionUm: number | null,
+  voxelSizeUm: { z: number | null; y: number | null; x: number | null }
+): Promise<LoadedVolume> {
   const clean = stripTrailingSlash(url);
   const root = zarr.root(new zarr.FetchStore(clean));
-
-  const attrs = await readOMEAttributes(clean);
-
-  const datasetPath =
-    attrs?.multiscales?.[0]?.datasets?.[
-      attrs.multiscales[0].datasets.length - 1
-    ]?.path ?? "0";
-
   const arr = await zarr.open(root.resolve(datasetPath), { kind: "array" });
   const full = await zarr.get(arr);
 
@@ -395,11 +420,56 @@ export async function loadLowestResolutionVolume(url: string): Promise<LoadedVol
   return {
     url: clean,
     datasetPath,
+    datasetIndex,
+    requestedResolutionUm,
+    resolvedResolutionUm,
+    voxelSizeUm,
     shape: rawShape,
     rawShape,
     dims,
     data: normalized,
   };
+}
+
+export async function loadVolumeAtResolution(
+  url: string,
+  requestedResolutionUm: OMEResolutionMicrons
+): Promise<LoadedVolume> {
+  const clean = stripTrailingSlash(url);
+  const { index, path } = getDatasetPathForRequestedResolution(requestedResolutionUm);
+
+  const voxelSizeUm = {
+    z: requestedResolutionUm,
+    y: requestedResolutionUm,
+    x: requestedResolutionUm,
+  };
+
+  console.log("[OME-Zarr] requested:", requestedResolutionUm, "resolved:", {
+    index,
+    path,
+    voxelSizeUm,
+    resolvedResolutionUm: requestedResolutionUm,
+  });
+
+  return loadVolumeByDatasetPath(
+    clean,
+    index,
+    path,
+    requestedResolutionUm,
+    requestedResolutionUm,
+    voxelSizeUm
+  );
+}
+
+export async function loadLowestResolutionVolume(url: string): Promise<LoadedVolume> {
+  return loadVolumeByDatasetPath(
+    url,
+    3,
+    "s3",
+    100,
+    100,
+    { z: 100, y: 100, x: 100 }
+  );
 }
 
 export function getVoxel(
