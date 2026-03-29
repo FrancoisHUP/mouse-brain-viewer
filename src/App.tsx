@@ -33,6 +33,7 @@ import {
 } from "./viewerHistory";
 import type {
   LayerTreeNode,
+  RemoteContentKind,
   RemoteDataFormat,
   RemoteOmeResolution,
   RemoteRenderMode,
@@ -87,6 +88,7 @@ type ExternalSourceDraft = {
   url: string;
   icon?: "generic" | "custom";
   remoteFormat?: RemoteDataFormat;
+  remoteContentKind?: RemoteContentKind;
   renderMode?: RemoteRenderMode;
   remoteResolution?: RemoteOmeResolution;
 };
@@ -933,10 +935,13 @@ export default function App({ startupSlices = [] }: AppProps) {
           description:
             remoteFormat === "mesh-obj"
               ? "External mesh source"
+              : item.remoteContentKind === "annotation"
+              ? "Allen annotation overlay"
               : item.icon === "custom"
               ? "Custom external source"
               : "External data source",
           remoteFormat,
+          remoteContentKind: item.remoteContentKind ?? "intensity",
           renderMode:
             remoteFormat === "ome-zarr" ? item.renderMode ?? "volume" : undefined,
           remoteResolution:

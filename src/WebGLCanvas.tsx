@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { mat4, vec3 } from "gl-matrix";
 import type { SerializableCameraState } from "./viewerState";
 import type { ToolId } from "./BottomToolbar";
-import type { LayerTreeNode, LayerItemNode, RemoteOmeResolution } from "./layerTypes";
+import type { LayerTreeNode, LayerItemNode, RemoteContentKind, RemoteOmeResolution } from "./layerTypes";
 import {
   collectLayerIdsInSubtree,
   collectVisibleLayerItems,
@@ -25,6 +25,7 @@ import {
   type SlicePlane,
   type ViewerOrientationProfile,
 } from "./omeZarr";
+import { annotationSliceToRgbaBytes } from "./annotationColors";
 import {
   getAllenMeshModelMatrix,
   getMeshCacheKey,
@@ -126,6 +127,10 @@ function getRemoteLayerResolution(layer: LayerItemNode): RemoteOmeResolution {
   return layer.remoteResolution ?? "100um";
 }
 
+function getRemoteLayerContentKind(layer: LayerItemNode): RemoteContentKind {
+  return layer.remoteContentKind ?? "intensity";
+}
+
 function getRemoteLayerResolutionUm(layer: LayerItemNode): 10 | 25 | 50 | 100 {
   switch (getRemoteLayerResolution(layer)) {
     case "10um":
@@ -140,8 +145,12 @@ function getRemoteLayerResolutionUm(layer: LayerItemNode): 10 | 25 | 50 | 100 {
   }
 }
 
-function getVolumeCacheKey(url: string, resolutionUm: 10 | 25 | 50 | 100): string {
-  return `${url}::${resolutionUm}`;
+function getVolumeCacheKey(
+  url: string,
+  resolutionUm: 10 | 25 | 50 | 100,
+  contentKind: RemoteContentKind
+): string {
+  return `${url}::${resolutionUm}::${contentKind}`;
 }
 
 function getVolumeDisplayScale(volume: LoadedVolume) {
@@ -169,7 +178,7 @@ function collectReferencedVolumeCacheKeys(nodes: LayerTreeNode[]): Set<string> {
       }
 
       if (isOmeZarrLayer(node) && typeof node.source === "string") {
-        keys.add(getVolumeCacheKey(node.source, getRemoteLayerResolutionUm(node)));
+        keys.add(getVolumeCacheKey(node.source, getRemoteLayerResolutionUm(node), getRemoteLayerContentKind(node)));
         continue;
       }
 
@@ -189,7 +198,7 @@ function collectReferencedVolumeCacheKeys(nodes: LayerTreeNode[]): Set<string> {
           volumeNode.remoteFormat === "ome-zarr"
         ) {
           keys.add(
-            getVolumeCacheKey(volumeNode.source, getRemoteLayerResolutionUm(volumeNode))
+            getVolumeCacheKey(volumeNode.source, getRemoteLayerResolutionUm(volumeNode), getRemoteLayerContentKind(volumeNode))
           );
         }
       }
@@ -219,20 +228,6 @@ function collectReferencedMeshCacheKeys(nodes: LayerTreeNode[]): Set<string> {
   visit(nodes);
   return keys;
 }
-
-function getAllenReferenceDisplayScale() {
-  const vx = ALLEN_REFERENCE_DIMS_10UM.x;
-  const vy = ALLEN_REFERENCE_DIMS_10UM.y;
-  const vz = ALLEN_REFERENCE_DIMS_10UM.z;
-  const base = 1.6;
-
-  return {
-    sx: base,
-    sy: base * (vy / vx),
-    sz: base * (vz / vx),
-  };
-}
-
 
 function getPlaneSliceCount(volume: LoadedVolume, plane: SlicePlane): number {
   if (plane === "xy") return volume.dims.z;
@@ -365,15 +360,16 @@ export default function WebGLCanvas({
   const volumesToLoad = useMemo(() => {
     const entries = new Map<
       string,
-      { cacheKey: string; url: string; resolutionUm: 10 | 25 | 50 | 100 }
+      { cacheKey: string; url: string; resolutionUm: 10 | 25 | 50 | 100; contentKind: RemoteContentKind }
     >();
 
     for (const layer of visibleLayers) {
       if (isOmeZarrLayer(layer)) {
         const url = layer.source as string;
         const resolutionUm = getRemoteLayerResolutionUm(layer);
-        const cacheKey = getVolumeCacheKey(url, resolutionUm);
-        entries.set(cacheKey, { cacheKey, url, resolutionUm });
+        const contentKind = getRemoteLayerContentKind(layer);
+        const cacheKey = getVolumeCacheKey(url, resolutionUm, contentKind);
+        entries.set(cacheKey, { cacheKey, url, resolutionUm, contentKind });
         continue;
       }
 
@@ -395,11 +391,13 @@ export default function WebGLCanvas({
           volumeNode.remoteFormat === "ome-zarr"
         ) {
           const resolutionUm = getRemoteLayerResolutionUm(volumeNode);
-          const cacheKey = getVolumeCacheKey(volumeNode.source, resolutionUm);
+          const contentKind = getRemoteLayerContentKind(volumeNode);
+          const cacheKey = getVolumeCacheKey(volumeNode.source, resolutionUm, contentKind);
           entries.set(cacheKey, {
             cacheKey,
             url: volumeNode.source,
             resolutionUm,
+            contentKind,
           });
         }
       }
@@ -429,7 +427,7 @@ export default function WebGLCanvas({
 
       loadingUrlsRef.current.add(item.cacheKey);
 
-      loadVolumeAtResolution(item.url, item.resolutionUm)
+      loadVolumeAtResolution(item.url, item.resolutionUm, item.contentKind)
         .then((volume) => {
           volumeCacheRef.current.set(item.cacheKey, volume);
           setLoadTick((v) => v + 1);
@@ -696,9 +694,9 @@ export default function WebGLCanvas({
 
       const { xy, xz, yz } = extractOrientedCenterSlices(volume, ALLEN_VIEWER_PROFILE);
 
-      const xyTex = createSliceTexture(xy.width, xy.height, sliceToRgbaBytes(xy.pixels));
-      const xzTex = createSliceTexture(xz.width, xz.height, sliceToRgbaBytes(xz.pixels));
-      const yzTex = createSliceTexture(yz.width, yz.height, sliceToRgbaBytes(yz.pixels));
+      const xyTex = createSliceTexture(xy.width, xy.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(xy.pixels) : sliceToRgbaBytes(xy.pixels));
+      const xzTex = createSliceTexture(xz.width, xz.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(xz.pixels) : sliceToRgbaBytes(xz.pixels));
+      const yzTex = createSliceTexture(yz.width, yz.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(yz.pixels) : sliceToRgbaBytes(yz.pixels));
 
       const set: SliceTextureSet = {
         xy: xyTex,
@@ -752,7 +750,7 @@ export default function WebGLCanvas({
               ALLEN_VIEWER_PROFILE
             );
 
-      const texture = createSliceTexture(slice.width, slice.height, sliceToRgbaBytes(slice.pixels));
+      const texture = createSliceTexture(slice.width, slice.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(slice.pixels) : sliceToRgbaBytes(slice.pixels));
 
       const entry = {
         texture,
@@ -774,7 +772,7 @@ export default function WebGLCanvas({
       if (cached) return cached;
 
       const slice = extractOrientedSlice2D(volume, plane, index, ALLEN_VIEWER_PROFILE);
-      const texture = createSliceTexture(slice.width, slice.height, sliceToRgbaBytes(slice.pixels));
+      const texture = createSliceTexture(slice.width, slice.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(slice.pixels) : sliceToRgbaBytes(slice.pixels));
       const entry = {
         texture,
         width: slice.width,
@@ -1120,7 +1118,7 @@ export default function WebGLCanvas({
       const plane = chooseVolumeRenderPlane(forward);
       const totalSlices = getPlaneSliceCount(volume, plane);
       const displayIndices = buildVolumeDisplayIndices(totalSlices);
-      const alpha = getVolumeStackAlpha(displayIndices.length, highlighted);
+      const alpha = volume.contentKind === "annotation" ? (highlighted ? 0.92 : 0.78) : getVolumeStackAlpha(displayIndices.length, highlighted);
 
       const sortedIndices = [...displayIndices].sort((a, b) => {
         const modelA = makeSliceModelMatrix(volume, plane, a, ALLEN_VIEWER_PROFILE);
@@ -1131,6 +1129,8 @@ export default function WebGLCanvas({
         mat4.multiply(mvB, view, modelB);
         return mvA[14] - mvB[14];
       });
+
+      gl.depthMask(false);
 
       for (const displayIndex of sortedIndices) {
         const sliceKey = `${volumeKey}|volume|${plane}|${displayIndex}`;
@@ -1147,8 +1147,14 @@ export default function WebGLCanvas({
         mat4.multiply(mv, view, model);
         mat4.multiply(mvp, projection, mv);
 
-        drawVolumeSlice(sliceEntry.texture, mvp, alpha);
+        if (volume.contentKind === "annotation") {
+          drawTexturedPlane(sliceEntry.texture, mvp, alpha);
+        } else {
+          drawVolumeSlice(sliceEntry.texture, mvp, alpha);
+        }
       }
+
+      gl.depthMask(true);
     }
 
     function render(now: number) {
@@ -1216,7 +1222,8 @@ export default function WebGLCanvas({
         if (isOmeZarrLayer(layer) && typeof layer.source === "string") {
           const volumeKey = getVolumeCacheKey(
             layer.source,
-            getRemoteLayerResolutionUm(layer)
+            getRemoteLayerResolutionUm(layer),
+            getRemoteLayerContentKind(layer)
           );
           const volume = volumeCacheRef.current.get(volumeKey);
 
@@ -1294,7 +1301,8 @@ export default function WebGLCanvas({
 
           const volumeKey = getVolumeCacheKey(
             volumeNode.source,
-            getRemoteLayerResolutionUm(volumeNode)
+            getRemoteLayerResolutionUm(volumeNode),
+            getRemoteLayerContentKind(volumeNode)
           );
           const volume = volumeCacheRef.current.get(volumeKey);
           if (!volume) {
@@ -1504,7 +1512,7 @@ export default function WebGLCanvas({
         const resolutionUm = getRemoteLayerResolutionUm(selectedDataLayer);
         return (
           volumeCacheRef.current.get(
-            getVolumeCacheKey(selectedDataLayer.source, resolutionUm)
+            getVolumeCacheKey(selectedDataLayer.source, resolutionUm, getRemoteLayerContentKind(selectedDataLayer))
           ) ?? null
         );
       }
@@ -1528,7 +1536,7 @@ export default function WebGLCanvas({
           const resolutionUm = getRemoteLayerResolutionUm(volumeNode);
           return (
             volumeCacheRef.current.get(
-              getVolumeCacheKey(volumeNode.source, resolutionUm)
+              getVolumeCacheKey(volumeNode.source, resolutionUm, getRemoteLayerContentKind(volumeNode))
             ) ?? null
           );
         }

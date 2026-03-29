@@ -1,5 +1,7 @@
 import * as zarr from "zarrita";
 
+export type VolumeContentKind = "intensity" | "annotation";
+
 export type LoadedVolume = {
   url: string;
   datasetPath: string;
@@ -18,7 +20,8 @@ export type LoadedVolume = {
     y: number;
     x: number;
   };
-  data: Float32Array;
+  contentKind: VolumeContentKind;
+  data: Float32Array | Uint32Array;
 };
 
 export type Slice2D = {
@@ -397,7 +400,8 @@ async function loadVolumeByDatasetPath(
   datasetPath: string,
   requestedResolutionUm: OMEResolutionMicrons | null,
   resolvedResolutionUm: number | null,
-  voxelSizeUm: { z: number | null; y: number | null; x: number | null }
+  voxelSizeUm: { z: number | null; y: number | null; x: number | null },
+  contentKind: VolumeContentKind
 ): Promise<LoadedVolume> {
   const clean = stripTrailingSlash(url);
   const root = zarr.root(new zarr.FetchStore(clean));
@@ -406,16 +410,21 @@ async function loadVolumeByDatasetPath(
 
   const rawShape = [...full.shape];
   const dims = inferSpatialDims(rawShape);
-  const normalized = normalizeToFloat01(
-    full.data as
-      | Uint8Array
-      | Uint16Array
-      | Int16Array
-      | Int32Array
-      | Uint32Array
-      | Float32Array
-      | Float64Array
-  );
+  const rawData = full.data as
+    | Uint8Array
+    | Uint16Array
+    | Int16Array
+    | Int32Array
+    | Uint32Array
+    | Float32Array
+    | Float64Array;
+
+  const data =
+    contentKind === "annotation"
+      ? rawData instanceof Uint32Array
+        ? rawData
+        : Uint32Array.from(rawData as ArrayLike<number>)
+      : normalizeToFloat01(rawData);
 
   return {
     url: clean,
@@ -427,13 +436,15 @@ async function loadVolumeByDatasetPath(
     shape: rawShape,
     rawShape,
     dims,
-    data: normalized,
+    contentKind,
+    data,
   };
 }
 
 export async function loadVolumeAtResolution(
   url: string,
-  requestedResolutionUm: OMEResolutionMicrons
+  requestedResolutionUm: OMEResolutionMicrons,
+  contentKind: VolumeContentKind = "intensity"
 ): Promise<LoadedVolume> {
   const clean = stripTrailingSlash(url);
   const { index, path } = getDatasetPathForRequestedResolution(requestedResolutionUm);
@@ -449,6 +460,7 @@ export async function loadVolumeAtResolution(
     path,
     voxelSizeUm,
     resolvedResolutionUm: requestedResolutionUm,
+    contentKind,
   });
 
   return loadVolumeByDatasetPath(
@@ -457,7 +469,8 @@ export async function loadVolumeAtResolution(
     path,
     requestedResolutionUm,
     requestedResolutionUm,
-    voxelSizeUm
+    voxelSizeUm,
+    contentKind
   );
 }
 
@@ -468,7 +481,8 @@ export async function loadLowestResolutionVolume(url: string): Promise<LoadedVol
     "s3",
     100,
     100,
-    { z: 100, y: 100, x: 100 }
+    { z: 100, y: 100, x: 100 },
+    "intensity"
   );
 }
 
@@ -725,6 +739,10 @@ export function sampleTrilinear(
   const zc = clampContinuous(z, 0, zMax);
   const yc = clampContinuous(y, 0, yMax);
   const xc = clampContinuous(x, 0, xMax);
+
+  if (volume.contentKind === "annotation") {
+    return getVoxel(volume, Math.round(zc), Math.round(yc), Math.round(xc));
+  }
 
   const z0 = Math.floor(zc);
   const y0 = Math.floor(yc);

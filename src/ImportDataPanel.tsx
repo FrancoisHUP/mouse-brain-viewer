@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RemoteDataFormat, RemoteOmeResolution, RemoteRenderMode } from "./layerTypes";
+import type { RemoteContentKind, RemoteDataFormat, RemoteOmeResolution, RemoteRenderMode } from "./layerTypes";
 
 type LayerCreationMode = "drawing" | "external" | "custom";
 
@@ -10,6 +10,7 @@ type ExternalSourceItem = {
   icon: "generic" | "custom";
   builtIn?: boolean;
   remoteFormat?: RemoteDataFormat;
+  remoteContentKind?: RemoteContentKind;
   renderMode?: RemoteRenderMode;
   remoteResolution?: RemoteOmeResolution;
 };
@@ -189,6 +190,9 @@ const ALLEN_URL =
 const ALLEN_BRAIN_SKELETON_URL =
   "https://storage.googleapis.com/sbh-assistant-data/allen_structure_meshes/obj/997.obj";
 
+const ALLEN_ANNOTATION_URL =
+  "https://storage.googleapis.com/sbh-assistant-data/allen_annotation.ome.zarr/";
+
 const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
   {
     id: "allen-brain-skeleton-mesh",
@@ -231,6 +235,39 @@ const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     url: ALLEN_URL,
     icon: "generic",
     builtIn: true,
+    renderMode: "volume",
+    remoteResolution: "100um",
+  },
+  {
+    id: "allen-annotation-volume-25um",
+    name: "Allen Annotation (Overlay · 25 µm)",
+    url: ALLEN_ANNOTATION_URL,
+    icon: "generic",
+    builtIn: true,
+    remoteFormat: "ome-zarr",
+    remoteContentKind: "annotation",
+    renderMode: "volume",
+    remoteResolution: "25um",
+  },
+  {
+    id: "allen-annotation-volume-50um",
+    name: "Allen Annotation (Overlay · 50 µm)",
+    url: ALLEN_ANNOTATION_URL,
+    icon: "generic",
+    builtIn: true,
+    remoteFormat: "ome-zarr",
+    remoteContentKind: "annotation",
+    renderMode: "volume",
+    remoteResolution: "50um",
+  },
+  {
+    id: "allen-annotation-volume-100um",
+    name: "Allen Annotation (Overlay · 100 µm)",
+    url: ALLEN_ANNOTATION_URL,
+    icon: "generic",
+    builtIn: true,
+    remoteFormat: "ome-zarr",
+    remoteContentKind: "annotation",
     renderMode: "volume",
     remoteResolution: "100um",
   },
@@ -289,6 +326,7 @@ export default function ImportDataPanel({
       url: string;
       icon?: "generic" | "custom";
       remoteFormat?: RemoteDataFormat;
+      remoteContentKind?: RemoteContentKind;
       renderMode?: RemoteRenderMode;
       remoteResolution?: RemoteOmeResolution;
     }>
@@ -346,6 +384,7 @@ export default function ImportDataPanel({
       icon: "custom",
       builtIn: false,
       remoteFormat: undefined,
+      remoteContentKind: "intensity",
       renderMode: "auto",
     };
 
@@ -372,6 +411,7 @@ export default function ImportDataPanel({
           url: item.url,
           icon: item.icon,
           remoteFormat: item.remoteFormat,
+          remoteContentKind: item.remoteContentKind,
           renderMode: item.renderMode,
           remoteResolution: item.remoteResolution,
         }))

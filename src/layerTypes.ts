@@ -59,6 +59,10 @@ export type RemoteOmeResolution =
   | "50um"
   | "100um";
 
+export type RemoteContentKind =
+  | "intensity"
+  | "annotation";
+
 type BaseNode = {
   id: string;
   name: string;
@@ -83,6 +87,7 @@ export type LayerItemNode = BaseNode & {
   remoteFormat?: RemoteDataFormat;
   renderMode?: RemoteRenderMode;
   remoteResolution?: RemoteOmeResolution;
+  remoteContentKind?: RemoteContentKind;
 
   // For custom slices
   sliceParams?: SliceLayerParams;
@@ -137,6 +142,19 @@ export function isRemoteMeshLayer(
     node.type === "remote" &&
     typeof node.source === "string" &&
     node.remoteFormat === "mesh-obj"
+  );
+}
+
+export function isRemoteAnnotationLayer(
+  node: LayerTreeNode | null | undefined
+): node is LayerItemNode {
+  return (
+    !!node &&
+    node.kind === "layer" &&
+    node.type === "remote" &&
+    typeof node.source === "string" &&
+    node.remoteFormat === "ome-zarr" &&
+    node.remoteContentKind === "annotation"
   );
 }
 
