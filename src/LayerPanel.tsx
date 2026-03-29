@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   closestCenter,
   DndContext,
@@ -20,6 +21,11 @@ import type { LayerGroupNode, LayerTreeNode, FlatTreeRow } from "./layerTypes";
 import { flattenTree } from "./layerTypes";
 
 const ROOT_DROP_ID = "__root_drop_zone__";
+
+type MenuPosition = {
+  top: number;
+  left: number;
+};
 
 function EyeIcon({ open }: { open: boolean }) {
   const common = {
@@ -131,6 +137,26 @@ function MoreVertical() {
   );
 }
 
+function AddSourceIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10 13a5 5 0 007.07 0l2.12-2.12a5 5 0 10-7.07-7.07L10 6" />
+      <path d="M14 11a5 5 0 00-7.07 0L4.81 13.12a5 5 0 107.07 7.07L14 18" />
+      <path d="M19 8v6" />
+      <path d="M16 11h6" />
+    </svg>
+  );
+}
+
 function RowShell({
   row,
   selected,
@@ -234,6 +260,7 @@ function SortableTreeRow({
   selectedNodeId,
   openMenuId,
   setOpenMenuId,
+  setMenuPosition,
   renamingId,
   renameDraft,
   setRenameDraft,
@@ -250,6 +277,7 @@ function SortableTreeRow({
   selectedNodeId: string | null;
   openMenuId: string | null;
   setOpenMenuId: (id: string | null) => void;
+  setMenuPosition: (position: MenuPosition | null) => void;
   renamingId: string | null;
   renameDraft: string;
   setRenameDraft: (value: string) => void;
@@ -445,7 +473,34 @@ function SortableTreeRow({
               title="More"
               onClick={(e) => {
                 e.stopPropagation();
-                setOpenMenuId(openMenuId === row.id ? null : row.id);
+
+                if (openMenuId === row.id) {
+                  setOpenMenuId(null);
+                  setMenuPosition(null);
+                  return;
+                }
+
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                const menuWidth = 140;
+                const gap = 6;
+
+                let left = rect.right - menuWidth;
+                let top = rect.bottom + gap;
+
+                if (left < 8) left = 8;
+                if (left + menuWidth > window.innerWidth - 8) {
+                  left = window.innerWidth - menuWidth - 8;
+                }
+
+                const estimatedMenuHeight = 84;
+                if (top + estimatedMenuHeight > window.innerHeight - 8) {
+                  top = rect.top - estimatedMenuHeight - gap;
+                }
+
+                if (top < 8) top = 8;
+
+                setMenuPosition({ top, left });
+                setOpenMenuId(row.id);
               }}
               style={{
                 width: 30,
@@ -463,46 +518,6 @@ function SortableTreeRow({
             >
               <MoreVertical />
             </button>
-
-            {openMenuId === row.id && (
-              <div
-                data-layer-menu-popup="true"
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  position: "absolute",
-                  top: 36,
-                  right: 0,
-                  minWidth: 140,
-                  background: "rgba(14,17,22,0.98)",
-                  border: "1px solid rgba(255,255,255,0.10)",
-                  borderRadius: 12,
-                  boxShadow: "0 12px 28px rgba(0,0,0,0.35)",
-                  padding: 6,
-                  zIndex: 50,
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    startRename(row);
-                    setOpenMenuId(null);
-                  }}
-                  style={menuItemStyle}
-                >
-                  Rename
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onDeleteNode(row.id);
-                    setOpenMenuId(null);
-                  }}
-                  style={menuItemStyle}
-                >
-                  Delete
-                </button>
-              </div>
-            )}
           </div>
         </div>
       </RowShell>
@@ -562,6 +577,7 @@ export default function LayerPanel({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
 
@@ -584,8 +600,11 @@ export default function LayerPanel({
       if (!target) return;
 
       const insideMenu = target.closest("[data-layer-menu-container='true']");
-      if (!insideMenu) {
+      const insidePopup = target.closest("[data-layer-menu-popup='true']");
+
+      if (!insideMenu && !insidePopup) {
         setOpenMenuId(null);
+        setMenuPosition(null);
       }
     }
 
@@ -696,6 +715,7 @@ export default function LayerPanel({
         {`
           .layer-panel-scroll {
             overflow-y: auto;
+            overflow-x: hidden;
             max-height: min(68vh, 720px);
             padding-right: 4px;
             scrollbar-width: thin;
@@ -872,6 +892,7 @@ export default function LayerPanel({
                   onDragStart={(event) => {
                     setActiveId(String(event.active.id));
                     setOpenMenuId(null);
+                    setMenuPosition(null);
                   }}
                   onDragOver={handleDragOver}
                   onDragEnd={handleDragEnd}
@@ -879,6 +900,8 @@ export default function LayerPanel({
                     clearHoverExpandTimer();
                     setActiveId(null);
                     setHoveredGroupId(null);
+                    setOpenMenuId(null);
+                    setMenuPosition(null);
                   }}
                 >
                   <SortableContext
@@ -893,6 +916,7 @@ export default function LayerPanel({
                           selectedNodeId={selectedNodeId}
                           openMenuId={openMenuId}
                           setOpenMenuId={setOpenMenuId}
+                          setMenuPosition={setMenuPosition}
                           renamingId={renamingId}
                           renameDraft={renameDraft}
                           setRenameDraft={setRenameDraft}
@@ -982,6 +1006,53 @@ export default function LayerPanel({
           )}
         </div>
       </div>
+
+      {openMenuId && menuPosition
+        ? createPortal(
+            <div
+              data-layer-menu-popup="true"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "fixed",
+                top: menuPosition.top,
+                left: menuPosition.left,
+                minWidth: 140,
+                background: "rgba(14,17,22,0.98)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                borderRadius: 12,
+                boxShadow: "0 12px 28px rgba(0,0,0,0.35)",
+                padding: 6,
+                zIndex: 9999,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  const row = rows.find((r) => r.id === openMenuId);
+                  if (!row) return;
+                  startRename(row);
+                  setOpenMenuId(null);
+                  setMenuPosition(null);
+                }}
+                style={menuItemStyle}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteNode(openMenuId);
+                  setOpenMenuId(null);
+                  setMenuPosition(null);
+                }}
+                style={menuItemStyle}
+              >
+                Delete
+              </button>
+            </div>,
+            document.body
+          )
+        : null}
     </>
   );
 }

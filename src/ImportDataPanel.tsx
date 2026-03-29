@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RemoteContentKind, RemoteDataFormat, RemoteOmeResolution, RemoteRenderMode } from "./layerTypes";
+import type {
+  RemoteContentKind,
+  RemoteDataFormat,
+  RemoteOmeResolution,
+  RemoteRenderMode,
+} from "./layerTypes";
+import {
+  addCustomExternalSource,
+  deleteCustomExternalSource,
+  getCustomExternalSources,
+  renameCustomExternalSource,
+} from "./customSourceStore";
 
 type LayerCreationMode = "drawing" | "external" | "custom";
 
@@ -13,6 +24,15 @@ type ExternalSourceItem = {
   remoteContentKind?: RemoteContentKind;
   renderMode?: RemoteRenderMode;
   remoteResolution?: RemoteOmeResolution;
+};
+
+type ExternalSourceGroup = {
+  kind: "single" | "group";
+  id: string;
+  name: string;
+  icon: "generic" | "custom";
+  builtIn?: boolean;
+  items: ExternalSourceItem[];
 };
 
 function PencilIcon() {
@@ -66,6 +86,44 @@ function DataIcon() {
       <ellipse cx="12" cy="5" rx="7" ry="3" />
       <path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5" />
       <path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="M20 20l-3.5-3.5" />
+    </svg>
+  );
+}
+
+function AddSourceIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10 13a5 5 0 007.07 0l2.12-2.12a5 5 0 10-7.07-7.07L10 6" />
+      <path d="M14 11a5 5 0 00-7.07 0L4.81 13.12a5 5 0 107.07 7.07L14 18" />
+      <path d="M19 17v6" />
+      <path d="M16 20h6" />
     </svg>
   );
 }
@@ -193,7 +251,7 @@ const ALLEN_BRAIN_SKELETON_URL =
 const ALLEN_ANNOTATION_URL =
   "https://storage.googleapis.com/sbh-assistant-data/allen_annotation.ome.zarr/";
 
-const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
+const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
   {
     id: "allen-brain-skeleton-mesh",
     name: "Allen Mouse Brain Skeleton Mesh",
@@ -202,15 +260,6 @@ const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     builtIn: true,
     remoteFormat: "mesh-obj",
   },
-  // {
-  //   id: "allen-average-brain-volume-10um",
-  //   name: "Allen Average Mouse Brain (Volume · 10 µm)",
-  //   url: ALLEN_URL,
-  //   icon: "generic",
-  //   builtIn: true,
-  //   renderMode: "volume",
-  //   remoteResolution: "10um",
-  // },
   {
     id: "allen-average-brain-volume-25um",
     name: "Allen Average Mouse Brain (Volume · 25 µm)",
@@ -271,15 +320,6 @@ const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     renderMode: "volume",
     remoteResolution: "100um",
   },
-  // {
-  //   id: "allen-average-brain-slices-10um",
-  //   name: "Allen Average Mouse Brain (Slices · 10 µm)",
-  //   url: ALLEN_URL,
-  //   icon: "generic",
-  //   builtIn: true,
-  //   renderMode: "slices",
-  //   remoteResolution: "10um",
-  // },
   {
     id: "allen-average-brain-slices-25um",
     name: "Allen Average Mouse Brain (Slices · 25 µm)",
@@ -309,6 +349,37 @@ const INITIAL_EXTERNAL_SOURCES: ExternalSourceItem[] = [
   },
 ];
 
+function stripResolutionSuffix(name: string) {
+  return name.replace(
+    /\s*\(([^()]*)\s*·\s*(10|25|50|100)\s*µm\)\s*$/i,
+    (_match, label: string) => ` (${label.trim()})`
+  );
+}
+
+function getResolutionLabel(resolution?: RemoteOmeResolution): string {
+  if (!resolution) return "";
+  return resolution.replace("um", " µm");
+}
+
+function getDefaultGroupItem(items: ExternalSourceItem[]) {
+  return items.find((item) => item.remoteResolution === "25um") ?? items[0];
+}
+
+function getGroupKey(item: ExternalSourceItem) {
+  if (!item.remoteResolution) return null;
+  if (!item.builtIn) return null;
+
+  return JSON.stringify({
+    url: item.url,
+    icon: item.icon,
+    builtIn: item.builtIn ?? false,
+    remoteFormat: item.remoteFormat ?? null,
+    remoteContentKind: item.remoteContentKind ?? null,
+    renderMode: item.renderMode ?? null,
+    baseName: stripResolutionSuffix(item.name),
+  });
+}
+
 export default function ImportDataPanel({
   open,
   onClose,
@@ -337,15 +408,25 @@ export default function ImportDataPanel({
   const [drawingName, setDrawingName] = useState("Drawing Layer");
   const [isDragging, setIsDragging] = useState(false);
 
-  const [externalSources, setExternalSources] = useState<ExternalSourceItem[]>(
-    INITIAL_EXTERNAL_SOURCES
-  );
+  const [externalSources, setExternalSources] = useState<ExternalSourceItem[]>([]);
   const [selectedExternalIds, setSelectedExternalIds] = useState<string[]>([]);
   const [showAddExternalForm, setShowAddExternalForm] = useState(false);
   const [newExternalName, setNewExternalName] = useState("");
   const [newExternalUrl, setNewExternalUrl] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const [editingCustomSourceId, setEditingCustomSourceId] = useState<string | null>(null);
+  const [editingCustomSourceName, setEditingCustomSourceName] = useState("");
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const addSourceNameInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const customSources = getCustomExternalSources();
+    setExternalSources([...BUILT_IN_EXTERNAL_SOURCES, ...customSources]);
+  }, []);
 
   useEffect(() => {
     if (!open) {
@@ -356,8 +437,99 @@ export default function ImportDataPanel({
       setShowAddExternalForm(false);
       setNewExternalName("");
       setNewExternalUrl("");
+      setShowSearch(false);
+      setSearchQuery("");
+      setEditingCustomSourceId(null);
+      setEditingCustomSourceName("");
     }
   }, [open]);
+
+  useEffect(() => {
+    if (showSearch) {
+      const id = window.setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 0);
+      return () => window.clearTimeout(id);
+    }
+  }, [showSearch]);
+
+  useEffect(() => {
+    if (showAddExternalForm) {
+      const id = window.setTimeout(() => {
+        addSourceNameInputRef.current?.focus();
+      }, 180);
+      return () => window.clearTimeout(id);
+    }
+  }, [showAddExternalForm]);
+
+  const groupedExternalSources = useMemo<ExternalSourceGroup[]>(() => {
+    const groups = new Map<string, ExternalSourceItem[]>();
+    const singles: ExternalSourceGroup[] = [];
+
+    for (const item of externalSources) {
+      const key = getGroupKey(item);
+
+      if (!key) {
+        singles.push({
+          kind: "single",
+          id: item.id,
+          name: item.name,
+          icon: item.icon,
+          builtIn: item.builtIn,
+          items: [item],
+        });
+        continue;
+      }
+
+      const existing = groups.get(key);
+      if (existing) {
+        existing.push(item);
+      } else {
+        groups.set(key, [item]);
+      }
+    }
+
+    const grouped: ExternalSourceGroup[] = Array.from(groups.values()).map((items) => {
+      const sortedItems = [...items].sort((a, b) => {
+        const order: Record<string, number> = {
+          "10um": 10,
+          "25um": 25,
+          "50um": 50,
+          "100um": 100,
+        };
+        return (order[a.remoteResolution ?? ""] ?? 999) - (order[b.remoteResolution ?? ""] ?? 999);
+      });
+
+      const defaultItem = getDefaultGroupItem(sortedItems);
+
+      return {
+        kind: "group",
+        id: `group-${defaultItem.id}`,
+        name: stripResolutionSuffix(defaultItem.name),
+        icon: defaultItem.icon,
+        builtIn: defaultItem.builtIn,
+        items: sortedItems,
+      };
+    });
+
+    return [...singles, ...grouped].sort((a, b) => a.name.localeCompare(b.name));
+  }, [externalSources]);
+
+  const filteredGroupedExternalSources = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return groupedExternalSources;
+
+    return groupedExternalSources.filter((group) => {
+      const groupNameMatches = group.name.toLowerCase().includes(query);
+      const itemNameMatches = group.items.some((item) =>
+        item.name.toLowerCase().includes(query)
+      );
+      const resolutionMatches = group.items.some((item) =>
+        getResolutionLabel(item.remoteResolution).toLowerCase().includes(query)
+      );
+      return groupNameMatches || itemNameMatches || resolutionMatches;
+    });
+  }, [groupedExternalSources, searchQuery]);
 
   const selectedExternalSources = useMemo(
     () => externalSources.filter((item) => selectedExternalIds.includes(item.id)),
@@ -372,27 +544,89 @@ export default function ImportDataPanel({
     );
   }
 
+  function toggleGroupedExternalDefault(group: ExternalSourceGroup) {
+    const selectedItem = group.items.find((item) => selectedExternalIds.includes(item.id));
+
+    setSelectedExternalIds((prev) => {
+      const withoutGroupItems = prev.filter(
+        (id) => !group.items.some((item) => item.id === id)
+      );
+
+      if (selectedItem) {
+        return withoutGroupItems;
+      }
+
+      const defaultItem = getDefaultGroupItem(group.items);
+      return [...withoutGroupItems, defaultItem.id];
+    });
+  }
+
+  function toggleGroupedExternalResolution(group: ExternalSourceGroup, itemId: string) {
+    const isAlreadySelected = selectedExternalIds.includes(itemId);
+
+    setSelectedExternalIds((prev) => {
+      const withoutGroupItems = prev.filter(
+        (id) => !group.items.some((item) => item.id === id)
+      );
+
+      if (isAlreadySelected) {
+        return withoutGroupItems;
+      }
+
+      return [...withoutGroupItems, itemId];
+    });
+  }
+
   function handleAddCustomExternalSource() {
     const name = newExternalName.trim();
     const url = newExternalUrl.trim();
     if (!name || !url) return;
 
-    const newItem: ExternalSourceItem = {
-      id: `custom-${Math.random().toString(36).slice(2, 10)}`,
+    const newSource = addCustomExternalSource({
       name,
       url,
-      icon: "custom",
-      builtIn: false,
-      remoteFormat: undefined,
       remoteContentKind: "intensity",
       renderMode: "auto",
-    };
+    });
 
-    setExternalSources((prev) => [...prev, newItem]);
-    setSelectedExternalIds((prev) => [...prev, newItem.id]);
+    setExternalSources((prev) => [...prev, newSource]);
+    setSelectedExternalIds((prev) => [...prev, newSource.id]);
     setShowAddExternalForm(false);
     setNewExternalName("");
     setNewExternalUrl("");
+    setSearchQuery("");
+  }
+
+  function handleStartRenameCustomSource(item: ExternalSourceItem) {
+    setEditingCustomSourceId(item.id);
+    setEditingCustomSourceName(item.name);
+  }
+
+  function handleConfirmRenameCustomSource(itemId: string) {
+    const renamed = renameCustomExternalSource(itemId, editingCustomSourceName);
+    if (!renamed) {
+      setEditingCustomSourceId(null);
+      setEditingCustomSourceName("");
+      return;
+    }
+
+    setExternalSources((prev) =>
+      prev.map((item) => (item.id === itemId ? { ...item, name: renamed.name } : item))
+    );
+    setEditingCustomSourceId(null);
+    setEditingCustomSourceName("");
+  }
+
+  function handleDeleteCustomSource(itemId: string) {
+    deleteCustomExternalSource(itemId);
+
+    setExternalSources((prev) => prev.filter((item) => item.id !== itemId));
+    setSelectedExternalIds((prev) => prev.filter((id) => id !== itemId));
+
+    if (editingCustomSourceId === itemId) {
+      setEditingCustomSourceId(null);
+      setEditingCustomSourceName("");
+    }
   }
 
   function handleSubmit() {
@@ -423,6 +657,12 @@ export default function ImportDataPanel({
   function handleDrop(files: FileList | null) {
     if (!files || files.length === 0) return;
     onAddFiles(files);
+  }
+
+  function handleSearchBlur() {
+    if (!searchQuery.trim()) {
+      setShowSearch(false);
+    }
   }
 
   return (
@@ -561,12 +801,12 @@ export default function ImportDataPanel({
               style={{
                 display: "flex",
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: "flex-start",
                 gap: 12,
                 marginBottom: 14,
               }}
             >
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>
                   Select external sources
                 </div>
@@ -575,27 +815,157 @@ export default function ImportDataPanel({
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowAddExternalForm((prev) => !prev)}
-                style={{
-                  height: 38,
-                  padding: "0 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.10)",
-                  background: "rgba(255,255,255,0.05)",
-                  color: "white",
-                  cursor: "pointer",
-                }}
-              >
-                {showAddExternalForm ? "Close" : "Add custom source"}
-              </button>
-            </div>
-
-            {showAddExternalForm && (
               <div
                 style={{
-                  marginBottom: 14,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexShrink: 0,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    height: 38,
+                    borderRadius: 10,
+                    border: showSearch
+                      ? "1px solid rgba(160,220,255,0.28)"
+                      : "1px solid rgba(255,255,255,0.10)",
+                    background: showSearch
+                      ? "rgba(120,190,255,0.08)"
+                      : "rgba(255,255,255,0.05)",
+                    overflow: "hidden",
+                    width: showSearch ? 220 : 38,
+                    transition: "width 180ms ease, background 180ms ease, border-color 180ms ease",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (showSearch && searchQuery) {
+                        setSearchQuery("");
+                        searchInputRef.current?.focus();
+                        return;
+                      }
+                      setShowSearch(true);
+                    }}
+                    title="Search sources"
+                    style={{
+                      width: 38,
+                      minWidth: 38,
+                      height: 38,
+                      border: "none",
+                      background: "transparent",
+                      color: "white",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <SearchIcon />
+                  </button>
+
+                  {showSearch && (
+                    <>
+                      <input
+                        ref={searchInputRef}
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        onBlur={handleSearchBlur}
+                        placeholder="Search sources..."
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          height: 38,
+                          border: "none",
+                          background: "transparent",
+                          color: "white",
+                          outline: "none",
+                          padding: "0 8px 0 0",
+                          fontSize: 12,
+                        }}
+                      />
+                      {(searchQuery || showSearch) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (searchQuery.trim()) {
+                              setSearchQuery("");
+                              searchInputRef.current?.focus();
+                            } else {
+                              setShowSearch(false);
+                            }
+                          }}
+                          title="Clear search"
+                          style={{
+                            width: 30,
+                            minWidth: 30,
+                            height: 38,
+                            border: "none",
+                            background: "transparent",
+                            color: "rgba(255,255,255,0.7)",
+                            cursor: "pointer",
+                            fontSize: 16,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: 0,
+                            flexShrink: 0,
+                          }}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAddExternalForm((prev) => !prev)}
+                  title={showAddExternalForm ? "Close custom source form" : "Add custom source"}
+                  style={{
+                    height: 38,
+                    minWidth: 38,
+                    padding: "0 11px",
+                    borderRadius: 10,
+                    border: showAddExternalForm
+                      ? "1px solid rgba(160,220,255,0.28)"
+                      : "1px solid rgba(255,255,255,0.10)",
+                    background: showAddExternalForm
+                      ? "rgba(120,190,255,0.10)"
+                      : "rgba(255,255,255,0.05)",
+                    color: "white",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transition:
+                      "background 180ms ease, border-color 180ms ease, transform 180ms ease",
+                  }}
+                >
+                  <AddSourceIcon />
+                </button>
+              </div>
+            </div>
+
+            <div
+              style={{
+                marginBottom: showAddExternalForm ? 14 : 0,
+                maxHeight: showAddExternalForm ? 180 : 0,
+                opacity: showAddExternalForm ? 1 : 0,
+                transform: showAddExternalForm ? "translateY(0)" : "translateY(-6px)",
+                overflow: "hidden",
+                pointerEvents: showAddExternalForm ? "auto" : "none",
+                transition:
+                  "max-height 240ms ease, opacity 180ms ease, transform 180ms ease, margin-bottom 240ms ease",
+              }}
+            >
+              <div
+                style={{
                   borderRadius: 14,
                   border: "1px solid rgba(255,255,255,0.10)",
                   background: "rgba(255,255,255,0.04)",
@@ -614,6 +984,7 @@ export default function ImportDataPanel({
                   }}
                 >
                   <input
+                    ref={addSourceNameInputRef}
                     value={newExternalName}
                     onChange={(e) => setNewExternalName(e.target.value)}
                     placeholder="Source name"
@@ -666,80 +1037,328 @@ export default function ImportDataPanel({
                   </button>
                 </div>
               </div>
-            )}
+            </div>
 
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
-                gap: 12,
+                maxHeight: 430,
+                overflowY: "auto",
+                paddingRight: 4,
+                scrollbarWidth: "thin",
+                scrollbarColor:
+                  "rgba(140, 190, 255, 0.45) rgba(255,255,255,0.06)",
               }}
             >
-              {externalSources.map((item) => {
-                const selected = selectedExternalIds.includes(item.id);
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                  gap: 12,
+                  alignItems: "stretch",
+                }}
+              >
+                {filteredGroupedExternalSources.map((group) => {
+                  const selectedItem = group.items.find((item) =>
+                    selectedExternalIds.includes(item.id)
+                  );
+                  const groupSelected = !!selectedItem;
 
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => toggleExternalSelection(item.id)}
-                    style={{
-                      minHeight: 108,
-                      borderRadius: 16,
-                      border: selected
-                        ? "1px solid rgba(160,220,255,0.85)"
-                        : "1px solid rgba(255,255,255,0.10)",
-                      background: selected
-                        ? "rgba(120,190,255,0.14)"
-                        : "rgba(255,255,255,0.04)",
-                      color: "white",
-                      cursor: "pointer",
-                      padding: 14,
-                      textAlign: "left",
-                      display: "flex",
-                      flexDirection: "column",
-                      justifyContent: "space-between",
-                      gap: 12,
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      {item.icon === "custom" ? <SourceCustomIcon /> : <SourceGenericIcon />}
+                  if (group.kind === "single") {
+                    const item = group.items[0];
+                    const selected = selectedExternalIds.includes(item.id);
+                    const isCustom = item.icon === "custom" && item.builtIn === false;
+                    const isEditing = editingCustomSourceId === item.id;
 
+                    return (
                       <div
+                        key={item.id}
                         style={{
-                          width: 18,
-                          height: 18,
-                          borderRadius: 999,
+                          minHeight: 180,
+                          height: "100%",
+                          borderRadius: 16,
                           border: selected
-                            ? "1px solid rgba(160,220,255,0.95)"
-                            : "1px solid rgba(255,255,255,0.24)",
-                          background: selected ? "rgba(160,220,255,0.90)" : "transparent",
-                          flexShrink: 0,
-                          marginTop: 2,
-                        }}
-                      />
-                    </div>
-
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
-                        {item.name}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 11,
-                          opacity: 0.6,
-                          marginTop: 6,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
+                            ? "1px solid rgba(160,220,255,0.85)"
+                            : "1px solid rgba(255,255,255,0.10)",
+                          background: selected
+                            ? "rgba(120,190,255,0.14)"
+                            : "rgba(255,255,255,0.04)",
+                          color: "white",
+                          padding: 14,
+                          textAlign: "left",
+                          display: "flex",
+                          flexDirection: "column",
+                          justifyContent: "space-between",
+                          gap: 12,
                         }}
                       >
-                        {item.builtIn ? "Built-in source" : "Custom external source"}
+                        <button
+                          type="button"
+                          onClick={() => toggleExternalSelection(item.id)}
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "inherit",
+                            padding: 0,
+                            margin: 0,
+                            cursor: "pointer",
+                            textAlign: "left",
+                            display: "flex",
+                            flexDirection: "column",
+                            justifyContent: "space-between",
+                            gap: 12,
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            {item.icon === "custom" ? <SourceCustomIcon /> : <SourceGenericIcon />}
+
+                            <div
+                              style={{
+                                width: 18,
+                                height: 18,
+                                borderRadius: 999,
+                                border: selected
+                                  ? "1px solid rgba(160,220,255,0.95)"
+                                  : "1px solid rgba(255,255,255,0.24)",
+                                background: selected ? "rgba(160,220,255,0.90)" : "transparent",
+                                flexShrink: 0,
+                                marginTop: 2,
+                              }}
+                            />
+                          </div>
+
+                          <div>
+                            {isEditing ? (
+                              <input
+                                autoFocus
+                                value={editingCustomSourceName}
+                                onChange={(e) => setEditingCustomSourceName(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                onBlur={() => handleConfirmRenameCustomSource(item.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleConfirmRenameCustomSource(item.id);
+                                  if (e.key === "Escape") {
+                                    setEditingCustomSourceId(null);
+                                    setEditingCustomSourceName("");
+                                  }
+                                }}
+                                style={{
+                                  width: "100%",
+                                  height: 34,
+                                  borderRadius: 8,
+                                  border: "1px solid rgba(160,220,255,0.45)",
+                                  background: "rgba(255,255,255,0.07)",
+                                  color: "white",
+                                  padding: "0 10px",
+                                  boxSizing: "border-box",
+                                  outline: "none",
+                                }}
+                              />
+                            ) : (
+                              <>
+                                <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+                                  {item.name}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: 11,
+                                    opacity: 0.6,
+                                    marginTop: 6,
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  {item.builtIn ? "Built-in source" : "Custom external source"}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </button>
+
+                        <div style={{ minHeight: 30, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {isCustom ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleStartRenameCustomSource(item)}
+                                style={{
+                                  height: 30,
+                                  padding: "0 10px",
+                                  borderRadius: 999,
+                                  border: "1px solid rgba(255,255,255,0.14)",
+                                  background: "rgba(255,255,255,0.05)",
+                                  color: "white",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Rename
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteCustomSource(item.id)}
+                                style={{
+                                  height: 30,
+                                  padding: "0 10px",
+                                  borderRadius: 999,
+                                  border: "1px solid rgba(255,120,120,0.22)",
+                                  background: "rgba(255,80,80,0.10)",
+                                  color: "white",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={group.id}
+                      style={{
+                        minHeight: 180,
+                        height: "100%",
+                        borderRadius: 16,
+                        border: groupSelected
+                          ? "1px solid rgba(160,220,255,0.85)"
+                          : "1px solid rgba(255,255,255,0.10)",
+                        background: groupSelected
+                          ? "rgba(120,190,255,0.14)"
+                          : "rgba(255,255,255,0.04)",
+                        color: "white",
+                        padding: 14,
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        gap: 12,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleGroupedExternalDefault(group)}
+                        style={{
+                          border: "none",
+                          background: "transparent",
+                          color: "inherit",
+                          padding: 0,
+                          margin: 0,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 12,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          {group.icon === "custom" ? <SourceCustomIcon /> : <SourceGenericIcon />}
+
+                          <div
+                            style={{
+                              width: 18,
+                              height: 18,
+                              borderRadius: 999,
+                              border: groupSelected
+                                ? "1px solid rgba(160,220,255,0.95)"
+                                : "1px solid rgba(255,255,255,0.24)",
+                              background: groupSelected ? "rgba(160,220,255,0.90)" : "transparent",
+                              flexShrink: 0,
+                              marginTop: 2,
+                            }}
+                          />
+                        </div>
+
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+                            {group.name}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              opacity: 0.6,
+                              marginTop: 6,
+                            }}
+                          >
+                            {group.builtIn ? "Built-in source" : "Custom external source"}
+                            {selectedItem?.remoteResolution
+                              ? ` · Selected ${getResolutionLabel(selectedItem.remoteResolution)}`
+                              : ""}
+                          </div>
+                        </div>
+                      </button>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                          minHeight: 30,
+                          alignItems: "flex-end",
+                        }}
+                      >
+                        {group.items.map((item) => {
+                          const resolutionSelected = selectedExternalIds.includes(item.id);
+
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleGroupedExternalResolution(group, item.id);
+                              }}
+                              style={{
+                                height: 30,
+                                padding: "0 10px",
+                                borderRadius: 999,
+                                border: resolutionSelected
+                                  ? "1px solid rgba(160,220,255,0.95)"
+                                  : "1px solid rgba(255,255,255,0.14)",
+                                background: resolutionSelected
+                                  ? "rgba(120,190,255,0.22)"
+                                  : "rgba(255,255,255,0.05)",
+                                color: "white",
+                                cursor: "pointer",
+                                fontSize: 11,
+                                fontWeight: 700,
+                              }}
+                            >
+                              {getResolutionLabel(item.remoteResolution)}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
-                  </button>
-                );
-              })}
+                  );
+                })}
+              </div>
+
+              {filteredGroupedExternalSources.length === 0 && (
+                <div
+                  style={{
+                    minHeight: 120,
+                    borderRadius: 14,
+                    border: "1px dashed rgba(255,255,255,0.12)",
+                    background: "rgba(255,255,255,0.02)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    textAlign: "center",
+                    padding: 20,
+                    marginTop: 2,
+                    color: "rgba(255,255,255,0.72)",
+                    fontSize: 13,
+                  }}
+                >
+                  No external source matches "{searchQuery}".
+                </div>
+              )}
             </div>
           </div>
         )}

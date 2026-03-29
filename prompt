@@ -26,8 +26,22 @@
 }
 [todo] making the annotation match the color of the allen atlas; getting the other skeleton of the annotation instead of volumetric data or both ? 
 [todo] add all regions (annotation) at the same time in a three like structure into the layers panel 
+
+
+[todo] profile page
 {
-    ok perfect, now we can import the 
+    {
+        Allright! Now I want to add a new panel in my application. I have this icon in my toolbar for the user profile. I woul like this button to trigger a user info panel. On this page, I would like to have two pages that can be toggle on the same panel. 
+
+        (1) The first is the user info. On that I would like the user to be able to manage his data. So we just created a place in the browser where we save the external source of the user. I would like the user to be able to delete all information about this data save in the browser. I also have another store to save the state of the viewer. This store also save the previous state of the viewer for the history. I would like the user to be able to delete this information to. Also about the history, I would like to have a setting the user can choose how many step back the browser can save. This would be great to manage the data for the user automatically instead of keeping an infinit series of steps. 
+
+        (2) The second is the settings of the user. In here I would like to have custom ui settings. I would like the user to be able to choose his cursor. I will build costum pointer that I can add and this will help the user with the visibility. I would also like the user to choose a theme for the whole application (dark, gray, white, other theme). These themes are not create right now, we need to add them to the ui. Finally. I would like the user to choose the background color of the 3D scene. 
+
+        If you see any other things relevant for the 3D mouse brain scene, I am willing to take suggestion ! 
+    }
+    {
+        ok these seems greate. Now I have quiet a lot of code to give you, so you can add these into my current code 
+    }
 }
 
 [todo] The layers should have some setting (opacity, any transformations) and infos (name slice, resolution, dimesnion). On selected layer, the ui should display some setting of this layer. This will also serve as a first step to the point, click and move object in 3D.  
@@ -56,18 +70,21 @@
     (2) When the selection sool is selected in the toolbar, the controle should switch to other then typical the moving controle. I need to have these controls : left click to select the object in the position of the mouse; left drag and drop to select multiple object at the same time (this should display a square between the mouse click and hold to the current mouse position) - while the user hold and move the mouse, it should hightlight the selected object - every object that fall into the square should be slected - on release of the mouse, it should have selected all the object in the square; the right mouse button should not be the typcial chrome menu - the right mouse click should open a contextual menu with these option : ["delete", "group"]. and object can be a group of objects. When the user select one single object (which can be a group of sub-object, but we count it as one obejct since they are grouped), then the ui will highlight this object and arrows will appear. In a case where the user select muliple non group object, the arrow still appears and the object behave as they where a group temprarly. In total there's 6 arrows to controle the translation in each main direction (x,y,z), plus I could like to have 6 more arrows to controle the orientation and finally I need 6 arrows to control the rotation on one axis. These arrow should be place like this : for all object selected, we should create an ivisible cube that contains all the objects selected - all the obejct should be inside this invisible cube - then we take 3 side of this cube (the 3 side closer to the camera) and at the center of the face of the invisible cube we add the arrow to control the position. if that make sense. Basiaclly the same thing as every CAD sofware that exists. I would like to have the objects snap to the orthogonal angles, so its easier for the user to get perfect angles. 
 }
 
-
+--- small fixes
+[fix] add a search into the external sources. 
+[fix] add a source should stay in the list (should be added to the state?)
 --- BUG LIST
 [bug]{
 Alright now I have a bug relating the volumetric data. The problem is when a slice layer in order under the layer of the volumetric data, the slice does not appear. Its either the slice is there, but the rain volume is on top, or something worst...  
 }
-[bug]{
-    the ui when deleting the last row of the layers; we need to scrool to see the menu. 
-}
+
 [bug]{
     the volumetric data flip upside down when the camera is tilte enough up and down. 
     {
         ok bug resolve, now I have a really wierd bug visually in the webgl scene. Now I see the annotations, but with a certain angle I see the annotation flip upside down. This happend when the camera is pointing to high or to low compare to the volume of the brain. So if I place the camera right in fornt of the annotation I see the annotation in the right angles, and when I stilt the camera up, at a certain angle it change the annotation upside down. THe smae happend if the camera is pointing to low. This is only happening with the annotation.
     }
 }
+
+
+
 

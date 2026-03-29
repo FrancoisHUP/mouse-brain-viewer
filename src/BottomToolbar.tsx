@@ -27,9 +27,9 @@ const TOOLS: ToolDefinition[] = [
   { id: "pencil", label: "Draw" },
   { id: "slice", label: "Slice" },
   { id: "data", label: "Data" },
-  { id: "search", label: "Search" },
+  // { id: "search", label: "Search" },
+  // { id: "settings", label: "Settings" },
   { id: "export", label: "Export" },
-  { id: "settings", label: "Settings" },
   { id: "account", label: "Account" },
 ];
 
