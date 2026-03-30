@@ -31,16 +31,92 @@
 
 [todo] add a temporary visualize of the cut slice : this visual should be a normal poiting in the direction with the depth. The image should be display and with the new parameter, it should adjust the image slice. Instead of number, it should be a slider or something easyer to play with. (rework the icon too, mabe a 3D cube with a cut? create it with bananas)
 
+[todo] multiple viewer state
+{
+    Thats perfect. It works perfectly. Alright now onto the next feature. Since now a user can open a viewer from a shred link, I want the user to be able to retreive old session. So in the bottom tool bar, I want to add a new tool with a nice icon (folder should do the thing). This tool will popup a panel where all the viewer of a user are. The panel should have a grid with (if poosible) an image of the current viewer (if not, just the date last updated and a name). I want these viewer state to be organize in two categories : the one own by the user and the shared ones. These should be presented in a grid where each of the element is one viewer and the user can just click on this element to open up the state of the viewer. All this information should be save on the user browser (so if the user delete his dat, it should remova all the viewer in this list). Also I want the user to be able to create and delete the viewer from this list. 
 
+    Can you help me build this feature ?   
+}
+{
+    alright pretty good, now I need to change somethings : 
+    (1) I was thinking more of a full panel. Like I have for the import data panel. Im gonna link the panel for just so you know what I am talking about. 
+    (2) I dont need a clear list button. Remove it. 
+    (3) The button "save current viewer" should only be a save icon. The user will know. 
+    (4) The title "Saved Viewers" with the text "Open a saved viewer from this browser, or save the current scene for later.", we can remove both. The user will know what this is. 
+    (5) For the single element for each viewer, they are interesting. Now the open button just before the rename and delete button is a duplicate. I already see I can open with the massive "open viewer" section.
+    (5.1) Instead of putting the button "rename" and "delete", can you put the three dot icon. When the user click on this button, then he should see the rename and delete options. 
+    (5.2) I dont need the "Selected:"
+    (5.3) Right now every viewer has the same ui design and it makes the selection hard visually since they are all the same. I would like to have an element more to distinguish the viewer.
+    (5.4) Since we will have a three dots for the rename and delete, and we remove the open button. The only thing left is the open viewer, can we just make the whole viewer element clickable ? So now the user can click any where exepct for the three dots to open the viewer.  
+}
+{
+    Not bad, a couple more things: 
+    (1) Istead of having two sections "My viewers" and "shared viewers" we can just use the "Mine" and "Shared" tag. So everything in one gird, dont need to divided them. 
+    (2) Right now you have the section "Viwer state" where there a lot of space for only this one small "Viwer state". Instead I would swap the name at this place. That way it would be a lot more clean and a better way of utilizing space. That means the name wont be on top. 
+    (3) Instead of the name on top, we can remove the folder icon icon too and basically remove this line, but we need to move the "Mine|shared" tag and the three dot menu. Both of thest can go at the bottom where er currently have the "x layer" and "library" tag. 
+    (4) I have already done the rename and delete menu in another place in my code. For the sake of uniformity, can you update the ui to fit this one : 
+    {openMenuId && menuPosition
+        ? createPortal(
+            <div
+              data-layer-menu-popup="true"
+              data-theme-surface="panel"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "fixed",
+                top: menuPosition.top,
+                left: menuPosition.left,
+                minWidth: 140,
+                background: "rgba(14,17,22,0.98)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                borderRadius: 12,
+                boxShadow: "0 12px 28px rgba(0,0,0,0.35)",
+                padding: 6,
+                zIndex: 9999,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  const row = rows.find((r) => r.id === openMenuId);
+                  if (!row) return;
+                  startRename(row);
+                  setOpenMenuId(null);
+                  setMenuPosition(null);
+                }}
+                style={menuItemStyle}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteNode(openMenuId);
+                  setOpenMenuId(null);
+                  setMenuPosition(null);
+                }}
+                style={menuItemStyle}
+              >
+                Delete
+              </button>
+            </div>,
+            document.body
+          )
+        : null}
+        ---
+        (5) Ok and finally I want to move the save button out of this menu. I want the save button to be move into the tool bar. When the user click on save in the toolbar, I want to show a message (this should be a smooth animation starting from the save icon in the tool bar), telling the user that the viewer hase been saved. Plus I would like the popup to stay up until the user click away. In this popup, I would like the put a message telling that something has been save and put a link that will open the directory icon where the files are saved. That way the user can hit save, see the message something has been saved and then the user can either click away to close the popup or click on the link to open the directory where it's file is saved. 
+}
+{
+    alright we are getting there. Now a couple more changes: 
+    (1) I dont like the basic prompt from the browser to change the name. It's not user friendly, it need to be in the app browser. So First thing, can you move the name out of the colored square and puting nothing in there. The name should be just above the date and when the user click rename, it should edit the title where it is. 
+    (2) Right now this panel has to many section inside a section. I see the main panel with the close button, then I see a section inside it and inside that section I see the elements (viewers). Juste remove one layer. It should be panel with "x" and directly elements.  
+}
 
 
 [todo] draw (annotations) with AI 3D assistance (where the annotations is save?, in the browser)
 [todo] upload data
-[todo] in the profil, the user can open saved states
 
 -----
 
-[NTH] change the camera controle (flying, or the others)
 [NTH] add a docs route where the user can see all the controls on this web demo. 
 
 

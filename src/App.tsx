@@ -32,6 +32,16 @@ import {
   type ViewerStateV1,
 } from "./viewerState";
 import { buildViewerShareUrl, readViewerStateFromHash } from "./viewerShare";
+import ViewerLibraryPanel from "./ViewerLibraryPanel";
+import {
+  buildDefaultSavedViewerName,
+  clearPersistedViewerLibrary,
+  createSavedViewerEntry,
+  loadPersistedViewerLibrary,
+  savePersistedViewerLibrary,
+  upsertSharedViewerEntry,
+  type SavedViewerEntry,
+} from "./viewerLibrary";
 import {
   VIEWER_HISTORY_STORAGE_KEY,
   clampHistoryStack,
@@ -193,6 +203,17 @@ function readInitialStateFromLocation(): ViewerStateV1 | null {
   return null;
 }
 
+
+function getCurrentSharedViewerUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const rawHash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  if (!rawHash) return null;
+  const params = new URLSearchParams(rawHash);
+  return params.get("vs") ? window.location.href : null;
+}
+
 const secondaryButtonStyle: CSSProperties = {
   height: 34,
   padding: "0 12px",
@@ -330,6 +351,13 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
   const [stateShareMessage, setStateShareMessage] = useState<string | null>(null);
+  const [viewerLibrary, setViewerLibrary] = useState<SavedViewerEntry[]>(() =>
+    loadPersistedViewerLibrary()
+  );
+  const [libraryMessage, setLibraryMessage] = useState<string | null>(null);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [saveNoticeOpen, setSaveNoticeOpen] = useState(false);
+  const [saveNoticeMessage, setSaveNoticeMessage] = useState<string | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [isClearHistoryConfirmOpen, setIsClearHistoryConfirmOpen] = useState(false);
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
@@ -392,6 +420,11 @@ export default function App({ startupSlices = [] }: AppProps) {
   const currentViewerHash = useMemo(
     () => hashViewerStateForHistory(currentViewerState),
     [currentViewerState]
+  );
+
+  const libraryEntries = useMemo(() =>
+    [...viewerLibrary].sort((a, b) => b.updatedAt - a.updatedAt),
+    [viewerLibrary]
   );
 
   const canUndo = pastStatesRef.current.length > 0;
@@ -602,6 +635,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     hasHydratedHistoryRef.current = true;
 
     const stateFromLocation = readInitialStateFromLocation();
+    const sharedViewerUrl = getCurrentSharedViewerUrl();
     const persistedState = loadPersistedViewerState();
     const persistedHistory = loadPersistedViewerHistory();
 
@@ -609,6 +643,14 @@ export default function App({ startupSlices = [] }: AppProps) {
       lastCommittedStateRef.current = stateFromLocation;
       lastCommittedHashRef.current = hashViewerStateForHistory(stateFromLocation);
       applyViewerState(stateFromLocation, { suppressAutoCommit: true });
+      if (sharedViewerUrl && isSerializableLayerTree(stateFromLocation.scene.layerTree)) {
+        setViewerLibrary((prev) =>
+          upsertSharedViewerEntry(prev, {
+            state: stateFromLocation,
+            sourceShareUrl: sharedViewerUrl,
+          })
+        );
+      }
       pastStatesRef.current = [];
       futureStatesRef.current = [];
       setHasPersistedViewerState(true);
@@ -686,6 +728,10 @@ export default function App({ startupSlices = [] }: AppProps) {
       setHasPersistedViewerState(false);
     }
   }, [currentViewerState]);
+
+  useEffect(() => {
+    savePersistedViewerLibrary(viewerLibrary);
+  }, [viewerLibrary]);
 
   useEffect(() => {
     if (initializedStartupSlicesRef.current) return;
@@ -882,7 +928,11 @@ export default function App({ startupSlices = [] }: AppProps) {
     setIsImportPanelOpen(false);
     setIsUserProfilePanelOpen(false);
     setIsClearHistoryConfirmOpen(false);
-    setActiveTool((prev) => (prev === "slice" || prev === "export" ? "mouse" : prev));
+    setLibraryError(null);
+    setLibraryMessage(null);
+    setActiveTool((prev) =>
+      prev === "slice" || prev === "export" || prev === "library" ? "mouse" : prev
+    );
   }
 
   function openClearHistoryConfirm() {
@@ -922,6 +972,13 @@ export default function App({ startupSlices = [] }: AppProps) {
   async function handleCopyExportState() {
     if (!stateTextDraft) return;
     await navigator.clipboard.writeText(stateTextDraft);
+  }
+
+  function handleCameraModeChange(mode: SerializableCameraState["mode"]) {
+    setCameraState((prev) => ({
+      ...prev,
+      mode,
+    }));
   }
 
   async function handleShareViewerState() {
@@ -972,6 +1029,78 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
   }
 
+  function handleSaveCurrentViewerToLibrary(name?: string) {
+    if (!isSerializableLayerTree(currentViewerState.scene.layerTree)) {
+      setLibraryMessage(null);
+      setLibraryError(
+        "This viewer contains uploaded file layers. Saved viewers only support serializable layers like remote volumes, slices, and annotations."
+      );
+      setSaveNoticeOpen(false);
+      setSaveNoticeMessage(null);
+      return;
+    }
+
+    const entry = createSavedViewerEntry({
+      ownerKind: "owned",
+      name: name?.trim() || buildDefaultSavedViewerName("Viewer"),
+      state: currentViewerState,
+    });
+
+    setViewerLibrary((prev) => [entry, ...prev]);
+    setLibraryError(null);
+    setLibraryMessage(null);
+    setSaveNoticeMessage(`Saved "${entry.name}".`);
+    setSaveNoticeOpen(true);
+  }
+
+  function handleOpenSavedViewer(entry: SavedViewerEntry) {
+    commitCurrentStateNow(entry.state);
+    setViewerLibrary((prev) =>
+      prev.map((item) =>
+        item.id === entry.id ? { ...item, updatedAt: Date.now() } : item
+      )
+    );
+    setLibraryError(null);
+    setLibraryMessage(null);
+    setSaveNoticeOpen(false);
+    setActiveTool("mouse");
+  }
+
+  function handleDeleteSavedViewer(entryId: string) {
+    setViewerLibrary((prev) => prev.filter((entry) => entry.id !== entryId));
+    setLibraryError(null);
+    setLibraryMessage("Viewer removed.");
+    setSaveNoticeOpen(false);
+  }
+
+  function handleRenameSavedViewer(entryId: string, nextName: string) {
+    const trimmed = nextName.trim();
+    if (!trimmed) return;
+
+    setViewerLibrary((prev) =>
+      prev.map((entry) =>
+        entry.id === entryId
+          ? { ...entry, name: trimmed, updatedAt: Date.now() }
+          : entry
+      )
+    );
+    setLibraryError(null);
+    setLibraryMessage("Viewer renamed.");
+    setSaveNoticeOpen(false);
+  }
+
+
+  function handleOpenLibraryFromSaveNotice() {
+    setSaveNoticeOpen(false);
+    setLibraryError(null);
+    setLibraryMessage(null);
+    setActiveTool("library");
+  }
+
+  function handleCloseSaveNotice() {
+    setSaveNoticeOpen(false);
+  }
+
   function handleToolChange(tool: ToolId) {
     if (tool === "data") {
       setIsImportPanelOpen(true);
@@ -985,6 +1114,19 @@ export default function App({ startupSlices = [] }: AppProps) {
 
     if (tool === "account") {
       setIsUserProfilePanelOpen(true);
+      return;
+    }
+
+    if (tool === "save") {
+      handleSaveCurrentViewerToLibrary();
+      return;
+    }
+
+    if (tool === "library") {
+      setLibraryError(null);
+      setLibraryMessage(null);
+      setSaveNoticeOpen(false);
+      setActiveTool((prev) => (prev === "library" ? "mouse" : "library"));
       return;
     }
 
@@ -1269,6 +1411,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     flushPendingAutoCommit();
     clearPersistedViewerHistory();
     clearPersistedViewerState();
+    clearPersistedViewerLibrary();
+    setViewerLibrary([]);
     pastStatesRef.current = [];
     futureStatesRef.current = [];
     lastCommittedStateRef.current = currentViewerState;
@@ -1574,6 +1718,17 @@ export default function App({ startupSlices = [] }: AppProps) {
         dataRevision={profileDataRevision}
       />
 
+      <ViewerLibraryPanel
+        open={activeTool === "library"}
+        onClose={() => setActiveTool("mouse")}
+        entries={libraryEntries}
+        errorMessage={libraryError}
+        successMessage={libraryMessage}
+        onOpenViewer={handleOpenSavedViewer}
+        onDeleteViewer={handleDeleteSavedViewer}
+        onRenameViewer={handleRenameSavedViewer}
+      />
+
       {isClearHistoryConfirmOpen ? (
         <div
           style={{
@@ -1650,6 +1805,36 @@ export default function App({ startupSlices = [] }: AppProps) {
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
+        cameraMode={cameraState.mode}
+        onCameraModeChange={handleCameraModeChange}
+        onSaveCurrentViewer={handleSaveCurrentViewerToLibrary}
+        saveNoticeOpen={saveNoticeOpen}
+        onRequestCloseSaveNotice={handleCloseSaveNotice}
+        saveNoticeContent={
+          <div style={{ display: "grid", gap: 10, fontFamily: "sans-serif" }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Viewer saved</div>
+            <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.74, lineHeight: 1.45 }}>
+              {saveNoticeMessage ?? "The current viewer has been saved in this browser."}
+            </div>
+            <button
+              type="button"
+              onClick={handleOpenLibraryFromSaveNotice}
+              style={{
+                height: 34,
+                padding: "0 12px",
+                borderRadius: 10,
+                border: "1px solid rgba(160,220,255,0.35)",
+                background: "rgba(120,190,255,0.18)",
+                color: "white",
+                cursor: "pointer",
+                fontWeight: 600,
+                justifySelf: "start",
+              }}
+            >
+              Open library
+            </button>
+          </div>
+        }
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={() => handleUndo()}
