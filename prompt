@@ -27,73 +27,13 @@
 [todo] making the annotation match the color of the allen atlas; getting the other skeleton of the annotation instead of volumetric data or both ? 
 [todo] add all regions (annotation) at the same time in a three like structure into the layers panel 
 
-
-[todo] profile page
 {
-    {
-        Allright! Now I want to add a new panel in my application. I have this icon in my toolbar for the user profile. I woul like this button to trigger a user info panel. On this page, I would like to have two pages that can be toggle on the same panel. 
-
-        (1) The first is the user info. On that I would like the user to be able to manage his data. So we just created a place in the browser where we save the external source of the user. I would like the user to be able to delete all information about this data save in the browser. I also have another store to save the state of the viewer. This store also save the previous state of the viewer for the history. I would like the user to be able to delete this information to. Also about the history, I would like to have a setting the user can choose how many step back the browser can save. This would be great to manage the data for the user automatically instead of keeping an infinit series of steps. 
-
-        (2) The second is the settings of the user. In here I would like to have custom ui settings. I would like the user to be able to choose his cursor. I will build costum pointer that I can add and this will help the user with the visibility. I would also like the user to choose a theme for the whole application (dark, gray, white, other theme). These themes are not create right now, we need to add them to the ui. Finally. I would like the user to choose the background color of the 3D scene. 
-
-        If you see any other things relevant for the 3D mouse brain scene, I am willing to take suggestion ! 
-    }
-    {
-        ok these seems greate. Now I have quiet a lot of code to give you, so you can add these into my current code. I think you need the webgl to update the background color, you need the history file, so the user can manage the history, also you need the custom source store to manage this store too. Ill try to add as much files as I can, but let me know if you are missing some code files! 
-    }
-    {
-        ok so the preference and user profile should be trigger from the bottom toggle bar. I updated the reste and now I need the trigger to open these panels. So here are two files : the app.tsx so you can do the updates and the bottom  BottomToolbar.tsx
-    }
-    {
-        allright! overall not so bad! Here are few things I need to change:
-        1. UI : 
-        (1.1) I dont need this sentence "Manage saved browser data and application settings." It self explanatory. Instead at this placement, I would like to have the "Anonymous browser profile number". So can you remve the section "Anonymous browser profile" and put the id where the current "Manage saved browser data and application settings" is. 
-
-        (1.2) I would like to have a single data section instead of multiple section. In this section I would like to have the titles with the "Custom external sources", "Viewer saved state" and "Reset local profile". This section will have all the current feature, but can you arrange the button so they are all the same format. What I mean by that is right now I have a button on the left, teo button on the right and a bottom completly at the bottom. I would like to have one section with all the buttons to delete some data clear and well place.
-
-        (1.3) Can you move the "History retention" up (before the data section I just describe)
-
-        2. Feature missing :  
-        (2.1) I need a confirm prompt before deleting any data. All the red delete button should have an appropriate prompt asking the user to confirm the deletion, so the user dont accidently trigger a deletion he doesnt want. 
-        (2.2) The theme dont change anything right now. Can you implement them?
-
-        3. Minor bug :
-        (3.1) When the user select the  background color, right now it does nothing until the user refresh the page. I would like the color to change when the user set a new color. Even better, if the background could change while the user is picking hte color, it would be amazing. 
-        (3.2) when the user click on the "reset setting to dafault", the reset visual should directly be visible. a bit like the color in the 3.1. 
-        4. Bug : 
-        (4.1) The "delete viewer history" button deletes the state too, while it should only delete the history and not touch the state at all. 
-        (4.2) The "delete saved viewer state" works fine, but right now the browser is not reloaded, so it looks like the button does nothing until I refresh the page. the delete section do not actualize the data. Like the delete "all custom sources" dont change the list of external sources. It would be great if the user can actually see the difference and not have to refresh the browser.  
-        (4.3) The "Reset local profile" does what ? I would think it completly reset all the data of the user to factory to start at new, but right now I dont know what this button does and it looks like it does nothing. 
-    }
-    {
-        Yeah right now when I try to change the color it apply a sort of overlay. This is not what I want. 
-        allright not bad at all again. Now there are some bugs left. 
-        (1) The theme works for the user profile page, but not for any other element the ui. Can you make it so every window and ui element follow the theme?  
-        (2) The 3D background color dont change the color live. I need to refresh the page so the background color really changes in the 3D scene.
-    }
-    {
-        ok perect! I only have to fix some place where the ui does not follow the theme : 
-        (1) the layer panel : Right now some buttons are following th theme color, but the background of the panel is still the original color. 
-        (2) The slice tool : Right now the ui is respecting the background which is good, but now the letter is white on white. So I dont see what is written. Can you fix only the color of the letters? 
-        (3) the Add layer panel : The background color is still the original color. 
-        (4) The back and forth : WHen the user hover his mouse on top of the back and forth button there's a menu appearing on top pto chose to which step you wantto go back. The background color does not follow the theme.
-    }
-    {
-        allright now some minor tweak to make it perfect. The text in some panels are white on white background. That make the text not readable. Here are the places where it need fixing only for white text on white background when the user selecte the light background : 
-
-        (1) In the layer panel, the element of the list (the layer) the name of the layers are white on white. Also the "drop here to moove to root" is also white on white. Also the LayerIcon need to adjust to the theme (black on white).
-        (2) In the "add layer" panel, in the select external source, the name of the source are white on white. Also the selection of one source is a bit wired. The resolution is not highlighted like it should be. There's no idication to the user that he selected the xum resolution. Also the area where is the name, icon and the text "built in source" is white while the selected element is blue. 
-        (3) In the "SliceToolPopover.tsx" the text for the "Slice Controls", "Plane", "Index", and "Opacity" is white on white background. 
-
-        Now all of these are only when the ui preference is set to light. Manly the text is a problem on light theme. But I still have the wierd ui when on gray with the "add layer" panel. The dark is all fine. 
-    }
-    {
-        ok now I need to update the prompt for deleting on the profile page. Right now it's the basic browser prompt. I dont like this. The prompt should come from the application. So can you create a panel to ask the user to confirm the deletion of the data and use this one instead of the default browser prompt ?
-    }
+    ok one more small thing. Now when I select an element in the list of "Select external sources" the element that have a resolution now change the ui when selected. The button become rounded white baground. I think this has change when we were trying to fix the selected resolution. The problem I have is noe that the button change ui, it changes the space the text take and now the text skip a line. This cause the element to change height and it change the layout of the element. So it looks like it's glitching. Can you check if you can do something so this glitch doesnt happen?   
 }
-
 [todo] contextual menu for navigation (toogle between the camera moovement)
+{
+
+}
 
 [todo] The layers should have some setting (opacity, any transformations) and infos (name slice, resolution, dimesnion). On selected layer, the ui should display some setting of this layer. This will also serve as a first step to the point, click and move object in 3D.  
 

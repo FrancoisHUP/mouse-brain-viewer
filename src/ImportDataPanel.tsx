@@ -1249,10 +1249,10 @@ export default function ImportDataPanel({
                         type="button"
                         onClick={() => toggleGroupedExternalDefault(group)}
                         style={{
-                          border: groupSelected ? "1px solid rgba(92,149,230,0.20)" : "none",
+                          border: "1px solid transparent",
                           background: groupSelected ? "rgba(92,149,230,0.08)" : "transparent",
                           color: "inherit",
-                          padding: groupSelected ? 10 : 0,
+                          padding: 10,
                           margin: 0,
                           borderRadius: 12,
                           cursor: "pointer",
@@ -1260,6 +1260,9 @@ export default function ImportDataPanel({
                           display: "flex",
                           flexDirection: "column",
                           gap: 12,
+                          boxSizing: "border-box",
+                          width: "100%",
+                          transition: "background 160ms ease, border-color 160ms ease",
                         }}
                       >
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
