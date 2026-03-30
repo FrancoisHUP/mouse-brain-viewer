@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolbar";
+import { setCameraModeInViewerState } from "./cameraModeIntegration";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import SliceToolPopover from "./SliceToolPopover";
@@ -27,6 +28,7 @@ import {
   isSerializableLayerTree,
   mergeViewerState,
   parseViewerState,
+  type CameraControlMode,
   type SerializableCameraState,
   type ViewerStatePatchV1,
   type ViewerStateV1,
@@ -78,6 +80,7 @@ declare global {
       patchState: (patch: ViewerStatePatchV1) => ViewerStateV1;
       setLayoutCollapsed: (collapsed: boolean) => ViewerStateV1;
       selectNode: (nodeId: string | null) => ViewerStateV1;
+      setCameraMode: (mode: CameraControlMode) => ViewerStateV1;
       openExport: () => void;
       openImport: () => void;
       closeDialogs: () => void;
@@ -316,6 +319,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [cameraState, setCameraState] = useState<SerializableCameraState>(
     DEFAULT_CAMERA_STATE
   );
+  const [cameraSyncKey, setCameraSyncKey] = useState(0);
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
@@ -414,9 +418,10 @@ export default function App({ startupSlices = [] }: AppProps) {
       : "No selection";
     const layerCount = collectAllLayerItems(state.scene.layerTree).length;
     const layoutLabel = state.layout.layerPanelCollapsed ? "panel hidden" : "panel visible";
+    const cameraLabel = `${state.camera.mode} camera`;
     return {
       label: selectedName,
-      meta: `${formatHistoryTimestamp(entry.committedAt)} · ${layerCount} layers · ${layoutLabel}`,
+      meta: `${formatHistoryTimestamp(entry.committedAt)} · ${layerCount} layers · ${layoutLabel} · ${cameraLabel}`,
     };
   }
 
@@ -513,19 +518,13 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSliceParamsDraft(nextState.ui.sliceParamsDraft);
     setIsLayerPanelCollapsed(nextState.layout.layerPanelCollapsed);
     setCameraState(nextState.camera);
+    setCameraSyncKey((value) => value + 1);
     setStateError(null);
     return nextState;
   }
 
   function applyHistoricalViewerState(nextState: ViewerStateV1) {
-    const preservedCameraState = currentViewerState.camera;
-    return applyViewerState(
-      {
-        ...nextState,
-        camera: preservedCameraState,
-      },
-      { suppressAutoCommit: true }
-    );
+    return applyViewerState(nextState, { suppressAutoCommit: true });
   }
 
   function commitCurrentStateNow(nextState: ViewerStateV1) {
@@ -908,6 +907,13 @@ export default function App({ startupSlices = [] }: AppProps) {
     await navigator.clipboard.writeText(stateTextDraft);
   }
 
+  function handleCameraModeChange(mode: CameraControlMode) {
+    if (currentViewerState.camera.mode === mode) return;
+
+    const nextState = setCameraModeInViewerState(currentViewerState, mode);
+    commitCurrentStateNow(nextState);
+  }
+
   function handleToolChange(tool: ToolId) {
     if (tool === "data") {
       setIsImportPanelOpen(true);
@@ -1231,6 +1237,8 @@ export default function App({ startupSlices = [] }: AppProps) {
         applyViewerStatePatch({
           scene: { selectedNodeId: nodeId },
         }),
+      setCameraMode: (mode: CameraControlMode) =>
+        commitCurrentStateNow(setCameraModeInViewerState(currentViewerState, mode)),
       openExport: () => openExportStateModal(),
       openImport: () => openImportStateModal(),
       closeDialogs: () => closeDialogs(),
@@ -1366,6 +1374,22 @@ export default function App({ startupSlices = [] }: AppProps) {
             });
             return;
           }
+          case "setCameraMode": {
+            const mode = request.payload?.mode as CameraControlMode | undefined;
+            if (!mode || !["fly", "orbit"].includes(mode)) {
+              throw new Error("Missing or invalid 'mode' payload.");
+            }
+            const nextState = commitCurrentStateNow(setCameraModeInViewerState(currentViewerState, mode));
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { state: nextState },
+            });
+            return;
+          }
           case "openExport":
             openExportStateModal();
             reply(event, {
@@ -1463,6 +1487,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
         cameraState={cameraState}
+        cameraSyncKey={cameraSyncKey}
         onCameraStateChange={setCameraState}
         backgroundColor={appPreferences.sceneBackground}
       />
@@ -1586,6 +1611,8 @@ export default function App({ startupSlices = [] }: AppProps) {
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
+        cameraMode={cameraState.mode}
+        onCameraModeChange={handleCameraModeChange}
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={() => handleUndo()}

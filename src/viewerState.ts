@@ -1,7 +1,10 @@
 import type { ToolId } from "./BottomToolbar";
 import type { LayerTreeNode, SliceLayerParams } from "./layerTypes";
 
+export type CameraControlMode = "fly" | "orbit";
+
 export type SerializableCameraState = {
+  mode: CameraControlMode;
   position: [number, number, number];
   yaw: number;
   pitch: number;
@@ -35,6 +38,7 @@ export type ViewerStatePatchV1 = {
 };
 
 export const DEFAULT_CAMERA_STATE: SerializableCameraState = {
+  mode: "fly",
   position: [0, 0, 5],
   yaw: -90,
   pitch: 0,
@@ -103,7 +107,9 @@ export function mergeViewerState(
     camera: {
       ...base.camera,
       ...(patch.camera ?? {}),
-      position: (patch.camera?.position as [number, number, number] | undefined) ??
+      mode: patch.camera?.mode ?? base.camera.mode,
+      position:
+        (patch.camera?.position as [number, number, number] | undefined) ??
         base.camera.position,
     },
     scene: {
@@ -130,5 +136,18 @@ export function parseViewerState(raw: string): ViewerStateV1 {
     throw new Error("Invalid viewer state: missing layer tree.");
   }
 
-  return parsed as ViewerStateV1;
+  if (!parsed.camera) {
+    throw new Error("Invalid viewer state: missing camera.");
+  }
+
+  return {
+    ...parsed,
+    camera: {
+      mode: parsed.camera.mode ?? "fly",
+      position: parsed.camera.position,
+      yaw: parsed.camera.yaw,
+      pitch: parsed.camera.pitch,
+      fovDeg: parsed.camera.fovDeg,
+    },
+  } as ViewerStateV1;
 }

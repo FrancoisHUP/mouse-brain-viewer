@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import type { CameraControlMode } from "./viewerState";
 
 export type ToolId =
   | "mouse"
@@ -31,6 +32,23 @@ const TOOLS: ToolDefinition[] = [
   // { id: "settings", label: "Settings" },
   { id: "export", label: "Export" },
   { id: "account", label: "Account" },
+];
+
+const CAMERA_MODE_OPTIONS: Array<{
+  id: CameraControlMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "fly",
+    label: "Fly camera",
+    description: "Free look + WASD movement",
+  },
+  {
+    id: "orbit",
+    label: "Orbit controls",
+    description: "Rotate around the scene center",
+  },
 ];
 
 function Icon({ id }: { id: ToolId }) {
@@ -166,6 +184,92 @@ function ToolButton({
     >
       <Icon id={id} />
     </button>
+  );
+}
+
+function MoveToolButton({
+  active,
+  cameraMode,
+  onClick,
+  onCameraModeChange,
+}: {
+  active: boolean;
+  cameraMode: CameraControlMode;
+  onClick: () => void;
+  onCameraModeChange: (mode: CameraControlMode) => void;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const showMenu = isHovered;
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <ToolButton id="mouse" label="Move" active={active} onClick={onClick} />
+
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: "100%",
+          paddingBottom: 12,
+          transform: showMenu ? "translate(-50%, 0)" : "translate(-50%, 8px)",
+          opacity: showMenu ? 1 : 0,
+          visibility: showMenu ? "visible" : "hidden",
+          pointerEvents: showMenu ? "auto" : "none",
+          transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
+          zIndex: 40,
+        }}
+      >
+        <div
+          data-theme-surface="panel"
+          style={{
+            width: 260,
+            borderRadius: 16,
+            background: "rgba(12,14,18,0.96)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
+            backdropFilter: "blur(14px)",
+            padding: 10,
+            color: "white",
+            display: "grid",
+            gap: 8,
+          }}
+        >
+          {CAMERA_MODE_OPTIONS.map((option) => {
+            const selected = option.id === cameraMode;
+
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => onCameraModeChange(option.id)}
+                style={{
+                  textAlign: "left",
+                  borderRadius: 12,
+                  border: selected
+                    ? "1px solid rgba(120,190,255,0.75)"
+                    : "1px solid rgba(255,255,255,0.08)",
+                  background: selected
+                    ? "rgba(120,190,255,0.16)"
+                    : "rgba(255,255,255,0.04)",
+                  color: "white",
+                  padding: "10px 12px",
+                  cursor: "pointer",
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{option.label}</div>
+                <div style={{ fontSize: 11, opacity: 0.68, marginTop: 4 }}>
+                  {option.description}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -320,6 +424,8 @@ function HistoryButton({
 export default function BottomToolbar({
   activeTool,
   onToolChange,
+  cameraMode,
+  onCameraModeChange,
   slicePopoverOpen = false,
   slicePopoverContent = null,
   onRequestCloseSlicePopover,
@@ -340,6 +446,8 @@ export default function BottomToolbar({
 }: {
   activeTool: ToolId;
   onToolChange: (tool: ToolId) => void;
+  cameraMode: CameraControlMode;
+  onCameraModeChange: (mode: CameraControlMode) => void;
   slicePopoverOpen?: boolean;
   slicePopoverContent?: ReactNode;
   onRequestCloseSlicePopover?: () => void;
@@ -401,6 +509,18 @@ export default function BottomToolbar({
           (tool.id === "export" && statePopoverOpen) ||
           (tool.id === "account" && accountPopoverOpen);
 
+        if (tool.id === "mouse") {
+          return (
+            <MoveToolButton
+              key={tool.id}
+              active={isActive}
+              cameraMode={cameraMode}
+              onClick={() => onToolChange(tool.id)}
+              onCameraModeChange={onCameraModeChange}
+            />
+          );
+        }
+
         return (
           <ToolButton
             key={tool.id}
@@ -411,7 +531,15 @@ export default function BottomToolbar({
           />
         );
       }),
-    [activeTool, onToolChange, slicePopoverOpen, statePopoverOpen, accountPopoverOpen]
+    [
+      activeTool,
+      onToolChange,
+      slicePopoverOpen,
+      statePopoverOpen,
+      accountPopoverOpen,
+      cameraMode,
+      onCameraModeChange,
+    ]
   );
 
   return (

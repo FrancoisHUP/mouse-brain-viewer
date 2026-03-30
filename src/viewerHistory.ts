@@ -42,30 +42,17 @@ function sanitizeForHistory(value: unknown): unknown {
   }
 
   if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).map(([key, nested]) => [
-      key,
-      sanitizeForHistory(nested),
-    ]);
+    const entries = Object.entries(value as Record<string, unknown>).map(
+      ([key, nested]) => [key, sanitizeForHistory(nested)]
+    );
     return Object.fromEntries(entries);
   }
 
   return value;
 }
 
-function stripCameraFromHistoryState(state: ViewerStateV1): ViewerStateV1 {
-  return {
-    ...state,
-    camera: {
-      position: [0, 0, 5],
-      yaw: -90,
-      pitch: 0,
-      fovDeg: 60,
-    },
-  };
-}
-
 export function hashViewerStateForHistory(state: ViewerStateV1): string {
-  return JSON.stringify(sanitizeForHistory(stripCameraFromHistoryState(state)));
+  return JSON.stringify(sanitizeForHistory(state));
 }
 
 export function createViewerHistoryEntry(
@@ -86,7 +73,12 @@ export function clampHistoryStack(states: ViewerHistoryEntry[]): ViewerHistoryEn
 }
 
 function isViewerHistoryEntry(value: unknown): value is ViewerHistoryEntry {
-  return !!value && typeof value === "object" && "state" in (value as Record<string, unknown>) && "committedAt" in (value as Record<string, unknown>);
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "state" in (value as Record<string, unknown>) &&
+    "committedAt" in (value as Record<string, unknown>)
+  );
 }
 
 export function loadPersistedViewerHistory(): PersistedViewerHistoryV2 | null {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { mat4, vec3 } from "gl-matrix";
-import type { SerializableCameraState } from "./viewerState";
+import type { SerializableCameraState, CameraControlMode } from "./viewerState";
 import type { ToolId } from "./BottomToolbar";
 import type { LayerTreeNode, LayerItemNode, RemoteContentKind, RemoteOmeResolution } from "./layerTypes";
 import {
@@ -34,6 +34,7 @@ import {
 } from "./allenMesh";
 
 type CameraState = {
+  mode: CameraControlMode;
   position: vec3;
   yaw: number;
   pitch: number;
@@ -293,6 +294,7 @@ export default function WebGLCanvas({
   layerTree,
   selectedNodeId,
   cameraState,
+  cameraSyncKey,
   onCameraStateChange,
   backgroundColor = "#0b0f14",
 }: {
@@ -300,12 +302,14 @@ export default function WebGLCanvas({
   layerTree: LayerTreeNode[];
   selectedNodeId: string | null;
   cameraState: SerializableCameraState;
+  cameraSyncKey: number;
   onCameraStateChange?: (next: SerializableCameraState) => void;
   backgroundColor?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const cameraRef = useRef<CameraState>({
+    mode: cameraState.mode ?? "fly",
     position: vec3.fromValues(
       cameraState.position[0],
       cameraState.position[1],
@@ -316,6 +320,11 @@ export default function WebGLCanvas({
     fovDeg: cameraState.fovDeg,
   });
   const lastPublishedCameraRef = useRef("");
+  const targetOrbitDistanceRef = useRef(Math.max(0.25, vec3.length(vec3.fromValues(
+    cameraState.position[0],
+    cameraState.position[1],
+    cameraState.position[2]
+  ))));
 
   const activeToolRef = useRef<ToolId>(activeTool);
   const layerTreeRef = useRef<LayerTreeNode[]>(layerTree);
@@ -335,20 +344,27 @@ export default function WebGLCanvas({
   }, [layerTree]);
 
   useEffect(() => {
-    cameraRef.current = {
-      position: vec3.fromValues(
-        cameraState.position[0],
-        cameraState.position[1],
-        cameraState.position[2]
-      ),
-      yaw: cameraState.yaw,
-      pitch: cameraState.pitch,
-      fovDeg: cameraState.fovDeg,
-    };
-  }, [cameraState]);
+    cameraRef.current.mode = cameraState.mode ?? "fly";
+    if ((cameraState.mode ?? "fly") === "orbit") {
+      targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(cameraRef.current.position, vec3.fromValues(0, 0, 0)));
+    }
+  }, [cameraState.mode]);
+
+  useEffect(() => {
+    const camera = cameraRef.current;
+    camera.mode = cameraState.mode ?? "fly";
+    camera.position[0] = cameraState.position[0];
+    camera.position[1] = cameraState.position[1];
+    camera.position[2] = cameraState.position[2];
+    camera.yaw = cameraState.yaw;
+    camera.pitch = cameraState.pitch;
+    camera.fovDeg = cameraState.fovDeg;
+    targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(camera.position, vec3.fromValues(0, 0, 0)));
+  }, [cameraSyncKey]);
 
   function publishCameraIfNeeded(camera: CameraState) {
     const next: SerializableCameraState = {
+      mode: camera.mode,
       position: [camera.position[0], camera.position[1], camera.position[2]],
       yaw: camera.yaw,
       pitch: camera.pitch,
@@ -908,6 +924,7 @@ export default function WebGLCanvas({
     const camera = cameraRef.current;
 
     let targetFovDeg = camera.fovDeg;
+    const orbitTarget = vec3.fromValues(0, 0, 0);
     const keys = new Set<string>();
     let dragging = false;
     let lastMouseX = 0;
@@ -942,7 +959,32 @@ export default function WebGLCanvas({
       return forward;
     }
 
+    function getCameraDistanceToTarget(): number {
+      return vec3.distance(camera.position, orbitTarget);
+    }
+
+    function setCameraFromOrbitAngles(
+      distance: number,
+      yawDeg: number,
+      pitchDeg: number
+    ) {
+      const yawRad = (yawDeg * Math.PI) / 180;
+      const pitchRad = (pitchDeg * Math.PI) / 180;
+
+      const x = Math.cos(yawRad) * Math.cos(pitchRad) * distance;
+      const y = Math.sin(pitchRad) * distance;
+      const z = Math.sin(yawRad) * Math.cos(pitchRad) * distance;
+
+      camera.position[0] = orbitTarget[0] - x;
+      camera.position[1] = orbitTarget[1] - y;
+      camera.position[2] = orbitTarget[2] - z;
+      camera.yaw = yawDeg;
+      camera.pitch = pitchDeg;
+    }
+
     function updateCamera(dt: number) {
+      if (camera.mode !== "fly") return;
+
       const speed = 3.0;
       const velocity = speed * dt;
       let moved = false;
@@ -1193,6 +1235,16 @@ export default function WebGLCanvas({
       const zoomAlpha = 1 - Math.exp(-zoomSharpness * dt);
       camera.fovDeg += (targetFovDeg - camera.fovDeg) * zoomAlpha;
 
+      if (camera.mode === "orbit") {
+        const orbitAlpha = 1 - Math.exp(-zoomSharpness * dt);
+        const currentDistance = getCameraDistanceToTarget();
+        const nextDistance = currentDistance + (targetOrbitDistanceRef.current - currentDistance) * orbitAlpha;
+        if (Math.abs(nextDistance - currentDistance) > 1e-4) {
+          setCameraFromOrbitAngles(nextDistance, camera.yaw, camera.pitch);
+          publishCameraIfNeeded(camera);
+        }
+      }
+
       gl.enable(gl.DEPTH_TEST);
       const [bgR, bgG, bgB] = hexToRgb01(backgroundColor);
       gl.clearColor(bgR, bgG, bgB, 1.0);
@@ -1209,11 +1261,15 @@ export default function WebGLCanvas({
       );
 
       const forward = getForward();
-      const target = vec3.create();
-      vec3.add(target, camera.position, forward);
 
       const view = mat4.create();
-      mat4.lookAt(view, camera.position, target, [0, 1, 0]);
+      if (camera.mode === "fly") {
+        const target = vec3.create();
+        vec3.add(target, camera.position, forward);
+        mat4.lookAt(view, camera.position, target, [0, 1, 0]);
+      } else {
+        mat4.lookAt(view, camera.position, orbitTarget, [0, 1, 0]);
+      }
 
       const layers = collectVisibleLayerItems(layerTreeRef.current, true);
 
@@ -1430,6 +1486,7 @@ export default function WebGLCanvas({
 
     function onKeyDown(e: KeyboardEvent) {
       if (activeToolRef.current !== "mouse") return;
+      if (camera.mode !== "fly") return;
       keys.add(e.key.toLowerCase());
     }
 
@@ -1463,17 +1520,35 @@ export default function WebGLCanvas({
       lastMouseX = e.clientX;
       lastMouseY = e.clientY;
 
+      if (camera.mode === "fly") {
+        const sensitivity = 0.2;
+        camera.yaw += dx * sensitivity;
+        camera.pitch -= dy * sensitivity;
+        camera.pitch = clamp(camera.pitch, -89, 89);
+        publishCameraIfNeeded(camera);
+        return;
+      }
+
       const sensitivity = 0.2;
-      camera.yaw += dx * sensitivity;
-      camera.pitch -= dy * sensitivity;
-      camera.pitch = clamp(camera.pitch, -89, 89);
+      const nextYaw = camera.yaw + dx * sensitivity;
+      const nextPitch = clamp(camera.pitch - dy * sensitivity, -89, 89);
+      const distance = Math.max(0.25, getCameraDistanceToTarget());
+
+      setCameraFromOrbitAngles(distance, nextYaw, nextPitch);
       publishCameraIfNeeded(camera);
     }
 
     function onWheel(e: WheelEvent) {
       if (activeToolRef.current !== "mouse") return;
       e.preventDefault();
-      targetFovDeg = clamp(targetFovDeg + e.deltaY * 0.02, 20, 90);
+
+      if (camera.mode === "fly") {
+        targetFovDeg = clamp(targetFovDeg + e.deltaY * 0.02, 20, 90);
+        return;
+      }
+
+      const distance = targetOrbitDistanceRef.current;
+      targetOrbitDistanceRef.current = clamp(distance + e.deltaY * 0.01, 0.25, 20);
     }
 
     window.addEventListener("keydown", onKeyDown);
