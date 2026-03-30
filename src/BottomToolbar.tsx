@@ -131,7 +131,6 @@ function HistoryIcon({ direction }: { direction: "undo" | "redo" }) {
   );
 }
 
-
 function ToolButton({
   id,
   label,
@@ -236,6 +235,7 @@ function HistoryButton({
         }}
       >
         <div
+          data-theme-surface="panel"
           style={{
             width: 320,
             maxHeight: 320,
@@ -326,6 +326,7 @@ export default function BottomToolbar({
   statePopoverOpen = false,
   statePopoverContent = null,
   onRequestCloseStatePopover,
+  accountPopoverOpen = false,
   canUndo = false,
   canRedo = false,
   onUndo,
@@ -345,6 +346,7 @@ export default function BottomToolbar({
   statePopoverOpen?: boolean;
   statePopoverContent?: ReactNode;
   onRequestCloseStatePopover?: () => void;
+  accountPopoverOpen?: boolean;
   canUndo?: boolean;
   canRedo?: boolean;
   onUndo?: () => void;
@@ -396,7 +398,8 @@ export default function BottomToolbar({
         const isActive =
           activeTool === tool.id ||
           (tool.id === "slice" && slicePopoverOpen) ||
-          (tool.id === "export" && statePopoverOpen);
+          (tool.id === "export" && statePopoverOpen) ||
+          (tool.id === "account" && accountPopoverOpen);
 
         return (
           <ToolButton
@@ -408,7 +411,7 @@ export default function BottomToolbar({
           />
         );
       }),
-    [activeTool, onToolChange, slicePopoverOpen, statePopoverOpen]
+    [activeTool, onToolChange, slicePopoverOpen, statePopoverOpen, accountPopoverOpen]
   );
 
   return (
@@ -472,6 +475,7 @@ export default function BottomToolbar({
           }}
         >
           <div
+            data-theme-surface="panel"
             style={{
               minWidth: 520,
               maxWidth: 760,
@@ -501,6 +505,7 @@ export default function BottomToolbar({
           }}
         >
           <div
+            data-theme-surface="panel"
             style={{
               minWidth: 420,
               maxWidth: 520,
@@ -518,6 +523,7 @@ export default function BottomToolbar({
         </div>
 
         <div
+          data-theme-surface="panel"
           style={{
             display: "flex",
             alignItems: "center",

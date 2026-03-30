@@ -107,6 +107,26 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function hexToRgb01(hex: string): [number, number, number] {
+  const normalized = hex.trim().replace("#", "");
+  const safe =
+    normalized.length === 3
+      ? normalized
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : normalized;
+
+  if (!/^[0-9a-fA-F]{6}$/.test(safe)) {
+    return [11 / 255, 15 / 255, 20 / 255];
+  }
+
+  const r = parseInt(safe.slice(0, 2), 16) / 255;
+  const g = parseInt(safe.slice(2, 4), 16) / 255;
+  const b = parseInt(safe.slice(4, 6), 16) / 255;
+  return [r, g, b];
+}
+
 function isOmeZarrLayer(layer: LayerItemNode): boolean {
   return (
     layer.type === "remote" &&
@@ -274,12 +294,14 @@ export default function WebGLCanvas({
   selectedNodeId,
   cameraState,
   onCameraStateChange,
+  backgroundColor = "#0b0f14",
 }: {
   activeTool: ToolId;
   layerTree: LayerTreeNode[];
   selectedNodeId: string | null;
   cameraState: SerializableCameraState;
   onCameraStateChange?: (next: SerializableCameraState) => void;
+  backgroundColor?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -1172,7 +1194,8 @@ export default function WebGLCanvas({
       camera.fovDeg += (targetFovDeg - camera.fovDeg) * zoomAlpha;
 
       gl.enable(gl.DEPTH_TEST);
-      gl.clearColor(0.05, 0.06, 0.08, 1.0);
+      const [bgR, bgG, bgB] = hexToRgb01(backgroundColor);
+      gl.clearColor(bgR, bgG, bgB, 1.0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
       const aspect = canvas.width / canvas.height;
@@ -1500,7 +1523,7 @@ export default function WebGLCanvas({
       gl.deleteProgram(textureProgram);
       gl.deleteProgram(volumeTextureProgram);
     };
-  }, [selectedNodeId, highlightedLayerIds, loadTick]);
+  }, [selectedNodeId, highlightedLayerIds, loadTick, backgroundColor]);
 
   const selectedDataLayer =
     visibleLayers.find((layer) => layer.id === selectedNodeId && (isOmeZarrLayer(layer) || layer.type === "custom-slice")) ?? null;

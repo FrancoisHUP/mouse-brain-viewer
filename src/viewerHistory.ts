@@ -1,7 +1,7 @@
 import type { ViewerStateV1 } from "./viewerState";
+import { loadAppPreferences } from "./appPreferencesStore";
 
 export const VIEWER_HISTORY_STORAGE_KEY = "allen-viewer-history-v2";
-export const VIEWER_HISTORY_LIMIT = 80;
 
 export type ViewerHistoryEntry = {
   state: ViewerStateV1;
@@ -75,9 +75,14 @@ export function createViewerHistoryEntry(
   return { state, committedAt };
 }
 
+export function getViewerHistoryLimit(): number {
+  return loadAppPreferences().historyLimit;
+}
+
 export function clampHistoryStack(states: ViewerHistoryEntry[]): ViewerHistoryEntry[] {
-  if (states.length <= VIEWER_HISTORY_LIMIT) return states;
-  return states.slice(states.length - VIEWER_HISTORY_LIMIT);
+  const limit = getViewerHistoryLimit();
+  if (states.length <= limit) return states;
+  return states.slice(states.length - limit);
 }
 
 function isViewerHistoryEntry(value: unknown): value is ViewerHistoryEntry {
@@ -98,7 +103,10 @@ export function loadPersistedViewerHistory(): PersistedViewerHistoryV2 | null {
         isViewerHistoryEntry(parsed.present) &&
         Array.isArray(parsed.future)
       ) {
-        return parsed;
+        return {
+          ...parsed,
+          past: clampHistoryStack(parsed.past),
+        };
       }
     }
 
@@ -122,7 +130,7 @@ export function loadPersistedViewerHistory(): PersistedViewerHistoryV2 | null {
 
     return {
       version: 2,
-      past,
+      past: clampHistoryStack(past),
       present,
       future,
     };
@@ -136,7 +144,13 @@ export function savePersistedViewerHistory(history: PersistedViewerHistoryV2) {
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(VIEWER_HISTORY_STORAGE_KEY, JSON.stringify(history));
+    window.localStorage.setItem(
+      VIEWER_HISTORY_STORAGE_KEY,
+      JSON.stringify({
+        ...history,
+        past: clampHistoryStack(history.past),
+      })
+    );
   } catch (error) {
     console.warn("Failed to persist viewer history.", error);
   }

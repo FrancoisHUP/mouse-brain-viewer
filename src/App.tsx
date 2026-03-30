@@ -5,6 +5,16 @@ import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolba
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import SliceToolPopover from "./SliceToolPopover";
+import UserProfilePanel from "./UserProfilePanel";
+import {
+  loadAppPreferences,
+  type AppPreferences,
+} from "./appPreferencesStore";
+import {
+  clearPersistedViewerState,
+  loadPersistedViewerState,
+  savePersistedViewerState,
+} from "./viewerStateStorage";
 import {
   ALLEN_VIEWER_EMBED_NAMESPACE,
   type ViewerEmbedMessage,
@@ -194,9 +204,110 @@ const primaryButtonStyle: CSSProperties = {
   fontWeight: 600,
 };
 
+function getThemeRootCss(theme: AppPreferences["theme"]): string {
+  if (theme === "light") {
+    return `
+      [data-app-theme="light"] { color: #18212b; }
+      [data-app-theme="light"] button,
+      [data-app-theme="light"] input,
+      [data-app-theme="light"] select,
+      [data-app-theme="light"] textarea {
+        background: rgba(255,255,255,0.92) !important;
+        color: #18212b !important;
+        border-color: rgba(24,33,43,0.14) !important;
+      }
+      [data-app-theme="light"] button[style],
+      [data-app-theme="light"] input[style],
+      [data-app-theme="light"] select[style],
+      [data-app-theme="light"] textarea[style] {
+        box-shadow: none !important;
+      }
+      [data-app-theme="light"] [data-theme-surface="panel"] {
+        background: rgba(245,248,252,0.96) !important;
+        color: #18212b !important;
+        border-color: rgba(24,33,43,0.12) !important;
+      }
+      [data-app-theme="light"] [data-theme-surface="soft"] {
+        background: rgba(255,255,255,0.78) !important;
+        color: #18212b !important;
+        border-color: rgba(24,33,43,0.10) !important;
+      }
+      [data-app-theme="light"] [data-theme-text="muted"] {
+        color: rgba(24,33,43,0.74) !important;
+      }
+      [data-app-theme="light"] [data-theme-text="strong"] {
+        color: #18212b !important;
+      }
+      [data-app-theme="light"] option {
+        color: #18212b !important;
+        background: #ffffff !important;
+      }
+      [data-app-theme="light"] [data-slice-tool="true"] label,
+      [data-app-theme="light"] [data-slice-tool="true"] div,
+      [data-app-theme="light"] [data-slice-tool="true"] span {
+        color: #18212b !important;
+      }
+    `;
+  }
+
+  if (theme === "gray") {
+    return `
+      [data-app-theme="gray"] { color: #edf1f5; }
+      [data-app-theme="gray"] button,
+      [data-app-theme="gray"] input,
+      [data-app-theme="gray"] select,
+      [data-app-theme="gray"] textarea {
+        background: rgba(64,72,82,0.88) !important;
+        color: #edf1f5 !important;
+        border-color: rgba(255,255,255,0.12) !important;
+      }
+      [data-app-theme="gray"] [data-theme-surface="panel"] {
+        background: rgba(46,52,60,0.96) !important;
+        color: #edf1f5 !important;
+        border-color: rgba(255,255,255,0.10) !important;
+      }
+      [data-app-theme="gray"] [data-theme-surface="soft"] {
+        background: rgba(58,66,76,0.78) !important;
+        color: #edf1f5 !important;
+        border-color: rgba(255,255,255,0.10) !important;
+      }
+      [data-app-theme="gray"] [data-theme-text="muted"] {
+        color: rgba(237,241,245,0.74) !important;
+      }
+      [data-app-theme="gray"] [data-theme-text="strong"] {
+        color: #edf1f5 !important;
+      }
+      [data-app-theme="gray"] option {
+        color: #edf1f5 !important;
+        background: #414a54 !important;
+      }
+    `;
+  }
+
+  return `
+    [data-app-theme="dark"] [data-theme-surface="panel"] {
+      background: rgba(12,14,18,0.96) !important;
+      color: white !important;
+      border-color: rgba(255,255,255,0.10) !important;
+    }
+    [data-app-theme="dark"] [data-theme-surface="soft"] {
+      background: rgba(255,255,255,0.05) !important;
+      color: white !important;
+      border-color: rgba(255,255,255,0.10) !important;
+    }
+    [data-app-theme="dark"] [data-theme-text="muted"] {
+      color: rgba(255,255,255,0.74) !important;
+    }
+    [data-app-theme="dark"] [data-theme-text="strong"] {
+      color: white !important;
+    }
+  `;
+}
+
 export default function App({ startupSlices = [] }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolId>("mouse");
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
+  const [isUserProfilePanelOpen, setIsUserProfilePanelOpen] = useState(false);
   const [layerTree, setLayerTree] = useState<LayerTreeNode[]>(INITIAL_TREE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     getFirstLayerId(INITIAL_TREE)
@@ -205,15 +316,18 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [cameraState, setCameraState] = useState<SerializableCameraState>(
     DEFAULT_CAMERA_STATE
   );
-  const [isStateModalOpen, setIsStateModalOpen] = useState(false);
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [isClearHistoryConfirmOpen, setIsClearHistoryConfirmOpen] = useState(false);
+  const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
+    loadAppPreferences()
+  );
+  const [profileDataRevision, setProfileDataRevision] = useState(0);
+  const [hasPersistedViewerState, setHasPersistedViewerState] = useState(false);
 
   const initializedStartupSlicesRef = useRef(false);
-  const initializedLocationStateRef = useRef(false);
   const hasHydratedHistoryRef = useRef(false);
   const autoCommitTimeoutRef = useRef<number | null>(null);
   const suppressNextAutoCommitRef = useRef(false);
@@ -272,6 +386,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const canUndo = pastStatesRef.current.length > 0;
   const canRedo = futureStatesRef.current.length > 0;
   const canClearHistory = canUndo || canRedo;
+  const isStateModalOpen = activeTool === "export";
 
   function formatHistoryTimestamp(timestamp: number) {
     const date = new Date(timestamp);
@@ -333,6 +448,10 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function bumpHistoryRevision() {
     setHistoryRevision((value) => value + 1);
+  }
+
+  function notifyProfileDataChanged() {
+    setProfileDataRevision((value) => value + 1);
   }
 
   function persistHistorySnapshot(presentState: ViewerStateV1, committedAt: number = Date.now()) {
@@ -471,31 +590,40 @@ export default function App({ startupSlices = [] }: AppProps) {
     hasHydratedHistoryRef.current = true;
 
     const stateFromLocation = readInitialStateFromLocation();
+    const persistedState = loadPersistedViewerState();
+    const persistedHistory = loadPersistedViewerHistory();
+
     if (stateFromLocation) {
       lastCommittedStateRef.current = stateFromLocation;
       lastCommittedHashRef.current = hashViewerStateForHistory(stateFromLocation);
       applyViewerState(stateFromLocation, { suppressAutoCommit: true });
       pastStatesRef.current = [];
       futureStatesRef.current = [];
+      setHasPersistedViewerState(true);
       bumpHistoryRevision();
-      persistHistorySnapshot(stateFromLocation);
       return;
     }
 
-    const persistedHistory = loadPersistedViewerHistory();
+    const initialState = persistedState ?? persistedHistory?.present.state ?? currentViewerState;
+
     if (persistedHistory) {
       pastStatesRef.current = persistedHistory.past;
       futureStatesRef.current = persistedHistory.future;
-      lastCommittedStateRef.current = persistedHistory.present.state;
-      lastCommittedHashRef.current = hashViewerStateForHistory(persistedHistory.present.state);
-      applyViewerState(persistedHistory.present.state, { suppressAutoCommit: true });
+    }
+
+    if (persistedState || persistedHistory) {
+      lastCommittedStateRef.current = initialState;
+      lastCommittedHashRef.current = hashViewerStateForHistory(initialState);
+      applyViewerState(initialState, { suppressAutoCommit: true });
+      setHasPersistedViewerState(!!persistedState || !!persistedHistory);
       bumpHistoryRevision();
       return;
     }
 
     lastCommittedStateRef.current = currentViewerState;
     lastCommittedHashRef.current = currentViewerHash;
-    persistHistorySnapshot(currentViewerState);
+    savePersistedViewerState(currentViewerState);
+    setHasPersistedViewerState(true);
     bumpHistoryRevision();
   }, []);
 
@@ -534,6 +662,18 @@ export default function App({ startupSlices = [] }: AppProps) {
       }
     };
   }, [currentViewerHash, currentViewerState]);
+
+  useEffect(() => {
+    if (!hasHydratedHistoryRef.current) return;
+
+    if (isSerializableLayerTree(currentViewerState.scene.layerTree)) {
+      savePersistedViewerState(currentViewerState);
+      setHasPersistedViewerState(true);
+    } else {
+      clearPersistedViewerState();
+      setHasPersistedViewerState(false);
+    }
+  }, [currentViewerState]);
 
   useEffect(() => {
     if (initializedStartupSlicesRef.current) return;
@@ -706,28 +846,28 @@ export default function App({ startupSlices = [] }: AppProps) {
       );
       setStateModalMode("export");
       setStateTextDraft("");
-      setIsStateModalOpen(true);
+      setActiveTool("export");
       return;
     }
 
     setStateError(null);
     setStateModalMode("export");
     setStateTextDraft(JSON.stringify(currentViewerState, null, 2));
-    setIsStateModalOpen(true);
+    setActiveTool("export");
   }
 
   function openImportStateModal() {
     setStateError(null);
     setStateModalMode("import");
     setStateTextDraft("");
-    setIsStateModalOpen(true);
+    setActiveTool("export");
   }
 
   function closeDialogs() {
     setIsImportPanelOpen(false);
-    setIsStateModalOpen(false);
+    setIsUserProfilePanelOpen(false);
     setIsClearHistoryConfirmOpen(false);
-    setActiveTool((prev) => (prev === "slice" ? "mouse" : prev));
+    setActiveTool((prev) => (prev === "slice" || prev === "export" ? "mouse" : prev));
   }
 
   function openClearHistoryConfirm() {
@@ -755,7 +895,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     try {
       const parsed = parseViewerState(stateTextDraft);
       commitCurrentStateNow(parsed);
-      setIsStateModalOpen(false);
+      setActiveTool("mouse");
     } catch (error) {
       setStateError(
         error instanceof Error ? error.message : "Failed to import viewer state."
@@ -776,6 +916,11 @@ export default function App({ startupSlices = [] }: AppProps) {
 
     if (tool === "export") {
       openExportStateModal();
+      return;
+    }
+
+    if (tool === "account") {
+      setIsUserProfilePanelOpen(true);
       return;
     }
 
@@ -1039,6 +1184,37 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSliceName("");
   }
 
+  function handleClearPersistedViewerState() {
+    clearPersistedViewerState();
+    setHasPersistedViewerState(false);
+    notifyProfileDataChanged();
+  }
+
+  function handleClearViewerHistoryOnly() {
+    flushPendingAutoCommit();
+    clearPersistedViewerHistory();
+    pastStatesRef.current = [];
+    futureStatesRef.current = [];
+    lastCommittedStateRef.current = currentViewerState;
+    lastCommittedHashRef.current = hashViewerStateForHistory(currentViewerState);
+    bumpHistoryRevision();
+    notifyProfileDataChanged();
+  }
+
+  function handleResetLocalProfileData() {
+    flushPendingAutoCommit();
+    clearPersistedViewerHistory();
+    clearPersistedViewerState();
+    pastStatesRef.current = [];
+    futureStatesRef.current = [];
+    lastCommittedStateRef.current = currentViewerState;
+    lastCommittedHashRef.current = hashViewerStateForHistory(currentViewerState);
+    setHasPersistedViewerState(false);
+    setAppPreferences(loadAppPreferences());
+    bumpHistoryRevision();
+    notifyProfileDataChanged();
+  }
+
   useEffect(() => {
     const api = {
       ping: () => true,
@@ -1263,21 +1439,32 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   return (
     <div
+      data-app-theme={appPreferences.theme}
       style={{
         width: "100vw",
         height: "100vh",
         overflow: "hidden",
         margin: 0,
         position: "relative",
-        background: "#0b0f14",
+        background: appPreferences.sceneBackground,
+        color: appPreferences.theme === "light" ? "#18212b" : "white",
+        cursor:
+          appPreferences.cursorStyle === "crosshair"
+            ? "crosshair"
+            : appPreferences.cursorStyle === "high-contrast"
+            ? "cell"
+            : "default",
       }}
     >
+      <style>{getThemeRootCss(appPreferences.theme)}</style>
+
       <WebGLCanvas
         activeTool={activeTool}
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
         cameraState={cameraState}
         onCameraStateChange={setCameraState}
+        backgroundColor={appPreferences.sceneBackground}
       />
 
       <LayerPanel
@@ -1300,11 +1487,27 @@ export default function App({ startupSlices = [] }: AppProps) {
       />
 
       <ImportDataPanel
+        key={profileDataRevision}
         open={isImportPanelOpen}
         onClose={() => setIsImportPanelOpen(false)}
         onAddDrawingLayer={handleAddDrawingLayer}
         onAddExternalSources={handleAddExternalSources}
         onAddFiles={handleAddFiles}
+      />
+
+      <UserProfilePanel
+        open={isUserProfilePanelOpen}
+        onClose={() => setIsUserProfilePanelOpen(false)}
+        onPreferencesChange={(next) => {
+          setAppPreferences(next);
+        }}
+        onClearViewerState={handleClearPersistedViewerState}
+        onClearViewerHistory={handleClearViewerHistoryOnly}
+        onResetLocalProfile={handleResetLocalProfileData}
+        onDataChanged={notifyProfileDataChanged}
+        savedViewerStateExists={hasPersistedViewerState}
+        savedHistoryCount={pastStatesRef.current.length + futureStatesRef.current.length}
+        dataRevision={profileDataRevision}
       />
 
       {isClearHistoryConfirmOpen ? (
@@ -1325,6 +1528,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         >
           <div
             onClick={(event) => event.stopPropagation()}
+            data-theme-surface="panel"
             style={{
               width: "min(420px, 100%)",
               borderRadius: 18,
@@ -1394,9 +1598,12 @@ export default function App({ startupSlices = [] }: AppProps) {
         onJumpRedo={handleJumpRedo}
         slicePopoverOpen={activeTool === "slice"}
         onRequestCloseSlicePopover={() => setActiveTool("mouse")}
+        statePopoverOpen={isStateModalOpen}
+        onRequestCloseStatePopover={() => setActiveTool("mouse")}
+        accountPopoverOpen={isUserProfilePanelOpen}
         slicePopoverContent={
           omeLayers.length > 0 ? (
-            <div style={{ fontFamily: "sans-serif" }}>
+            <div data-slice-tool="true" style={{ fontFamily: "sans-serif" }}>
               <div
                 style={{
                   display: "grid",
@@ -1406,7 +1613,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                   marginBottom: 12,
                 }}
               >
-                <div style={{ fontSize: 12, opacity: 0.8 }}>Volume</div>
+                <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.8 }}>Volume</div>
                 <select
                   value={sliceVolumeLayerId}
                   onChange={(e) => setSliceVolumeLayerId(e.target.value)}
@@ -1420,7 +1627,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                   }}
                 >
                   {omeLayers.map((layer) => (
-                    <option key={layer.id} value={layer.id} style={{ color: "black" }}>
+                    <option key={layer.id} value={layer.id} style={{ color: "inherit" }}>
                       {layer.name}
                     </option>
                   ))}
@@ -1440,7 +1647,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                   marginBottom: 12,
                 }}
               >
-                <div style={{ fontSize: 12, opacity: 0.8 }}>Name</div>
+                <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.8 }}>Name</div>
                 <input
                   value={sliceName}
                   onChange={(e) => setSliceName(e.target.value)}
@@ -1498,10 +1705,8 @@ export default function App({ startupSlices = [] }: AppProps) {
             </div>
           )
         }
-        statePopoverOpen={isStateModalOpen}
-        onRequestCloseStatePopover={() => setIsStateModalOpen(false)}
         statePopoverContent={
-          <div style={{ fontFamily: "sans-serif" }}>
+          <div data-slice-tool="true" style={{ fontFamily: "sans-serif" }}>
             <div
               style={{
                 display: "flex",

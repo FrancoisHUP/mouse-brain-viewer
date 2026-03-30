@@ -680,6 +680,7 @@ export default function ImportDataPanel({
       }}
     >
       <div
+        data-theme-surface="panel"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(860px, calc(100vw - 32px))",
@@ -706,7 +707,7 @@ export default function ImportDataPanel({
         >
           <div>
             <div style={{ fontSize: 18, fontWeight: 800 }}>Add layer</div>
-            <div style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
+            <div data-theme-text="muted" style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
               Choose the type of layer you want to add to the viewer.
             </div>
           </div>
@@ -755,6 +756,7 @@ export default function ImportDataPanel({
 
         {mode === "drawing" && (
           <div
+            data-theme-surface="soft"
             style={{
               borderRadius: 16,
               border: "1px solid rgba(255,255,255,0.10)",
@@ -790,6 +792,7 @@ export default function ImportDataPanel({
 
         {mode === "external" && (
           <div
+            data-theme-surface="soft"
             style={{
               borderRadius: 16,
               border: "1px solid rgba(255,255,255,0.10)",
@@ -810,7 +813,7 @@ export default function ImportDataPanel({
                 <div style={{ fontSize: 14, fontWeight: 700 }}>
                   Select external sources
                 </div>
-                <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>
+                <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>
                   You can select multiple sources and add them all at once.
                 </div>
               </div>
@@ -965,6 +968,7 @@ export default function ImportDataPanel({
               }}
             >
               <div
+                data-theme-surface="soft"
                 style={{
                   borderRadius: 14,
                   border: "1px solid rgba(255,255,255,0.10)",
@@ -1080,7 +1084,7 @@ export default function ImportDataPanel({
                             ? "1px solid rgba(160,220,255,0.85)"
                             : "1px solid rgba(255,255,255,0.10)",
                           background: selected
-                            ? "rgba(120,190,255,0.14)"
+                            ? "rgba(92,149,230,0.18)"
                             : "rgba(255,255,255,0.04)",
                           color: "white",
                           padding: 14,
@@ -1119,7 +1123,7 @@ export default function ImportDataPanel({
                                 border: selected
                                   ? "1px solid rgba(160,220,255,0.95)"
                                   : "1px solid rgba(255,255,255,0.24)",
-                                background: selected ? "rgba(160,220,255,0.90)" : "transparent",
+                                background: selected ? "rgba(92,149,230,0.92)" : "transparent",
                                 flexShrink: 0,
                                 marginTop: 2,
                               }}
@@ -1155,10 +1159,11 @@ export default function ImportDataPanel({
                               />
                             ) : (
                               <>
-                                <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+                                <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
                                   {item.name}
                                 </div>
                                 <div
+                                  data-theme-text="muted"
                                   style={{
                                     fontSize: 11,
                                     opacity: 0.6,
@@ -1230,7 +1235,7 @@ export default function ImportDataPanel({
                           ? "1px solid rgba(160,220,255,0.85)"
                           : "1px solid rgba(255,255,255,0.10)",
                         background: groupSelected
-                          ? "rgba(120,190,255,0.14)"
+                          ? "rgba(92,149,230,0.18)"
                           : "rgba(255,255,255,0.04)",
                         color: "white",
                         padding: 14,
@@ -1244,11 +1249,12 @@ export default function ImportDataPanel({
                         type="button"
                         onClick={() => toggleGroupedExternalDefault(group)}
                         style={{
-                          border: "none",
-                          background: "transparent",
+                          border: groupSelected ? "1px solid rgba(92,149,230,0.20)" : "none",
+                          background: groupSelected ? "rgba(92,149,230,0.08)" : "transparent",
                           color: "inherit",
-                          padding: 0,
+                          padding: groupSelected ? 10 : 0,
                           margin: 0,
+                          borderRadius: 12,
                           cursor: "pointer",
                           textAlign: "left",
                           display: "flex",
@@ -1267,7 +1273,7 @@ export default function ImportDataPanel({
                               border: groupSelected
                                 ? "1px solid rgba(160,220,255,0.95)"
                                 : "1px solid rgba(255,255,255,0.24)",
-                              background: groupSelected ? "rgba(160,220,255,0.90)" : "transparent",
+                              background: groupSelected ? "rgba(92,149,230,0.92)" : "transparent",
                               flexShrink: 0,
                               marginTop: 2,
                             }}
@@ -1275,10 +1281,11 @@ export default function ImportDataPanel({
                         </div>
 
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+                          <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
                             {group.name}
                           </div>
                           <div
+                            data-theme-text="muted"
                             style={{
                               fontSize: 11,
                               opacity: 0.6,
@@ -1318,11 +1325,14 @@ export default function ImportDataPanel({
                                 padding: "0 10px",
                                 borderRadius: 999,
                                 border: resolutionSelected
-                                  ? "1px solid rgba(160,220,255,0.95)"
+                                  ? "1px solid rgba(92,149,230,0.88)"
                                   : "1px solid rgba(255,255,255,0.14)",
                                 background: resolutionSelected
-                                  ? "rgba(120,190,255,0.22)"
+                                  ? "rgba(92,149,230,0.26)"
                                   : "rgba(255,255,255,0.05)",
+                                boxShadow: resolutionSelected
+                                  ? "inset 0 0 0 1px rgba(255,255,255,0.12)"
+                                  : "none",
                                 color: "white",
                                 cursor: "pointer",
                                 fontSize: 11,
@@ -1341,6 +1351,7 @@ export default function ImportDataPanel({
 
               {filteredGroupedExternalSources.length === 0 && (
                 <div
+                  data-theme-surface="soft"
                   style={{
                     minHeight: 120,
                     borderRadius: 14,
@@ -1365,6 +1376,7 @@ export default function ImportDataPanel({
 
         {mode === "custom" && (
           <div
+            data-theme-surface="soft"
             style={{
               borderRadius: 16,
               border: "1px solid rgba(255,255,255,0.10)",
@@ -1409,7 +1421,7 @@ export default function ImportDataPanel({
               <div style={{ fontSize: 14, fontWeight: 700 }}>
                 Drag and drop files here
               </div>
-              <div style={{ fontSize: 12, opacity: 0.68, marginTop: 8 }}>
+              <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.68, marginTop: 8 }}>
                 or click to browse and add one or more files
               </div>
             </div>

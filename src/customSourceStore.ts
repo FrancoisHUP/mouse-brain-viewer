@@ -182,3 +182,14 @@ export function replaceCustomExternalSources(sources: CustomExternalSource[]) {
   data.customSources = sources;
   saveAnonymousUserData(data);
 }
+
+export function clearAllCustomExternalSources() {
+  const data = loadAnonymousUserData();
+  data.customSources = [];
+  saveAnonymousUserData(data);
+}
+
+export function clearAllAnonymousUserData() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_KEY);
+}

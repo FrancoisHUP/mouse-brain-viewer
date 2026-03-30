@@ -403,6 +403,7 @@ function SortableTreeRow({
           </button>
 
           <div
+            data-theme-text="strong"
             style={{
               width: 22,
               display: "flex",
@@ -442,6 +443,7 @@ function SortableTreeRow({
             ) : (
               <>
                 <div
+                  data-theme-text="strong"
                   style={{
                     fontSize: isSelected ? 13.5 : inheritedSelected ? 13.2 : 13,
                     fontWeight: isSelected ? 700 : inheritedSelected ? 650 : 600,
@@ -453,6 +455,7 @@ function SortableTreeRow({
                   {row.name}
                 </div>
                 <div
+                  data-theme-text="muted"
                   style={{
                     fontSize: 11,
                     opacity: isSelected || inheritedSelected ? 0.85 : 0.58,
@@ -774,6 +777,7 @@ export default function LayerPanel({
         >
           {isCollapsed ? (
             <button
+              data-theme-surface="panel"
               type="button"
               title="Open layers"
               onClick={() => onSetCollapsed(false)}
@@ -792,10 +796,11 @@ export default function LayerPanel({
                 cursor: "pointer",
               }}
             >
-              <LayerIcon />
+              <span data-theme-text="strong" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}><LayerIcon /></span>
             </button>
           ) : (
             <div
+              data-theme-surface="panel"
               style={{
                 background: "rgba(12,14,18,0.82)",
                 border: "1px solid rgba(255,255,255,0.10)",
@@ -819,10 +824,10 @@ export default function LayerPanel({
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center" }}>
+                  <div data-theme-text="strong" style={{ display: "flex", alignItems: "center" }}>
                     <LayerIcon />
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, opacity: 0.95 }}>
+                  <div data-theme-text="strong" style={{ fontSize: 14, fontWeight: 700, opacity: 0.95 }}>
                     Layers
                   </div>
                 </div>
@@ -1011,6 +1016,7 @@ export default function LayerPanel({
         ? createPortal(
             <div
               data-layer-menu-popup="true"
+              data-theme-surface="panel"
               onClick={(e) => e.stopPropagation()}
               style={{
                 position: "fixed",
