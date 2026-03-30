@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolbar";
-import { setCameraModeInViewerState } from "./cameraModeIntegration";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import SliceToolPopover from "./SliceToolPopover";
@@ -28,11 +27,11 @@ import {
   isSerializableLayerTree,
   mergeViewerState,
   parseViewerState,
-  type CameraControlMode,
   type SerializableCameraState,
   type ViewerStatePatchV1,
   type ViewerStateV1,
 } from "./viewerState";
+import { buildViewerShareUrl, readViewerStateFromHash } from "./viewerShare";
 import {
   VIEWER_HISTORY_STORAGE_KEY,
   clampHistoryStack,
@@ -80,7 +79,6 @@ declare global {
       patchState: (patch: ViewerStatePatchV1) => ViewerStateV1;
       setLayoutCollapsed: (collapsed: boolean) => ViewerStateV1;
       selectNode: (nodeId: string | null) => ViewerStateV1;
-      setCameraMode: (mode: CameraControlMode) => ViewerStateV1;
       openExport: () => void;
       openImport: () => void;
       closeDialogs: () => void;
@@ -163,6 +161,15 @@ function decodeBase64Url(input: string): string {
 
 function readInitialStateFromLocation(): ViewerStateV1 | null {
   if (typeof window === "undefined") return null;
+
+  try {
+    const sharedState = readViewerStateFromHash();
+    if (sharedState) {
+      return sharedState;
+    }
+  } catch (error) {
+    console.warn("Failed to parse shared viewer state from hash.", error);
+  }
 
   const params = new URLSearchParams(window.location.search);
   const rawState = params.get("viewerState");
@@ -319,10 +326,10 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [cameraState, setCameraState] = useState<SerializableCameraState>(
     DEFAULT_CAMERA_STATE
   );
-  const [cameraSyncKey, setCameraSyncKey] = useState(0);
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
+  const [stateShareMessage, setStateShareMessage] = useState<string | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [isClearHistoryConfirmOpen, setIsClearHistoryConfirmOpen] = useState(false);
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
@@ -418,10 +425,9 @@ export default function App({ startupSlices = [] }: AppProps) {
       : "No selection";
     const layerCount = collectAllLayerItems(state.scene.layerTree).length;
     const layoutLabel = state.layout.layerPanelCollapsed ? "panel hidden" : "panel visible";
-    const cameraLabel = `${state.camera.mode} camera`;
     return {
       label: selectedName,
-      meta: `${formatHistoryTimestamp(entry.committedAt)} · ${layerCount} layers · ${layoutLabel} · ${cameraLabel}`,
+      meta: `${formatHistoryTimestamp(entry.committedAt)} · ${layerCount} layers · ${layoutLabel}`,
     };
   }
 
@@ -518,13 +524,20 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSliceParamsDraft(nextState.ui.sliceParamsDraft);
     setIsLayerPanelCollapsed(nextState.layout.layerPanelCollapsed);
     setCameraState(nextState.camera);
-    setCameraSyncKey((value) => value + 1);
     setStateError(null);
+    setStateShareMessage(null);
     return nextState;
   }
 
   function applyHistoricalViewerState(nextState: ViewerStateV1) {
-    return applyViewerState(nextState, { suppressAutoCommit: true });
+    const preservedCameraState = currentViewerState.camera;
+    return applyViewerState(
+      {
+        ...nextState,
+        camera: preservedCameraState,
+      },
+      { suppressAutoCommit: true }
+    );
   }
 
   function commitCurrentStateNow(nextState: ViewerStateV1) {
@@ -843,6 +856,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       setStateError(
         "This viewer contains uploaded file layers. Undo/redo still works in memory, but browser persistence and copy-paste export support only serializable layers like remote volumes, slices, and annotations."
       );
+      setStateShareMessage(null);
       setStateModalMode("export");
       setStateTextDraft("");
       setActiveTool("export");
@@ -850,6 +864,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
 
     setStateError(null);
+    setStateShareMessage(null);
     setStateModalMode("export");
     setStateTextDraft(JSON.stringify(currentViewerState, null, 2));
     setActiveTool("export");
@@ -857,6 +872,7 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function openImportStateModal() {
     setStateError(null);
+    setStateShareMessage(null);
     setStateModalMode("import");
     setStateTextDraft("");
     setActiveTool("export");
@@ -894,6 +910,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     try {
       const parsed = parseViewerState(stateTextDraft);
       commitCurrentStateNow(parsed);
+      setStateShareMessage(null);
       setActiveTool("mouse");
     } catch (error) {
       setStateError(
@@ -907,11 +924,52 @@ export default function App({ startupSlices = [] }: AppProps) {
     await navigator.clipboard.writeText(stateTextDraft);
   }
 
-  function handleCameraModeChange(mode: CameraControlMode) {
-    if (currentViewerState.camera.mode === mode) return;
+  async function handleShareViewerState() {
+    if (!isSerializableLayerTree(layerTree)) {
+      setStateError(
+        "This viewer contains uploaded file layers. Share links only support serializable layers like remote volumes, slices, and annotations."
+      );
+      setStateShareMessage(null);
+      return;
+    }
 
-    const nextState = setCameraModeInViewerState(currentViewerState, mode);
-    commitCurrentStateNow(nextState);
+    try {
+      const shareUrl = buildViewerShareUrl(currentViewerState);
+
+      if (shareUrl.length > 12000) {
+        throw new Error(
+          "This view is too large to share as a URL without a backend. Use the JSON export instead."
+        );
+      }
+
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: "Allen Viewer",
+            url: shareUrl,
+          });
+          setStateError(null);
+          setStateShareMessage("Share link created.");
+          return;
+        } catch (shareError) {
+          if (
+            shareError instanceof DOMException &&
+            shareError.name === "AbortError"
+          ) {
+            return;
+          }
+        }
+      }
+
+      await navigator.clipboard.writeText(shareUrl);
+      setStateError(null);
+      setStateShareMessage("Share link copied to clipboard.");
+    } catch (error) {
+      setStateShareMessage(null);
+      setStateError(
+        error instanceof Error ? error.message : "Failed to create share link."
+      );
+    }
   }
 
   function handleToolChange(tool: ToolId) {
@@ -1237,8 +1295,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         applyViewerStatePatch({
           scene: { selectedNodeId: nodeId },
         }),
-      setCameraMode: (mode: CameraControlMode) =>
-        commitCurrentStateNow(setCameraModeInViewerState(currentViewerState, mode)),
       openExport: () => openExportStateModal(),
       openImport: () => openImportStateModal(),
       closeDialogs: () => closeDialogs(),
@@ -1374,22 +1430,6 @@ export default function App({ startupSlices = [] }: AppProps) {
             });
             return;
           }
-          case "setCameraMode": {
-            const mode = request.payload?.mode as CameraControlMode | undefined;
-            if (!mode || !["fly", "orbit"].includes(mode)) {
-              throw new Error("Missing or invalid 'mode' payload.");
-            }
-            const nextState = commitCurrentStateNow(setCameraModeInViewerState(currentViewerState, mode));
-            reply(event, {
-              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
-              type: "response",
-              command: request.command,
-              requestId: request.requestId,
-              ok: true,
-              payload: { state: nextState },
-            });
-            return;
-          }
           case "openExport":
             openExportStateModal();
             reply(event, {
@@ -1487,7 +1527,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
         cameraState={cameraState}
-        cameraSyncKey={cameraSyncKey}
         onCameraStateChange={setCameraState}
         backgroundColor={appPreferences.sceneBackground}
       />
@@ -1611,8 +1650,6 @@ export default function App({ startupSlices = [] }: AppProps) {
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
-        cameraMode={cameraState.mode}
-        onCameraModeChange={handleCameraModeChange}
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={() => handleUndo()}
@@ -1797,6 +1834,19 @@ export default function App({ startupSlices = [] }: AppProps) {
               </div>
             )}
 
+            {!stateError && stateShareMessage && (
+              <div
+                style={{
+                  marginTop: 10,
+                  fontSize: 12,
+                  color: "rgba(170,230,190,0.95)",
+                  lineHeight: 1.4,
+                }}
+              >
+                {stateShareMessage}
+              </div>
+            )}
+
             <div
               style={{
                 display: "flex",
@@ -1812,9 +1862,14 @@ export default function App({ startupSlices = [] }: AppProps) {
 
               <div style={{ display: "flex", gap: 8 }}>
                 {stateModalMode === "export" && (
-                  <button type="button" onClick={handleCopyExportState} style={primaryButtonStyle}>
-                    Copy
-                  </button>
+                  <>
+                    <button type="button" onClick={handleShareViewerState} style={secondaryButtonStyle}>
+                      Share Link
+                    </button>
+                    <button type="button" onClick={handleCopyExportState} style={primaryButtonStyle}>
+                      Copy JSON
+                    </button>
+                  </>
                 )}
 
                 {stateModalMode === "import" && (

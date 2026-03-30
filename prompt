@@ -31,11 +31,7 @@
 
 [todo] add a temporary visualize of the cut slice : this visual should be a normal poiting in the direction with the depth. The image should be display and with the new parameter, it should adjust the image slice. Instead of number, it should be a slider or something easyer to play with. (rework the icon too, mabe a 3D cube with a cut? create it with bananas)
 
-[todo] shared button -> in the copy/past state
-{
-    Allright on to the next thing. I want to add a share button in the export tool bar. Right now this tool is use to copy past the state of the viewer. I want to add a share button. This button should create an url for the user to share with other people. Now the trick here is I have the state of the viewer with all the data to recreate this exact same view. Now I need to pass the state into the share in some ways. The state it really long if there are a lot of things in the viewer. Also I dont have any backend. So I have to pass the information in some capacities with a shared link. Can you help me with this ?  
-}
-[todo] profile page or somewhere else  : add a scetion to controle the viewer 
+
 
 
 [todo] draw (annotations) with AI 3D assistance (where the annotations is save?, in the browser)
