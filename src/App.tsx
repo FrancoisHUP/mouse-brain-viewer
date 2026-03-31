@@ -347,6 +347,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [cameraState, setCameraState] = useState<SerializableCameraState>(
     DEFAULT_CAMERA_STATE
   );
+  const [cameraSyncKey, setCameraSyncKey] = useState(0);
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
@@ -544,7 +545,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     bumpHistoryRevision();
   }
 
-  function applyViewerState(nextState: ViewerStateV1, options?: { suppressAutoCommit?: boolean }) {
+  function applyViewerState(
+    nextState: ViewerStateV1,
+    options?: { suppressAutoCommit?: boolean; syncCamera?: boolean }
+  ) {
     if (options?.suppressAutoCommit) {
       suppressNextAutoCommitRef.current = true;
     }
@@ -557,20 +561,19 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSliceParamsDraft(nextState.ui.sliceParamsDraft);
     setIsLayerPanelCollapsed(nextState.layout.layerPanelCollapsed);
     setCameraState(nextState.camera);
+    if (options?.syncCamera !== false) {
+      setCameraSyncKey((value) => value + 1);
+    }
     setStateError(null);
     setStateShareMessage(null);
     return nextState;
   }
 
   function applyHistoricalViewerState(nextState: ViewerStateV1) {
-    const preservedCameraState = currentViewerState.camera;
-    return applyViewerState(
-      {
-        ...nextState,
-        camera: preservedCameraState,
-      },
-      { suppressAutoCommit: true }
-    );
+    return applyViewerState(nextState, {
+      suppressAutoCommit: true,
+      syncCamera: true,
+    });
   }
 
   function commitCurrentStateNow(nextState: ViewerStateV1) {
@@ -1671,6 +1674,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
         cameraState={cameraState}
+        cameraSyncKey={cameraSyncKey}
         onCameraStateChange={setCameraState}
         backgroundColor={appPreferences.sceneBackground}
       />

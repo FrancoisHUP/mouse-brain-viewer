@@ -11,7 +11,8 @@ import {
   isRemoteMeshLayer,
 } from "./layerTypes";
 import {
-  ALLEN_VIEWER_PROFILE,
+  ALLEN_CUSTOM_SLICE_PROFILE,
+  ALLEN_VOLUME_PROFILE,
   clampSliceIndex,
   extractObliqueSlice2D,
   extractOrientedCenterSlices,
@@ -730,7 +731,7 @@ export default function WebGLCanvas({
       const cached = sliceTextureCache.get(cacheKey);
       if (cached) return cached;
 
-      const { xy, xz, yz } = extractOrientedCenterSlices(volume, ALLEN_VIEWER_PROFILE);
+      const { xy, xz, yz } = extractOrientedCenterSlices(volume, ALLEN_VOLUME_PROFILE);
 
       const xyTex = createSliceTexture(xy.width, xy.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(xy.pixels) : sliceToRgbaBytes(xy.pixels));
       const xzTex = createSliceTexture(xz.width, xz.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(xz.pixels) : sliceToRgbaBytes(xz.pixels));
@@ -747,6 +748,49 @@ export default function WebGLCanvas({
 
       sliceTextureCache.set(cacheKey, set);
       return set;
+    }
+
+    function axisSliceToObliqueSpec(
+      volume: LoadedVolume,
+      plane: SlicePlane,
+      displayIndex: number,
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+    ): ObliqueSliceSpec {
+      const dataIndex = mapDisplaySliceIndexToDataIndex(
+        volume,
+        plane,
+        displayIndex,
+        profile
+      );
+
+      const centerX = (volume.dims.x - 1) * 0.5;
+      const centerY = (volume.dims.y - 1) * 0.5;
+      const centerZ = (volume.dims.z - 1) * 0.5;
+
+      if (plane === "xy") {
+        return {
+          normal: { x: 0, y: 0, z: 1 },
+          offset: dataIndex - centerZ,
+          width: volume.dims.x,
+          height: volume.dims.y,
+        };
+      }
+
+      if (plane === "xz") {
+        return {
+          normal: { x: 0, y: 1, z: 0 },
+          offset: dataIndex - centerY,
+          width: volume.dims.x,
+          height: volume.dims.z,
+        };
+      }
+
+      return {
+        normal: { x: 1, y: 0, z: 0 },
+        offset: dataIndex - centerX,
+        width: volume.dims.z,
+        height: volume.dims.y,
+      };
     }
 
     function createCustomSliceTexture(
@@ -779,13 +823,13 @@ export default function WebGLCanvas({
                 width: sliceSpec.width,
                 height: sliceSpec.height,
               },
-              ALLEN_VIEWER_PROFILE
+              ALLEN_CUSTOM_SLICE_PROFILE
             )
           : extractOrientedSlice2D(
               volume,
               sliceSpec.plane,
               sliceSpec.index,
-              ALLEN_VIEWER_PROFILE
+              ALLEN_VOLUME_PROFILE
             );
 
       const texture = createSliceTexture(slice.width, slice.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(slice.pixels) : sliceToRgbaBytes(slice.pixels));
@@ -809,7 +853,7 @@ export default function WebGLCanvas({
       const cached = volumeSliceTextureCache.get(cacheKey);
       if (cached) return cached;
 
-      const slice = extractOrientedSlice2D(volume, plane, index, ALLEN_VIEWER_PROFILE);
+      const slice = extractOrientedSlice2D(volume, plane, index, ALLEN_VOLUME_PROFILE);
       const texture = createSliceTexture(slice.width, slice.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(slice.pixels) : sliceToRgbaBytes(slice.pixels));
       const entry = {
         texture,
@@ -825,45 +869,13 @@ export default function WebGLCanvas({
       volume: LoadedVolume,
       plane: SlicePlane,
       displayIndex: number,
-      profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
     ): mat4 {
-      const model = mat4.create();
-
-      const { sx, sy, sz } = getVolumeDisplayScale(volume);
-
-      const dataIndex = mapDisplaySliceIndexToDataIndex(
+      return makeObliqueSliceModelMatrix(
         volume,
-        plane,
-        displayIndex,
+        axisSliceToObliqueSpec(volume, plane, displayIndex, profile),
         profile
       );
-
-      if (plane === "xy") {
-        const z01 = volume.dims.z <= 1 ? 0 : dataIndex / (volume.dims.z - 1);
-        const zPos = -sz + 2 * sz * z01;
-
-        mat4.translate(model, model, [0, 0, zPos]);
-        mat4.scale(model, model, [sx, sy, 1]);
-        return model;
-      }
-
-      if (plane === "xz") {
-        const y01 = volume.dims.y <= 1 ? 0 : dataIndex / (volume.dims.y - 1);
-        const yPos = -sy + 2 * sy * y01;
-
-        mat4.translate(model, model, [0, yPos, 0]);
-        mat4.rotateX(model, model, Math.PI / 2);
-        mat4.scale(model, model, [sx, sz, 1]);
-        return model;
-      }
-
-      const x01 = volume.dims.x <= 1 ? 0 : dataIndex / (volume.dims.x - 1);
-      const xPos = -sx + 2 * sx * x01;
-
-      mat4.translate(model, model, [xPos, 0, 0]);
-      mat4.rotateY(model, model, Math.PI / 2);
-      mat4.scale(model, model, [sz, sy, 1]);
-      return model;
     }
 
     function maxAbsPlaneExtentForObliqueWorld(
@@ -889,11 +901,15 @@ export default function WebGLCanvas({
       return Number.isFinite(tMax) ? tMax : 0;
     }
 
-    function makeObliqueSliceModelMatrix(volume: LoadedVolume, spec: ObliqueSliceSpec): mat4 {
+    function makeObliqueSliceModelMatrix(
+      volume: LoadedVolume,
+      spec: ObliqueSliceSpec,
+      profile: ViewerOrientationProfile = ALLEN_CUSTOM_SLICE_PROFILE
+    ): mat4 {
       const model = mat4.create();
 
       const { sx, sy, sz } = getVolumeDisplayScale(volume);
-      const frame = getObliquePlaneFrame(volume, spec, ALLEN_VIEWER_PROFILE);
+      const frame = getObliquePlaneFrame(volume, spec, profile);
 
       const cx = -sx + 2 * sx * frame.center01.x;
       const cy = -sy + 2 * sy * frame.center01.y;
@@ -1185,8 +1201,8 @@ export default function WebGLCanvas({
       const alpha = volume.contentKind === "annotation" ? (highlighted ? 0.92 : 0.78) : getVolumeStackAlpha(displayIndices.length, highlighted);
 
       const sortedIndices = [...displayIndices].sort((a, b) => {
-        const modelA = makeSliceModelMatrix(volume, plane, a, ALLEN_VIEWER_PROFILE);
-        const modelB = makeSliceModelMatrix(volume, plane, b, ALLEN_VIEWER_PROFILE);
+        const modelA = makeSliceModelMatrix(volume, plane, a, ALLEN_VOLUME_PROFILE);
+        const modelB = makeSliceModelMatrix(volume, plane, b, ALLEN_VOLUME_PROFILE);
         const mvA = mat4.create();
         const mvB = mat4.create();
         mat4.multiply(mvA, view, modelA);
@@ -1205,7 +1221,7 @@ export default function WebGLCanvas({
           displayIndex
         );
 
-        const model = makeSliceModelMatrix(volume, plane, displayIndex, ALLEN_VIEWER_PROFILE);
+        const model = makeSliceModelMatrix(volume, plane, displayIndex, ALLEN_VOLUME_PROFILE);
         const mv = mat4.create();
         const mvp = mat4.create();
         mat4.multiply(mv, view, model);
@@ -1430,7 +1446,7 @@ export default function WebGLCanvas({
               offset,
               width,
               height,
-            });
+            }, ALLEN_VOLUME_PROFILE);
           } else {
             const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
             const cacheKey = `${volumeKey}|${sliceParams.plane}|${safeIndex}`;
@@ -1445,7 +1461,7 @@ export default function WebGLCanvas({
               volume,
               sliceParams.plane,
               safeIndex,
-              ALLEN_VIEWER_PROFILE
+              ALLEN_VOLUME_PROFILE
             );
           }
 

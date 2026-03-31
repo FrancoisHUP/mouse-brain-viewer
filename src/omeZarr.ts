@@ -33,7 +33,8 @@ export type Slice2D = {
 export type SliceTransform = {
   flipX?: boolean;
   flipY?: boolean;
-  rotate90?: boolean; // clockwise
+  flipZ?: boolean; // flips the underlying volume z axis during sampling
+  rotate90?: boolean; // clockwise 2D display rotation after extraction
   reverseIndex?: boolean; // maps display slice order to data slice order
 };
 
@@ -88,21 +89,58 @@ export const IDENTITY_PROFILE: ViewerOrientationProfile = {
 };
 
 /**
- * Your current working Allen viewer orientation profile.
+ * Profile used to render the Allen volume itself.
  */
-export const ALLEN_VIEWER_PROFILE: ViewerOrientationProfile = {
+export const ALLEN_VOLUME_PROFILE: ViewerOrientationProfile = {
   xy: {
-    reverseIndex: true,
-    flipX: true,
   },
   xz: {
-    flipY: true,
+
   },
   yz: {
     rotate90: true,
-    reverseIndex: true,
+    flipZ: true,
   },
 };
+
+/**
+ * Profile used for extracted custom slices.
+ *
+ * Start from the same orientation as the Allen volume, then tweak here
+ * while debugging custom-slice alignment in the 3D scene.
+ */
+export const ALLEN_CUSTOM_SLICE_PROFILE: ViewerOrientationProfile = {
+  // Start from the volume profile, then tweak per plane while debugging.
+  xy: {
+    // ...(ALLEN_VOLUME_PROFILE.xy ?? {}),
+    // flipX: true,
+    // flipY: true,
+    flipZ: true,
+    // reverseIndex: true,
+    // rotate90: true,
+  },
+  xz: {
+    // ...(ALLEN_VOLUME_PROFILE.xz ?? {}),
+    // flipX: true,
+    // flipY: true,
+    flipZ: true,
+    // reverseIndex: true,
+    // rotate90: true,
+  },
+  yz: {
+    // ...(ALLEN_VOLUME_PROFILE.yz ?? {}),
+    flipX: true,
+    // flipY: true,
+    // flipZ: true,
+    // reverseIndex: true,
+    rotate90: true,
+  },
+};
+
+/**
+ * Backward-compatible alias for older call sites.
+ */
+export const ALLEN_VIEWER_PROFILE = ALLEN_VOLUME_PROFILE;
 
 export const ALLEN_OBLIQUE_TRANSFORM: SliceTransform = {};
 
@@ -349,7 +387,7 @@ export function makePlaneBasis(normal: Vec3): {
   return { u, v, n };
 }
 
-function getObliqueDisplayTransform(
+function getObliqueProfileTransform(
   viewerNormal: Vec3,
   profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
 ): SliceTransform {
@@ -360,22 +398,62 @@ function getObliqueDisplayTransform(
   const az = Math.abs(n.z);
 
   if (az >= ax && az >= ay) {
-    return {
-      flipX: !!profile.xy?.flipX,
-      flipY: !!profile.xy?.flipY,
-      rotate90: !!profile.xy?.rotate90,
-    };
+    return profile.xy ?? {};
   }
 
   if (ay >= ax && ay >= az) {
-    return {
-      flipX: !!profile.xz?.flipX,
-      flipY: !!profile.xz?.flipY,
-      rotate90: !!profile.xz?.rotate90,
-    };
+    return profile.xz ?? {};
   }
 
-  return {};
+  return profile.yz ?? {};
+}
+
+function rotateBasisQuarterTurn(
+  u: Vec3,
+  v: Vec3,
+  turnsRaw: number
+): { u: Vec3; v: Vec3 } {
+  const turns = ((Math.round(turnsRaw) % 4) + 4) % 4;
+
+  if (turns === 1) {
+    return { u: v, v: scaleVec3(u, -1) };
+  }
+  if (turns === 2) {
+    return { u: scaleVec3(u, -1), v: scaleVec3(v, -1) };
+  }
+  if (turns === 3) {
+    return { u: scaleVec3(v, -1), v: u };
+  }
+
+  return { u, v };
+}
+
+function getAdjustedPlaneBasis(
+  viewerNormal: Vec3,
+  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
+): { u: Vec3; v: Vec3; n: Vec3 } {
+  const transform = getObliqueProfileTransform(viewerNormal, profile);
+
+  let dataNormal = mapViewerNormalToDataNormal(viewerNormal, profile);
+
+  if (transform.flipZ || transform.reverseIndex) {
+    dataNormal = scaleVec3(dataNormal, -1);
+  }
+
+  let { u, v, n } = makePlaneBasis(dataNormal);
+
+  const rotated = rotateBasisQuarterTurn(u, v, transform.rotate90 ? 1 : 0);
+  u = rotated.u;
+  v = rotated.v;
+
+  if (transform.flipX) {
+    u = scaleVec3(u, -1);
+  }
+  if (transform.flipY) {
+    v = scaleVec3(v, -1);
+  }
+
+  return { u, v, n };
 }
 
 function getDatasetPathForRequestedResolution(
@@ -498,67 +576,156 @@ export function getVoxel(
   return data[index] ?? 0;
 }
 
-export function extractXYSlice(volume: LoadedVolume, zIndex: number): Float32Array {
-  const { x, y } = volume.dims;
+function remapDataCoords(
+  volume: LoadedVolume,
+  z: number,
+  y: number,
+  x: number,
+  transform: SliceTransform = {}
+): { z: number; y: number; x: number } {
+  let zz = z;
+  let yy = y;
+  let xx = x;
+
+  if (transform.flipZ) {
+    zz = volume.dims.z - 1 - zz;
+  }
+  if (transform.flipY) {
+    yy = volume.dims.y - 1 - yy;
+  }
+  if (transform.flipX) {
+    xx = volume.dims.x - 1 - xx;
+  }
+
+  return { z: zz, y: yy, x: xx };
+}
+
+function getDataSliceTransform(
+  plane: SlicePlane,
+  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
+): SliceTransform {
+  const transform =
+    plane === "xy"
+      ? profile.xy ?? {}
+      : plane === "xz"
+        ? profile.xz ?? {}
+        : profile.yz ?? {};
+
+  return {
+    flipX: !!transform.flipX,
+    flipY: !!transform.flipY,
+    flipZ: !!transform.flipZ,
+    reverseIndex: !!transform.reverseIndex,
+  };
+}
+
+function getDisplaySliceTransform(
+  plane: SlicePlane,
+  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
+): SliceTransform {
+  const transform =
+    plane === "xy"
+      ? profile.xy ?? {}
+      : plane === "xz"
+        ? profile.xz ?? {}
+        : profile.yz ?? {};
+
+  return {
+    rotate90: !!transform.rotate90,
+  };
+}
+
+export function extractXYSlice(
+  volume: LoadedVolume,
+  zIndex: number,
+  transform: SliceTransform = {}
+): Float32Array {
+  const { x, y, z } = volume.dims;
   const out = new Float32Array(x * y);
+  const fixedZ = transform.reverseIndex ? z - 1 - zIndex : zIndex;
   let ptr = 0;
 
   for (let yy = 0; yy < y; yy += 1) {
     for (let xx = 0; xx < x; xx += 1) {
-      out[ptr++] = getVoxel(volume, zIndex, yy, xx);
+      const mapped = remapDataCoords(volume, fixedZ, yy, xx, transform);
+      out[ptr++] = getVoxel(volume, mapped.z, mapped.y, mapped.x);
     }
   }
 
   return out;
 }
 
-export function extractXZSlice(volume: LoadedVolume, yIndex: number): Float32Array {
-  const { x, z } = volume.dims;
+export function extractXZSlice(
+  volume: LoadedVolume,
+  yIndex: number,
+  transform: SliceTransform = {}
+): Float32Array {
+  const { x, z, y } = volume.dims;
   const out = new Float32Array(x * z);
+  const fixedY = transform.reverseIndex ? y - 1 - yIndex : yIndex;
   let ptr = 0;
 
   for (let zz = 0; zz < z; zz += 1) {
     for (let xx = 0; xx < x; xx += 1) {
-      out[ptr++] = getVoxel(volume, zz, yIndex, xx);
+      const mapped = remapDataCoords(volume, zz, fixedY, xx, transform);
+      out[ptr++] = getVoxel(volume, mapped.z, mapped.y, mapped.x);
     }
   }
 
   return out;
 }
 
-export function extractYZSlice(volume: LoadedVolume, xIndex: number): Float32Array {
-  const { y, z } = volume.dims;
+export function extractYZSlice(
+  volume: LoadedVolume,
+  xIndex: number,
+  transform: SliceTransform = {}
+): Float32Array {
+  const { y, z, x } = volume.dims;
   const out = new Float32Array(y * z);
+  const fixedX = transform.reverseIndex ? x - 1 - xIndex : xIndex;
   let ptr = 0;
 
   for (let zz = 0; zz < z; zz += 1) {
     for (let yy = 0; yy < y; yy += 1) {
-      out[ptr++] = getVoxel(volume, zz, yy, xIndex);
+      const mapped = remapDataCoords(volume, zz, yy, fixedX, transform);
+      out[ptr++] = getVoxel(volume, mapped.z, mapped.y, mapped.x);
     }
   }
 
   return out;
 }
 
-export function extractXYSlice2D(volume: LoadedVolume, zIndex: number): Slice2D {
+export function extractXYSlice2D(
+  volume: LoadedVolume,
+  zIndex: number,
+  transform: SliceTransform = {}
+): Slice2D {
   return {
-    pixels: extractXYSlice(volume, zIndex),
+    pixels: extractXYSlice(volume, zIndex, transform),
     width: volume.dims.x,
     height: volume.dims.y,
   };
 }
 
-export function extractXZSlice2D(volume: LoadedVolume, yIndex: number): Slice2D {
+export function extractXZSlice2D(
+  volume: LoadedVolume,
+  yIndex: number,
+  transform: SliceTransform = {}
+): Slice2D {
   return {
-    pixels: extractXZSlice(volume, yIndex),
+    pixels: extractXZSlice(volume, yIndex, transform),
     width: volume.dims.x,
     height: volume.dims.z,
   };
 }
 
-export function extractYZSlice2D(volume: LoadedVolume, xIndex: number): Slice2D {
+export function extractYZSlice2D(
+  volume: LoadedVolume,
+  xIndex: number,
+  transform: SliceTransform = {}
+): Slice2D {
   return {
-    pixels: extractYZSlice(volume, xIndex),
+    pixels: extractYZSlice(volume, xIndex, transform),
     width: volume.dims.y,
     height: volume.dims.z,
   };
@@ -640,8 +807,8 @@ export function clampSliceIndex(
     plane === "xy"
       ? volume.dims.z - 1
       : plane === "xz"
-      ? volume.dims.y - 1
-      : volume.dims.x - 1;
+        ? volume.dims.y - 1
+        : volume.dims.x - 1;
 
   return Math.max(0, Math.min(max, Math.round(index)));
 }
@@ -658,15 +825,15 @@ export function mapDisplaySliceIndexToDataIndex(
     plane === "xy"
       ? profile.xy
       : plane === "xz"
-      ? profile.xz
-      : profile.yz;
+        ? profile.xz
+        : profile.yz;
 
   const max =
     plane === "xy"
       ? volume.dims.z - 1
       : plane === "xz"
-      ? volume.dims.y - 1
-      : volume.dims.x - 1;
+        ? volume.dims.y - 1
+        : volume.dims.x - 1;
 
   if (transform?.reverseIndex) {
     return max - safeDisplayIndex;
@@ -681,25 +848,27 @@ export function extractOrientedSlice2D(
   index: number,
   profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
 ): Slice2D {
-  const dataIndex = mapDisplaySliceIndexToDataIndex(volume, plane, index, profile);
+  const safeIndex = clampSliceIndex(volume, plane, index);
+  const dataTransform = getDataSliceTransform(plane, profile);
+  const displayTransform = getDisplaySliceTransform(plane, profile);
 
   if (plane === "xy") {
     return transformSlice2D(
-      extractXYSlice2D(volume, dataIndex),
-      profile.xy ?? {}
+      extractXYSlice2D(volume, safeIndex, dataTransform),
+      displayTransform
     );
   }
 
   if (plane === "xz") {
     return transformSlice2D(
-      extractXZSlice2D(volume, dataIndex),
-      profile.xz ?? {}
+      extractXZSlice2D(volume, safeIndex, dataTransform),
+      displayTransform
     );
   }
 
   return transformSlice2D(
-    extractYZSlice2D(volume, dataIndex),
-    profile.yz ?? {}
+    extractYZSlice2D(volume, safeIndex, dataTransform),
+    displayTransform
   );
 }
 
@@ -793,8 +962,7 @@ export function extractObliqueSlice2D(
   const height = Math.max(8, Math.round(spec.height ?? 256));
   const offset = spec.offset ?? 0;
 
-  const dataNormal = mapViewerNormalToDataNormal(spec.normal, profile);
-  const { u, v, n } = makePlaneBasis(dataNormal);
+  const { u, v, n } = getAdjustedPlaneBasis(spec.normal, profile);
 
   const center = {
     x: (volume.dims.x - 1) * 0.5,
@@ -826,16 +994,11 @@ export function extractObliqueSlice2D(
     }
   }
 
-  const displayTransform = getObliqueDisplayTransform(spec.normal, profile);
-
-  return transformSlice2D(
-    {
-      pixels: out,
-      width,
-      height,
-    },
-    displayTransform
-  );
+  return {
+    pixels: out,
+    width,
+    height,
+  };
 }
 
 /**
@@ -856,8 +1019,7 @@ export function getObliquePlaneFrame(
 } {
   const offset = spec.offset ?? 0;
 
-  const dataNormal = mapViewerNormalToDataNormal(spec.normal, profile);
-  const { u, v, n } = makePlaneBasis(dataNormal);
+  const { u, v, n } = getAdjustedPlaneBasis(spec.normal, profile);
 
   const center = {
     x: (volume.dims.x - 1) * 0.5,

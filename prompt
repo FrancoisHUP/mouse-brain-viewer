@@ -1,29 +1,3 @@
-
-[todo] import a skeleton of the allen average mouse brain and the annotations (slices, volumetric and shell). 
-{
-    perfect I corrected small bugs, not I need to update my frontend code. RIght now the current state of my project dosent handle skeleton mesh. I can only load volumetric and allen average mouse brain (with the image on axis). So I need to add two things :
-
-    (1) I need to add the skeleton of the brain. For that I think I need to update the webgl component to render the skeleton on the scene and other files. 
-
-    (2) I need to add the annotations of the allen average mouse brain. FOR NOW DO NOT IMPLEMENT THIS ONE. Since this import have more requirements, we can ignore this one for now and come back at it later. 
-
-    Both of these has to be imported in the importpanel where I have the source the user whats to uplaod.  
-
-    Here are my current files. For now lets just focus on the skeleton render and import. 
-}
-{
-    ok so the "ALLEN_MESH_POSITION_OFFSET" is a bit wierd, I play with the numbers and I got to this point : 
-    const ALLEN_MESH_POSITION_OFFSET: [number, number, number] = [0, -7700, 0];
-    Where now the mesh is approximatly in hte right place. I feel like the -7700 is a bit wierd like a settings. 
-    But at this point the orientation is all fine, but theres one other thing that dont work : the scale is not right in the front and back axis of the brain. I need to scal only one axis. Can you fixed both of these. Also you are allow to refactor the code to streamline the setting and or refactor to have more clean code 
-}
-{
-    Now if you remeber, I was asking for the mesh and the annotations. Now let's move on to the annotation part. I have the ome zarr annotation file at this google cloud bucket path "https://storage.googleapis.com/sbh-assistant-data/allen_annotation.ome.zarr/". I need to add a new import to the import panel and I need to import the allen annotation. Now the transformation is always a pain in the ass. I would like to no have to do this. Opefully we already have the transformation I apply to the allen data in here "src/omeZarr.ts". So here is the requirements for the annotations :
-
-    (2) I need to add the annotations of the allen average mouse brain. For this I want to be able to overlay the annotation on top of the allen averag emouse data. I know that if you place two 3d object at the same space, the webgl gub and we see artefact of both image, but it's not visually appealing, since we dont see clearly both. So here I need a way to view the annotations + the allen average mouse brain. I want the user to be able to chose the resolution of the import. Right now I have desable the 10um, beacause the file is to heavy for the browser. Let's do the same for the annotation. So even if the buckets have the 10um resolution, we dont show this resolution to the user, because the browser is not able to handle that amount of data. 
-
-    ok so I have on more requirement concerning the allen annotation. You tell if it's a good idea and how hard it is to implement : THe allen annotation are multiple region and sub regions of the brain. I would like the user to be able to load all the the annotation at the same time, But I would also like the user to be able to controle the annotation visibility. I already have a system of layers where I can toggle a layer visibility. This layer have a three like structure. My plan would be to add the annotation into a "folder" (group of annotation) all at the same time and when the user click on this folder et would see all the regions in the three like structure like the annotation of the allen are organised. Then the user could toggle visibility of a sub region or even controle the regions visibility.
-}
 [todo] making the annotation match the color of the allen atlas; getting the other skeleton of the annotation instead of volumetric data or both ? 
 [todo] add all regions (annotation) at the same time in a three like structure into the layers panel 
 
@@ -31,94 +5,13 @@
 
 [todo] add a temporary visualize of the cut slice : this visual should be a normal poiting in the direction with the depth. The image should be display and with the new parameter, it should adjust the image slice. Instead of number, it should be a slider or something easyer to play with. (rework the icon too, mabe a 3D cube with a cut? create it with bananas)
 
-[todo] multiple viewer state
-{
-    Thats perfect. It works perfectly. Alright now onto the next feature. Since now a user can open a viewer from a shred link, I want the user to be able to retreive old session. So in the bottom tool bar, I want to add a new tool with a nice icon (folder should do the thing). This tool will popup a panel where all the viewer of a user are. The panel should have a grid with (if poosible) an image of the current viewer (if not, just the date last updated and a name). I want these viewer state to be organize in two categories : the one own by the user and the shared ones. These should be presented in a grid where each of the element is one viewer and the user can just click on this element to open up the state of the viewer. All this information should be save on the user browser (so if the user delete his dat, it should remova all the viewer in this list). Also I want the user to be able to create and delete the viewer from this list. 
-
-    Can you help me build this feature ?   
-}
-{
-    alright pretty good, now I need to change somethings : 
-    (1) I was thinking more of a full panel. Like I have for the import data panel. Im gonna link the panel for just so you know what I am talking about. 
-    (2) I dont need a clear list button. Remove it. 
-    (3) The button "save current viewer" should only be a save icon. The user will know. 
-    (4) The title "Saved Viewers" with the text "Open a saved viewer from this browser, or save the current scene for later.", we can remove both. The user will know what this is. 
-    (5) For the single element for each viewer, they are interesting. Now the open button just before the rename and delete button is a duplicate. I already see I can open with the massive "open viewer" section.
-    (5.1) Instead of putting the button "rename" and "delete", can you put the three dot icon. When the user click on this button, then he should see the rename and delete options. 
-    (5.2) I dont need the "Selected:"
-    (5.3) Right now every viewer has the same ui design and it makes the selection hard visually since they are all the same. I would like to have an element more to distinguish the viewer.
-    (5.4) Since we will have a three dots for the rename and delete, and we remove the open button. The only thing left is the open viewer, can we just make the whole viewer element clickable ? So now the user can click any where exepct for the three dots to open the viewer.  
-}
-{
-    Not bad, a couple more things: 
-    (1) Istead of having two sections "My viewers" and "shared viewers" we can just use the "Mine" and "Shared" tag. So everything in one gird, dont need to divided them. 
-    (2) Right now you have the section "Viwer state" where there a lot of space for only this one small "Viwer state". Instead I would swap the name at this place. That way it would be a lot more clean and a better way of utilizing space. That means the name wont be on top. 
-    (3) Instead of the name on top, we can remove the folder icon icon too and basically remove this line, but we need to move the "Mine|shared" tag and the three dot menu. Both of thest can go at the bottom where er currently have the "x layer" and "library" tag. 
-    (4) I have already done the rename and delete menu in another place in my code. For the sake of uniformity, can you update the ui to fit this one : 
-    {openMenuId && menuPosition
-        ? createPortal(
-            <div
-              data-layer-menu-popup="true"
-              data-theme-surface="panel"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                position: "fixed",
-                top: menuPosition.top,
-                left: menuPosition.left,
-                minWidth: 140,
-                background: "rgba(14,17,22,0.98)",
-                border: "1px solid rgba(255,255,255,0.10)",
-                borderRadius: 12,
-                boxShadow: "0 12px 28px rgba(0,0,0,0.35)",
-                padding: 6,
-                zIndex: 9999,
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  const row = rows.find((r) => r.id === openMenuId);
-                  if (!row) return;
-                  startRename(row);
-                  setOpenMenuId(null);
-                  setMenuPosition(null);
-                }}
-                style={menuItemStyle}
-              >
-                Rename
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onDeleteNode(openMenuId);
-                  setOpenMenuId(null);
-                  setMenuPosition(null);
-                }}
-                style={menuItemStyle}
-              >
-                Delete
-              </button>
-            </div>,
-            document.body
-          )
-        : null}
-        ---
-        (5) Ok and finally I want to move the save button out of this menu. I want the save button to be move into the tool bar. When the user click on save in the toolbar, I want to show a message (this should be a smooth animation starting from the save icon in the tool bar), telling the user that the viewer hase been saved. Plus I would like the popup to stay up until the user click away. In this popup, I would like the put a message telling that something has been save and put a link that will open the directory icon where the files are saved. That way the user can hit save, see the message something has been saved and then the user can either click away to close the popup or click on the link to open the directory where it's file is saved. 
-}
-{
-    alright we are getting there. Now a couple more changes: 
-    (1) I dont like the basic prompt from the browser to change the name. It's not user friendly, it need to be in the app browser. So First thing, can you move the name out of the colored square and puting nothing in there. The name should be just above the date and when the user click rename, it should edit the title where it is. 
-    (2) Right now this panel has to many section inside a section. I see the main panel with the close button, then I see a section inside it and inside that section I see the elements (viewers). Juste remove one layer. It should be panel with "x" and directly elements.  
-}
-
-
 [todo] draw (annotations) with AI 3D assistance (where the annotations is save?, in the browser)
 [todo] upload data
 
 -----
 
 [NTH] add a docs route where the user can see all the controls on this web demo. 
-
+[NTH] annotations creates toggleable layer
 
 [LATER] Object control. The user should be able to change the current cuts how he likes.  The user should be able to change the orientations and position of objects in the scene. He should also be able to group things togheter. 
 {
@@ -135,6 +28,10 @@
 [fix]
 
 --- BUG LIST
+[bug] fix the slice extracter orientation {
+
+}
+
 [bug]{
 Alright now I have a bug relating the volumetric data. The problem is when a slice layer in order under the layer of the volumetric data, the slice does not appear. Its either the slice is there, but the rain volume is on top, or something worst...  
 }
@@ -146,6 +43,13 @@ Alright now I have a bug relating the volumetric data. The problem is when a sli
     }
 }
 
+[bug]{
+  camera not being save in the state (since the orbital control)
+  {
+    Good Now I just see that the camera is note save in the state anymore. I do want to save the position of the camera so anyone loading the state can see exacly what the camera of the user is pointing to when he shared the state. The camera position was in the state before an it was working perfectly. Its only in the recent change taht it stopped being in the state. 
 
+    There's on caveats to this. The camera movement should not trigger a new history. I experiement with this before and the problem if the movement add a new history state is that the history becom full of camera movement pretty fast. So I remove the camera from the trigger a state in the history because of that and I think that camera movement being up out of the state cause that now the state does not have the camera position, while it should.   
 
-
+    I have made quite a few change since the last time. So I am linking all the relevant files so you have the latest version to work with. 
+  }
+}

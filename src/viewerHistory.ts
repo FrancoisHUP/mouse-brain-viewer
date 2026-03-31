@@ -51,8 +51,21 @@ function sanitizeForHistory(value: unknown): unknown {
   return value;
 }
 
+function stripCameraPoseFromHistoryState(state: ViewerStateV1): ViewerStateV1 {
+  return {
+    ...state,
+    camera: {
+      ...state.camera,
+      position: [0, 0, 5],
+      yaw: -90,
+      pitch: 0,
+      fovDeg: 60,
+    },
+  };
+}
+
 export function hashViewerStateForHistory(state: ViewerStateV1): string {
-  return JSON.stringify(sanitizeForHistory(state));
+  return JSON.stringify(sanitizeForHistory(stripCameraPoseFromHistoryState(state)));
 }
 
 export function createViewerHistoryEntry(
