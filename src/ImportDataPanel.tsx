@@ -603,7 +603,14 @@ export default function ImportDataPanel({
   }
 
   function handleConfirmRenameCustomSource(itemId: string) {
-    const renamed = renameCustomExternalSource(itemId, editingCustomSourceName);
+    const nextName = editingCustomSourceName.trim();
+    if (!nextName) {
+      setEditingCustomSourceId(null);
+      setEditingCustomSourceName("");
+      return;
+    }
+
+    const renamed = renameCustomExternalSource(itemId, nextName);
     if (!renamed) {
       setEditingCustomSourceId(null);
       setEditingCustomSourceName("");
@@ -611,7 +618,7 @@ export default function ImportDataPanel({
     }
 
     setExternalSources((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, name: renamed.name } : item))
+      prev.map((item) => (item.id === itemId ? { ...item, name: nextName } : item))
     );
     setEditingCustomSourceId(null);
     setEditingCustomSourceName("");

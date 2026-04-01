@@ -145,6 +145,25 @@ function isMeshLayer(layer: LayerItemNode): boolean {
   );
 }
 
+type CustomSliceSourceRef = {
+  volumeLayerId?: string | null;
+};
+
+function hasVolumeLayerId(source: unknown): source is CustomSliceSourceRef {
+  return !!source && typeof source === "object" && "volumeLayerId" in source;
+}
+
+function isAxisAlignedSliceParams(
+  params: unknown
+): params is { plane: SlicePlane; index: number; opacity?: number } {
+  return (
+    !!params &&
+    typeof params === "object" &&
+    "plane" in params &&
+    "index" in params
+  );
+}
+
 function getRemoteLayerResolution(layer: LayerItemNode): RemoteOmeResolution {
   return layer.remoteResolution ?? "100um";
 }
@@ -205,8 +224,7 @@ function collectReferencedVolumeCacheKeys(nodes: LayerTreeNode[]): Set<string> {
       }
 
       if (isCustomSliceLayer(node)) {
-        const customSource =
-          typeof node.source === "object" && node.source !== null ? node.source : null;
+        const customSource = hasVolumeLayerId(node.source) ? node.source : null;
 
         const volumeNode = customSource?.volumeLayerId
           ? findNodeById(nodes, customSource.volumeLayerId)
@@ -413,10 +431,7 @@ export default function WebGLCanvas({
       }
 
       if (isCustomSliceLayer(layer)) {
-        const customSource =
-          typeof layer.source === "object" && layer.source !== null
-            ? layer.source
-            : null;
+        const customSource = hasVolumeLayerId(layer.source) ? layer.source : null;
 
         const volumeNode = customSource?.volumeLayerId
           ? findNodeById(layerTree, customSource.volumeLayerId)
@@ -549,13 +564,16 @@ export default function WebGLCanvas({
   }, [retainedMeshCacheKeys]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvasElement = canvasRef.current;
+    if (!canvasElement) return;
 
-    const gl = canvas.getContext("webgl");
-    if (!gl) {
+    const glContext = canvasElement.getContext("webgl");
+    if (!glContext) {
       throw new Error("WebGL not supported");
     }
+
+    const canvas: HTMLCanvasElement = canvasElement;
+    const gl: WebGLRenderingContext = glContext;
 
     const colorVertexShaderSource = `
       attribute vec3 aPosition;
@@ -1372,10 +1390,9 @@ export default function WebGLCanvas({
         }
 
         if (layer.type === "custom-slice") {
-          const volumeLayerId =
-            typeof layer.source === "object" && layer.source !== null
-              ? layer.source.volumeLayerId
-              : null;
+          const volumeLayerId = hasVolumeLayerId(layer.source)
+            ? layer.source.volumeLayerId
+            : null;
           const sliceParams = layer.sliceParams;
 
           if (!volumeLayerId || !sliceParams) {
@@ -1447,7 +1464,7 @@ export default function WebGLCanvas({
               width,
               height,
             }, ALLEN_VOLUME_PROFILE);
-          } else {
+          } else if (isAxisAlignedSliceParams(sliceParams)) {
             const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
             const cacheKey = `${volumeKey}|${sliceParams.plane}|${safeIndex}`;
 
@@ -1463,6 +1480,8 @@ export default function WebGLCanvas({
               safeIndex,
               ALLEN_VOLUME_PROFILE
             );
+          } else {
+            continue;
           }
 
           const mv = mat4.create();
@@ -1632,10 +1651,9 @@ export default function WebGLCanvas({
       }
 
       if (selectedDataLayer.type === "custom-slice") {
-        const customSource =
-          typeof selectedDataLayer.source === "object" && selectedDataLayer.source !== null
-            ? selectedDataLayer.source
-            : null;
+        const customSource = hasVolumeLayerId(selectedDataLayer.source)
+          ? selectedDataLayer.source
+          : null;
 
         const volumeNode = customSource?.volumeLayerId
           ? findNodeById(layerTree, customSource.volumeLayerId)

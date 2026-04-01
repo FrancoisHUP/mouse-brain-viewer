@@ -14,6 +14,7 @@ const DEMO_STATE: ViewerStateV1 = {
     layerPanelCollapsed: false,
   },
   camera: {
+    mode: "fly",
     position: [0, 0, 5],
     yaw: -90,
     pitch: 0,

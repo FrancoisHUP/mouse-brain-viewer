@@ -1,0 +1,14 @@
+[
+  {
+    "origin": [
+      "http://localhost:4173",
+      "http://localhost:5173",
+      "https://sbh-assistant.com",
+      "https://www.sbh-assistant.com",
+      "http://www.sbh-assistant.com"
+    ],
+    "method": ["GET", "HEAD", "OPTIONS"],
+    "responseHeader": ["Content-Type", "Range"],
+    "maxAgeSeconds": 3600
+  }
+]

@@ -137,25 +137,6 @@ function MoreVertical() {
   );
 }
 
-function AddSourceIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M10 13a5 5 0 007.07 0l2.12-2.12a5 5 0 10-7.07-7.07L10 6" />
-      <path d="M14 11a5 5 0 00-7.07 0L4.81 13.12a5 5 0 107.07 7.07L14 18" />
-      <path d="M19 8v6" />
-      <path d="M16 11h6" />
-    </svg>
-  );
-}
 
 function RowShell({
   row,
@@ -264,14 +245,14 @@ function SortableTreeRow({
   renamingId,
   renameDraft,
   setRenameDraft,
-  startRename,
+  startRename: _startRename,
   finishRename,
   cancelRename,
   hoveredGroupId,
   onToggleVisible,
   onSelectNode,
   onToggleGroupExpanded,
-  onDeleteNode,
+  onDeleteNode: _onDeleteNode,
 }: {
   row: FlatTreeRow;
   selectedNodeId: string | null;
@@ -543,7 +524,7 @@ const menuItemStyle: React.CSSProperties = {
 export default function LayerPanel({
   layerTree,
   selectedNodeId,
-  groupOptions,
+  groupOptions: _groupOptions,
   isCollapsed,
   onSetCollapsed,
   onToggleVisible,

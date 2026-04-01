@@ -80,7 +80,12 @@ export function createViewerState(params: {
     layout: {
       layerPanelCollapsed: params.layerPanelCollapsed,
     },
-    camera: params.camera,
+    camera: {
+      ...DEFAULT_CAMERA_STATE,
+      ...params.camera,
+      mode: params.camera.mode ?? DEFAULT_CAMERA_STATE.mode,
+      position: params.camera.position ?? DEFAULT_CAMERA_STATE.position,
+    },
     scene: {
       activeTool: params.activeTool,
       selectedNodeId: params.selectedNodeId,
@@ -126,7 +131,10 @@ export function mergeViewerState(
 }
 
 export function parseViewerState(raw: string): ViewerStateV1 {
-  const parsed = JSON.parse(raw);
+  const parsed = JSON.parse(raw) as Partial<ViewerStateV1> & {
+    camera?: Partial<SerializableCameraState>;
+    scene?: Partial<ViewerStateV1["scene"]>;
+  };
 
   if (!parsed || parsed.version !== 1) {
     throw new Error("Unsupported viewer state version.");
@@ -141,13 +149,15 @@ export function parseViewerState(raw: string): ViewerStateV1 {
   }
 
   return {
-    ...parsed,
+    ...(parsed as ViewerStateV1),
     camera: {
-      mode: parsed.camera.mode ?? "fly",
-      position: parsed.camera.position,
-      yaw: parsed.camera.yaw,
-      pitch: parsed.camera.pitch,
-      fovDeg: parsed.camera.fovDeg,
+      mode: parsed.camera.mode ?? DEFAULT_CAMERA_STATE.mode,
+      position:
+        (parsed.camera.position as [number, number, number] | undefined) ??
+        DEFAULT_CAMERA_STATE.position,
+      yaw: parsed.camera.yaw ?? DEFAULT_CAMERA_STATE.yaw,
+      pitch: parsed.camera.pitch ?? DEFAULT_CAMERA_STATE.pitch,
+      fovDeg: parsed.camera.fovDeg ?? DEFAULT_CAMERA_STATE.fovDeg,
     },
-  } as ViewerStateV1;
+  };
 }

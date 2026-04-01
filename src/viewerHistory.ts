@@ -22,7 +22,7 @@ type LegacyPersistedViewerHistoryV1 = {
   future: ViewerStateV1[];
 };
 
-function isBrowserFile(value: unknown) {
+function isBrowserFile(value: unknown): value is File {
   return typeof File !== "undefined" && value instanceof File;
 }
 

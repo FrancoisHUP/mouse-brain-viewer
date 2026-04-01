@@ -1,0 +1,1 @@
+gcloud storage buckets update gs://sbh-assistant-data --cors-file=bucket/cors.json

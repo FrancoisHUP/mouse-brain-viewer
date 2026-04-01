@@ -61,27 +61,6 @@ export type ObliqueSliceSpec = {
 
 export type OMEResolutionMicrons = 10 | 25 | 50 | 100;
 
-type OMEAxis = {
-  name?: string;
-  type?: string;
-};
-
-type OMEDataset = {
-  path: string;
-  coordinateTransformations?: Array<{
-    type: string;
-    scale?: number[];
-    translation?: number[];
-  }>;
-};
-
-type OMEAttributes = {
-  multiscales?: Array<{
-    axes?: OMEAxis[];
-    datasets: OMEDataset[];
-  }>;
-};
-
 export const IDENTITY_PROFILE: ViewerOrientationProfile = {
   xy: {},
   xz: {},
@@ -92,11 +71,8 @@ export const IDENTITY_PROFILE: ViewerOrientationProfile = {
  * Profile used to render the Allen volume itself.
  */
 export const ALLEN_VOLUME_PROFILE: ViewerOrientationProfile = {
-  xy: {
-  },
-  xz: {
-
-  },
+  xy: {},
+  xz: {},
   yz: {
     rotate90: true,
     flipZ: true,
@@ -110,29 +86,14 @@ export const ALLEN_VOLUME_PROFILE: ViewerOrientationProfile = {
  * while debugging custom-slice alignment in the 3D scene.
  */
 export const ALLEN_CUSTOM_SLICE_PROFILE: ViewerOrientationProfile = {
-  // Start from the volume profile, then tweak per plane while debugging.
   xy: {
-    // ...(ALLEN_VOLUME_PROFILE.xy ?? {}),
-    // flipX: true,
-    // flipY: true,
     flipZ: true,
-    // reverseIndex: true,
-    // rotate90: true,
   },
   xz: {
-    // ...(ALLEN_VOLUME_PROFILE.xz ?? {}),
-    // flipX: true,
-    // flipY: true,
     flipZ: true,
-    // reverseIndex: true,
-    // rotate90: true,
   },
   yz: {
-    // ...(ALLEN_VOLUME_PROFILE.yz ?? {}),
     flipX: true,
-    // flipY: true,
-    // flipZ: true,
-    // reverseIndex: true,
     rotate90: true,
   },
 };
@@ -146,32 +107,6 @@ export const ALLEN_OBLIQUE_TRANSFORM: SliceTransform = {};
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
-}
-
-async function fetchJsonMaybe(url: string): Promise<any | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function readOMEAttributes(baseUrl: string): Promise<OMEAttributes | null> {
-  const clean = stripTrailingSlash(baseUrl);
-
-  const zattrs = await fetchJsonMaybe(`${clean}/.zattrs`);
-  if (zattrs && Array.isArray(zattrs.multiscales)) {
-    return zattrs as OMEAttributes;
-  }
-
-  const zarrJson = await fetchJsonMaybe(`${clean}/zarr.json`);
-  if (zarrJson?.attributes?.multiscales) {
-    return zarrJson.attributes as OMEAttributes;
-  }
-
-  return null;
 }
 
 function inferSpatialDims(shape: number[]): { z: number; y: number; x: number } {
@@ -324,10 +259,6 @@ export function makePlaneBasis(normal: Vec3): {
 
   const eps = 0.999;
 
-  // Keep exact orientation for the 3 canonical normals.
-  // This preserves the behavior you already fixed.
-
-  // +Z / -Z  -> XY-style
   if (Math.abs(n.z) > eps) {
     return {
       u: { x: -1, y: 0, z: 0 },
@@ -336,7 +267,6 @@ export function makePlaneBasis(normal: Vec3): {
     };
   }
 
-  // +Y / -Y -> XZ-style
   if (Math.abs(n.y) > eps) {
     return {
       u: { x: 1, y: 0, z: 0 },
@@ -345,7 +275,6 @@ export function makePlaneBasis(normal: Vec3): {
     };
   }
 
-  // +X / -X -> YZ-style
   if (Math.abs(n.x) > eps) {
     return {
       u: { x: 0, y: 0, z: -1 },
@@ -354,9 +283,6 @@ export function makePlaneBasis(normal: Vec3): {
     };
   }
 
-  // True arbitrary oblique basis:
-  // keep vertical direction as close as possible to +Y,
-  // unless the plane is too close to Y, then fall back to +Z.
   let ref: Vec3 =
     Math.abs(dotVec3(n, { x: 0, y: 1, z: 0 })) < 0.95
       ? { x: 0, y: 1, z: 0 }
@@ -373,11 +299,9 @@ export function makePlaneBasis(normal: Vec3): {
 
   let u = normalizeVec3(crossVec3(v, n));
 
-  // Stabilize left/right direction so the image does not suddenly flip
-  // when the normal changes a little.
   const preferred = Math.abs(n.y) > 0.7
-    ? { x: 1, y: 0, z: 0 }   // for Y-like planes, prefer +X horizontally
-    : { x: -1, y: 0, z: 0 }; // otherwise prefer -X horizontally
+    ? { x: 1, y: 0, z: 0 }
+    : { x: -1, y: 0, z: 0 };
 
   if (dotVec3(u, preferred) < 0) {
     u = scaleVec3(u, -1);
@@ -1111,3 +1035,4 @@ export function sliceToRgbaBytes(slice: Float32Array): Uint8Array {
 
   return out;
 }
+

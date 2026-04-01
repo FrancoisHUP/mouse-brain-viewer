@@ -58,6 +58,8 @@ export type ExternalAllenViewerApi = {
   closeDialogs: () => Promise<void>;
 };
 
+export type AllenViewerEmbedApi = ExternalAllenViewerApi;
+
 function createRequestId() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -66,7 +68,7 @@ export function createAllenViewerEmbedApi(options: {
   iframe: HTMLIFrameElement;
   targetOrigin?: string;
   timeoutMs?: number;
-}): ExternalAllenViewerApi {
+}): AllenViewerEmbedApi {
   const { iframe, targetOrigin = "*", timeoutMs = 8000 } = options;
 
   async function request<TPayload = Record<string, unknown>>(
