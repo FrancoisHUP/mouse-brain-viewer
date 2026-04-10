@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
@@ -53,6 +53,8 @@ import {
   type ViewerHistoryEntry,
 } from "./viewerHistory";
 import type {
+  AnnotationShape,
+  LayerItemNode,
   LayerTreeNode,
   RemoteContentKind,
   RemoteDataFormat,
@@ -61,6 +63,7 @@ import type {
   SliceLayerParams,
   SlicePlane,
 } from "./layerTypes";
+import type { ScenePointerHit } from "./WebGLCanvas";
 import {
   collectAllLayerItems,
   collectGroups,
@@ -74,12 +77,16 @@ import {
   moveNodeToGroup,
   renameNodeById,
   setGroupExpandedById,
+  updateNodeById,
   setNodeVisibleState,
   toggleGroupExpandedById,
 } from "./layerTypes";
 
 declare global {
   interface Window {
+    EyeDropper?: new () => {
+      open: () => Promise<{ sRGBHex: string }>;
+    };
     AllenViewerApi?: {
       ping: () => boolean;
       getState: () => ViewerStateV1;
@@ -132,6 +139,52 @@ type ViewerStartupSlice = {
 type AppProps = {
   startupSlices?: ViewerStartupSlice[];
 };
+
+type AnnotationDraftSettings = {
+  shape: AnnotationShape;
+  color: string;
+  opacity: number;
+  size: number;
+  depth: number;
+  eraseMode: "all" | "color";
+};
+
+const DEFAULT_ANNOTATION_DRAFT: AnnotationDraftSettings = {
+  shape: "point",
+  color: "#ff5c5c",
+  opacity: 0.9,
+  size: 0.06,
+  depth: 0.015,
+  eraseMode: "color",
+};
+
+const ANNOTATION_RECENT_COLORS_STORAGE_KEY = "allen-viewer-annotation-recent-colors-v1";
+
+function loadRecentAnnotationColors(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(ANNOTATION_RECENT_COLORS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is string => typeof value === "string").slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentAnnotationColors(colors: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(ANNOTATION_RECENT_COLORS_STORAGE_KEY, JSON.stringify(colors.slice(0, 10)));
+  } catch {}
+}
+
+function normalizeHexColor(color: string): string {
+  const normalized = color.trim().replace("#", "");
+  const safe = normalized.length === 3 ? normalized.split("").map((c) => c + c).join("") : normalized;
+  return /^[0-9a-fA-F]{6}$/.test(safe) ? `#${safe.toLowerCase()}` : DEFAULT_ANNOTATION_DRAFT.color;
+}
 
 const INITIAL_TREE: LayerTreeNode[] = [
   {
@@ -367,6 +420,10 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [profileDataRevision, setProfileDataRevision] = useState(0);
   const [hasPersistedViewerState, setHasPersistedViewerState] = useState(false);
 
+  const [annotationDraft, setAnnotationDraft] = useState<AnnotationDraftSettings>(DEFAULT_ANNOTATION_DRAFT);
+  const [annotationRecentColors, setAnnotationRecentColors] = useState<string[]>(() => loadRecentAnnotationColors());
+  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
+
   const initializedStartupSlicesRef = useRef(false);
   const hasHydratedHistoryRef = useRef(false);
   const autoCommitTimeoutRef = useRef<number | null>(null);
@@ -392,6 +449,225 @@ export default function App({ startupSlices = [] }: AppProps) {
   const selectedNode = useMemo(
     () => (selectedNodeId ? findNodeById(layerTree, selectedNodeId) : null),
     [layerTree, selectedNodeId]
+  );
+
+  const selectedAnnotationLayer =
+    selectedNode &&
+    selectedNode.kind === "layer" &&
+    selectedNode.type === "annotation"
+      ? selectedNode
+      : null;
+
+  const selectedAnnotation = selectedAnnotationLayer?.annotation ?? null;
+
+  const inspectorPanelContent: ReactNode = (
+    <div
+      data-theme-surface="panel"
+      style={{
+        width: isInspectorCollapsed ? 250 : 360,
+        borderRadius: 18,
+        border: "1px solid rgba(255,255,255,0.10)",
+        boxShadow: "0 14px 38px rgba(0,0,0,0.35)",
+        backdropFilter: "blur(14px)",
+        overflow: "hidden",
+        transition: "width 220ms ease",
+        fontFamily: "sans-serif",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "12px 14px",
+          borderBottom: isInspectorCollapsed ? "none" : "1px solid rgba(255,255,255,0.08)",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700 }}>
+            {selectedNode ? selectedNode.name : "No selection"}
+          </div>
+          <div data-theme-text="muted" style={{ fontSize: 11, marginTop: 3 }}>
+            {selectedNode
+              ? selectedNode.kind === "group"
+                ? "Group"
+                : selectedNode.type === "annotation"
+                ? `Annotation · ${selectedAnnotation?.shape ?? "point"}`
+                : selectedNode.type === "custom-slice"
+                ? "Custom slice"
+                : selectedNode.type === "remote"
+                ? "Remote layer"
+                : selectedNode.type === "primitive"
+                ? "Primitive"
+                : "Layer"
+              : "Select a layer to inspect it."}
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setIsInspectorCollapsed((prev) => !prev)}
+          aria-label={isInspectorCollapsed ? "Expand inspector" : "Collapse inspector"}
+          title={isInspectorCollapsed ? "Expand inspector" : "Collapse inspector"}
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(255,255,255,0.04)",
+            color: "inherit",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            transition: "all 180ms ease",
+            flex: "0 0 auto",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: isInspectorCollapsed ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 220ms ease" }}>
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateRows: isInspectorCollapsed ? "0fr" : "1fr",
+          transition: "grid-template-rows 220ms ease",
+        }}
+      >
+        <div style={{ overflow: "hidden" }}>
+          <div style={{ padding: "14px", display: "grid", gap: 12 }}>
+            {selectedNode ? (
+              <>
+                <label style={{ display: "grid", gap: 6 }}>
+                  <input
+                    value={selectedNode.name}
+                    onChange={(event) => handleRenameNode(selectedNode.id, event.target.value)}
+                    style={{
+                      height: 34,
+                      padding: "0 10px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.10)",
+                      background: "rgba(255,255,255,0.04)",
+                      color: "inherit",
+                    }}
+                  />
+                </label>
+
+                {selectedAnnotationLayer ? (
+                  <>
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                        Color
+                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="color"
+                          value={selectedAnnotation?.color ?? annotationDraft.color}
+                          onChange={(event) => updateSelectedAnnotationLayer({ color: event.target.value })}
+                          style={{ width: 40, height: 34, padding: 0, border: "none", background: "transparent", cursor: "pointer" }}
+                        />
+                        {selectedAnnotation?.shape !== "freehand" ? (
+                          <>
+                            <input
+                              type="range"
+                              min={0}
+                              max={1}
+                              step={0.01}
+                              value={selectedAnnotation?.opacity ?? annotationDraft.opacity}
+                              onChange={(event) => updateSelectedAnnotationLayer({ opacity: Number(event.target.value) })}
+                              style={{ flex: 1 }}
+                            />
+                            <span style={{ fontSize: 11, minWidth: 36, textAlign: "right", opacity: 0.72 }}>
+                              {Math.round((selectedAnnotation?.opacity ?? annotationDraft.opacity) * 100)}%
+                            </span>
+                          </>
+                        ) : (
+                          <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>
+                            This layer keeps all strokes in one color.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {selectedAnnotation?.shape !== "rectangle" && selectedAnnotation?.shape !== "circle" && selectedAnnotation?.shape !== "freehand" ? (
+                      <label style={{ display: "grid", gap: 6 }}>
+                        <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                          Size
+                        </span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <input
+                            type="range"
+                            min={0.01}
+                            max={0.3}
+                            step={0.005}
+                            value={selectedAnnotation?.size ?? annotationDraft.size}
+                            onChange={(event) => updateSelectedAnnotationLayer({ size: Number(event.target.value) })}
+                            style={{ flex: 1 }}
+                          />
+                          <span style={{ fontSize: 11, minWidth: 42, textAlign: "right", opacity: 0.72 }}>
+                            {(selectedAnnotation?.size ?? annotationDraft.size).toFixed(3)}
+                          </span>
+                        </div>
+                      </label>
+                    ) : null}
+
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                        Metadata
+                      </span>
+                      <textarea
+                        value={selectedAnnotation?.metadata ?? ""}
+                        onChange={(event) => updateSelectedAnnotationLayer({ metadata: event.target.value })}
+                        rows={4}
+                        style={{
+                          resize: "vertical",
+                          minHeight: 82,
+                          padding: 10,
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.10)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "inherit",
+                        }}
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <div
+                    data-theme-surface="soft"
+                    style={{
+                      borderRadius: 12,
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      padding: 12,
+                      fontSize: 12,
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    Select an annotation layer to edit its style and metadata here.
+                  </div>
+                )}
+              </>
+            ) : (
+              <div
+                data-theme-surface="soft"
+                style={{
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  padding: 12,
+                  fontSize: 12,
+                  lineHeight: 1.55,
+                }}
+              >
+                Select a layer in the panel to inspect it here.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 
   const currentViewerState = useMemo(
@@ -497,6 +773,58 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function notifyProfileDataChanged() {
     setProfileDataRevision((value) => value + 1);
+  }
+
+  function pushRecentAnnotationColor(color: string) {
+    const normalized = normalizeHexColor(color);
+    setAnnotationRecentColors((prev) => {
+      const next = [normalized, ...prev.filter((value) => value !== normalized)].slice(0, 10);
+      saveRecentAnnotationColors(next);
+      return next;
+    });
+  }
+
+  function updateAnnotationDraft(patch: Partial<AnnotationDraftSettings>) {
+    setAnnotationDraft((prev) => ({ ...prev, ...patch }));
+  }
+
+  function handleAnnotationDraftColorChange(color: string) {
+    const normalized = normalizeHexColor(color);
+    updateAnnotationDraft({ color: normalized });
+    setActiveTool("pencil");
+  }
+
+  function handleAnnotationDraftColorCommit(color: string) {
+    pushRecentAnnotationColor(color);
+    setActiveTool("pencil");
+  }
+
+  function handleAnnotationDraftOpacityChange(opacity: number) {
+    updateAnnotationDraft({ opacity });
+    setActiveTool("pencil");
+  }
+
+  function handleAnnotationDraftSizeChange(size: number) {
+    updateAnnotationDraft({ size });
+    setActiveTool("pencil");
+  }
+
+  function handleAnnotationDraftDepthChange(depth: number) {
+    updateAnnotationDraft({ depth });
+    setActiveTool("pencil");
+  }
+
+  async function handlePickAnnotationColorFromScreen() {
+    if (typeof window === "undefined" || typeof window.EyeDropper !== "function") return;
+    try {
+      const eyeDropper = new window.EyeDropper();
+      const result = await eyeDropper.open();
+      handleAnnotationDraftColorChange(result.sRGBHex);
+      handleAnnotationDraftColorCommit(result.sRGBHex);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      console.warn("Failed to pick annotation color.", error);
+    }
   }
 
   function persistHistorySnapshot(presentState: ViewerStateV1, committedAt: number = Date.now()) {
@@ -1219,19 +1547,288 @@ export default function App({ startupSlices = [] }: AppProps) {
     setIsImportPanelOpen(true);
   }
 
+  function handleCreatePointAnnotationAtHit(hit: ScenePointerHit) {
+    const id = createId();
+    const name = `Point ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+
+    addNodeAtBestLocation({
+      id,
+      kind: "layer",
+      name,
+      type: "annotation",
+      visible: true,
+      source: "drawing-layer",
+      sourceKind: "drawing",
+      description: `Point annotation on ${hit.layerName}`,
+      annotation: {
+        shape: "point",
+        color: annotationDraft.color,
+        opacity: annotationDraft.opacity,
+        size: annotationDraft.size,
+        metadata: "",
+        points: [[hit.position[0], hit.position[1], hit.position[2]]],
+        normal: [hit.normal[0], hit.normal[1], hit.normal[2]],
+        attachedLayerId: hit.layerId,
+        attachedLayerName: hit.layerName,
+      },
+    });
+
+    setSelectedNodeId(id);
+  }
+
+  function handleCommitFreehandStroke(stroke: {
+    points: [number, number, number][];
+    normals: [number, number, number][];
+    attachedLayerId?: string;
+    attachedLayerName?: string;
+  }) {
+    if (stroke.points.length === 0) return;
+
+    let reusedLayerId: string | null = null;
+
+    setLayerTree((prev) => {
+      let targetLayerId: string | null = null;
+      const selectedNode = selectedNodeId ? findNodeById(prev, selectedNodeId) : null;
+      if (
+        selectedNode &&
+        selectedNode.kind === "layer" &&
+        selectedNode.type === "annotation" &&
+        selectedNode.annotation?.shape === "freehand" &&
+        selectedNode.annotation?.color?.toLowerCase() === annotationDraft.color.toLowerCase()
+      ) {
+        targetLayerId = selectedNode.id;
+      }
+
+      if (!targetLayerId) {
+        const existing = collectAllLayerItems(prev).find((layer) =>
+          layer.type === "annotation" &&
+          layer.annotation?.shape === "freehand" &&
+          (layer.annotation?.color ?? "").toLowerCase() === annotationDraft.color.toLowerCase()
+        );
+        targetLayerId = existing?.id ?? null;
+      }
+
+      if (targetLayerId) {
+        reusedLayerId = targetLayerId;
+        return updateNodeById(prev, targetLayerId, (node) => {
+          if (node.kind !== "layer" || node.type !== "annotation") return node;
+          return {
+            ...node,
+            annotation: {
+              shape: "freehand",
+              color: annotationDraft.color,
+              opacity: node.annotation?.opacity ?? annotationDraft.opacity,
+              size: annotationDraft.size,
+              brushDepth: annotationDraft.depth,
+              metadata: node.annotation?.metadata ?? "",
+              ...node.annotation,
+              color: node.annotation?.color ?? annotationDraft.color,
+              size: annotationDraft.size,
+              brushDepth: annotationDraft.depth,
+              freehandStrokes: [
+                ...(node.annotation?.freehandStrokes ?? []),
+                {
+                  points: stroke.points,
+                  normals: stroke.normals,
+                  attachedLayerId: stroke.attachedLayerId,
+                  attachedLayerName: stroke.attachedLayerName,
+                },
+              ],
+            },
+          };
+        });
+      }
+
+      const id = createId();
+      reusedLayerId = id;
+      
+      const selected = selectedNodeId ? findNodeById(prev, selectedNodeId) : null;
+      const createdNode = {
+        id,
+        kind: "layer",
+        name: `Pencil ${annotationDraft.color.toUpperCase()}`,
+        type: "annotation",
+        visible: true,
+        source: "drawing-layer",
+        sourceKind: "drawing",
+        description: `Freehand annotation on ${stroke.attachedLayerName ?? "surface"}`,
+        annotation: {
+          shape: "freehand",
+          color: annotationDraft.color,
+          opacity: annotationDraft.opacity,
+          size: annotationDraft.size,
+          brushDepth: annotationDraft.depth,
+          metadata: "",
+          attachedLayerId: stroke.attachedLayerId,
+          attachedLayerName: stroke.attachedLayerName,
+          freehandStrokes: [{
+            points: stroke.points,
+            normals: stroke.normals,
+            attachedLayerId: stroke.attachedLayerId,
+            attachedLayerName: stroke.attachedLayerName,
+          }],
+        },
+      };
+
+      if (selected && isGroupNode(selected)) {
+        return insertIntoGroup(prev, selected.id, createdNode);
+      }
+
+      return [...prev, createdNode];
+    });
+
+    if (reusedLayerId) {
+      setSelectedNodeId(reusedLayerId);
+    }
+  }
+
+  function handleEraseFreehandStroke(payload: {
+    path: [number, number, number][];
+    radius: number;
+  }) {
+    if (payload.path.length === 0) return;
+
+    const radiusSq = payload.radius * payload.radius;
+    const targetColor = annotationDraft.color.toLowerCase();
+
+    function isErased(point: [number, number, number]) {
+      for (const erasePoint of payload.path) {
+        const dx = point[0] - erasePoint[0];
+        const dy = point[1] - erasePoint[1];
+        const dz = point[2] - erasePoint[2];
+        if (dx * dx + dy * dy + dz * dz <= radiusSq) return true;
+      }
+      return false;
+    }
+
+    function splitStroke(points: [number, number, number][], normals: [number, number, number][] | undefined) {
+      const segments: Array<{ points: [number, number, number][]; normals: [number, number, number][] }> = [];
+      let currentPoints: [number, number, number][] = [];
+      let currentNormals: [number, number, number][] = [];
+
+      for (let i = 0; i < points.length; i += 1) {
+        const point = points[i];
+        const erased = isErased(point);
+        if (!erased) {
+          currentPoints.push(point);
+          currentNormals.push(normals?.[i] ?? [0, 0, 1]);
+        } else if (currentPoints.length > 0) {
+          segments.push({ points: currentPoints, normals: currentNormals });
+          currentPoints = [];
+          currentNormals = [];
+        }
+      }
+
+      if (currentPoints.length > 0) {
+        segments.push({ points: currentPoints, normals: currentNormals });
+      }
+
+      return segments;
+    }
+
+    setLayerTree((prev) => {
+      const next = prev.map((node) => node);
+      function updateNodes(nodes: LayerTreeNode[]): LayerTreeNode[] {
+        return nodes.flatMap((node) => {
+          if (node.kind === "group") {
+            return [{ ...node, children: updateNodes(node.children) }];
+          }
+          if (node.type !== "annotation" || node.annotation?.shape !== "freehand") {
+            return [node];
+          }
+          if (annotationDraft.eraseMode === "color" && (node.annotation?.color ?? "").toLowerCase() !== targetColor) {
+            return [node];
+          }
+
+          const existingStrokes = node.annotation?.freehandStrokes ?? [];
+          const rewritten = existingStrokes.flatMap((stroke) =>
+            splitStroke(stroke.points, stroke.normals).map((segment) => ({
+              ...stroke,
+              points: segment.points,
+              normals: segment.normals,
+            }))
+          );
+
+          if (rewritten.length === existingStrokes.length && rewritten.every((stroke, index) => stroke.points.length === existingStrokes[index]?.points.length)) {
+            return [node];
+          }
+
+          if (rewritten.length === 0) {
+            return [];
+          }
+
+          return [{
+            ...node,
+            annotation: {
+              ...node.annotation,
+              freehandStrokes: rewritten,
+            },
+          }];
+        });
+      }
+      return updateNodes(next);
+    });
+  }
+
   function handleAddDrawingLayer(name?: string) {
+    const prettyShape =
+      annotationDraft.shape === "freehand"
+        ? "Pencil"
+        : annotationDraft.shape === "rectangle"
+        ? "Rectangle"
+        : annotationDraft.shape.charAt(0).toUpperCase() + annotationDraft.shape.slice(1);
+
     addNodeAtBestLocation({
       id: createId(),
       kind: "layer",
-      name: name?.trim() || "Drawing Layer",
+      name: name?.trim() || `${prettyShape} Annotation`,
       type: "annotation",
       visible: true,
       source: "drawing-layer",
       sourceKind: "drawing",
       description: "User-created annotation layer",
+      annotation: {
+        shape: annotationDraft.shape,
+        color: annotationDraft.color,
+        opacity: annotationDraft.opacity,
+        size: annotationDraft.size,
+        metadata: "",
+      },
     });
 
     setIsImportPanelOpen(false);
+  }
+
+  function updateSelectedAnnotationLayer(patch: Partial<NonNullable<LayerItemNode["annotation"]>>) {
+    if (!selectedNodeId) return;
+
+    if (patch.color) {
+      pushRecentAnnotationColor(patch.color);
+    }
+
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedNodeId, (node) => {
+        if (node.kind !== "layer" || node.type !== "annotation") return node;
+        return {
+          ...node,
+          annotation: {
+            shape: node.annotation?.shape ?? annotationDraft.shape,
+            color: node.annotation?.color ?? annotationDraft.color,
+            opacity: node.annotation?.opacity ?? annotationDraft.opacity,
+            size: node.annotation?.size ?? annotationDraft.size,
+            brushDepth: node.annotation?.brushDepth ?? annotationDraft.depth,
+            metadata: node.annotation?.metadata ?? "",
+            ...node.annotation,
+            ...patch,
+          },
+        };
+      })
+    );
+  }
+
+  function setAnnotationDraftShape(shape: AnnotationShape) {
+    setAnnotationDraft((prev) => ({ ...prev, shape }));
+    setActiveTool("pencil");
   }
 
   function handleRenameNode(nodeId: string, newName: string) {
@@ -1677,6 +2274,16 @@ export default function App({ startupSlices = [] }: AppProps) {
         cameraSyncKey={cameraSyncKey}
         onCameraStateChange={setCameraState}
         backgroundColor={appPreferences.sceneBackground}
+        infoPanelContent={inspectorPanelContent}
+        annotationShape={annotationDraft.shape}
+        annotationColor={annotationDraft.color}
+        annotationOpacity={annotationDraft.opacity}
+        annotationSize={annotationDraft.size}
+        annotationDepth={annotationDraft.depth}
+        annotationEraseMode={annotationDraft.eraseMode}
+        onCreatePointAnnotation={handleCreatePointAnnotationAtHit}
+        onCommitFreehandStroke={handleCommitFreehandStroke}
+        onEraseFreehand={handleEraseFreehandStroke}
       />
 
       <LayerPanel
@@ -1854,6 +2461,21 @@ export default function App({ startupSlices = [] }: AppProps) {
         statePopoverOpen={isStateModalOpen}
         onRequestCloseStatePopover={() => setActiveTool("mouse")}
         accountPopoverOpen={isUserProfilePanelOpen}
+        annotationShape={annotationDraft.shape}
+        annotationColor={annotationDraft.color}
+        annotationOpacity={annotationDraft.opacity}
+        annotationSize={annotationDraft.size}
+        annotationDepth={annotationDraft.depth}
+        annotationEraseMode={annotationDraft.eraseMode}
+        annotationRecentColors={annotationRecentColors}
+        onAnnotationShapeChange={setAnnotationDraftShape}
+        onAnnotationColorChange={handleAnnotationDraftColorChange}
+        onAnnotationColorCommit={handleAnnotationDraftColorCommit}
+        onAnnotationOpacityChange={handleAnnotationDraftOpacityChange}
+        onAnnotationSizeChange={handleAnnotationDraftSizeChange}
+        onAnnotationDepthChange={handleAnnotationDraftDepthChange}
+        onAnnotationEraseModeChange={(mode) => setAnnotationDraft((prev) => ({ ...prev, eraseMode: mode }))}
+        onAnnotationPickColorFromScreen={handlePickAnnotationColorFromScreen}
         slicePopoverContent={
           omeLayers.length > 0 ? (
             <div data-slice-tool="true" style={{ fontFamily: "sans-serif" }}>

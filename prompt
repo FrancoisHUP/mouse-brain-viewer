@@ -1,3 +1,36 @@
+[ONGOING] : annotaitons {
+  {
+    Alright I am still working on my visaulizer webgl for mouse brain. I need to finish a feature I had in mind, but did not implemented yet. I need to add the annotations in the viewer. Right now I only have a bottun in the tool bar that does nothing. I want the user to be able to add different type of annotations. 
+    First thing before we start, I need the user to be able to select the pencil button and select the option he want (the mode of annotation. Once this is done I need the user to me able to click or hold the mouse to add anotation (depending on the mode chosen). The annotation should be place on the closest surface in the 3D webgl. That means if there is nothing (user is drawing in the empty space) there should be nothing happening, if the user is drawing on a slice (3D plane) the plane the annotation should appear on hte closest to the camera. That way even with mulitple slice, the user can annotate easly by toggling off an on the slice he wants to annotate. 
+    Also the annotations should create a layer un the layer panel. The user can toggle on and off an annotation and can also group annotations togheter and also deletes them. I also need to add a panel to controle an annotation. For exemple I want the user to be able to update the color, transparency and other visual element or even the position of an annotation. Here are the main ways of annotations : 
+    (1) Point annotation : I want the user to be able to click and add a point annotation. Once the point is added, I want to see in the 3D scene a 3d sphere where the annotation is. The user can give a name, a color, transparency and can also associate meta data (for what this point represent). I want to use these later to represent in the 3d space where my master algorithm is good to find part of the brain and where it's not so good. I need a way to visualize the points and have colored the point (red for bad retreival and green for good). 
+    (2) Lines : I need the user to be able to draw a line between these two point. I need the user to be able to chose the width of the 3d Geometry cylinder between two points. To add a line between two point the user should select the line annotation tool and be able to draw directly on the 3d scene objects. I also want to have a snapping effect on the points in the scene. So the user can easly select this annotation and snaptwo point togheter. 
+    (3) Draw a square / circle : I want the user to be able to draw from in the scene. The basic will be a square. I want the user to be able to select the form and to draw in on screen. The square should also handle the rectangle. The way the user add an annotation when the drwaing form is selected is he should click and drag on a slice (3d object) and on mouse release it should draw the square between the starting point and the end point. When the user drag the square should appear in the scene where the mouse is for the user to see what the annotation looks like. I need the square when, for exemple, I want to indicate a crop of a the full slice. I would add a complete slice in the scene and add a square where the crop starts and where it ends. 
+    (4) Free Pencil : If the user select this mode, the user should be able to draw freely on the scene objects. For this mode I need the user to be able to point and draw annotation. I need the user to be able to chose the color and the size of the annotation. The drawing should apprea instantanly in the scene on the object in the scene, but the history should only register a new state when the mouse is release. 
+    Finally I want the annotations to be part of the state of the browser. That implies the user can import annotation from another viewer. Plus a user can already toggle between states. So i f the user does a wrong annotation, I want the history to be able to back to the previous annotation. So the state should only update when the user is done with an annotations aka when the user unpresse the mouse key. That way he can back up a step and remove the previous annotation (if he wants).
+  }
+  {
+    ok a couple of things already about the ui. 
+    (1) I like the new select element panel. The only I am worried is that it take a lot of space virtically. I think it would be best if the user can toggle open and close. That way it does not get in the way. So could you add a toggle button, the same style as the layer button with a smooth transition. 
+    (2) For the pencil menu : 
+    (2.1) To toggle the menu I think I would prefer a hover with the move over the button. When the mouse is over the button it should trigger the menu, when the mouse is out of focus the menu should automatically close. The user still have to click on the button to activate the annotation and it's either the camera controle (in the bottom tool bar the move with the mouse icon) or the annotation (pencil icon) activated at a time (not both mode at a time). When the mouse is click, it's activated and the user can freelly use the annotation without the panel always in the way. 
+    (2.2) I dont need to tell the user that this is an annotation tool. with the icon it's enough self explanatory. I also dont need to put a description in there. So remove both the title and the description. 
+    (2.3) I imagine more of a icon style selection for the tools instead of a drop down menu. So instea of the type and drop down, I need an icon for each type of annotaiton pencil (point, line, square/circle, pencil). When the option is selected the icon should be hightlighted to indicate thes user has sleceted this option. 
+    (2.4) For the color, I would like to offer the user a basic color palette he can choose from (basics reds, greens, blues, ect...) I also want the user to be able to choose his how custom color with the color picker like we currently have. 
+    (2.5) the opacity should be included in the color picker. So remove the current opacity selector and add a way for the user to select the opacity in the color. (2.6) The user should be a ble to define the size of the annotations (Point, line, and pencil annotation). In this case I want the size to appear if necessary. So when the user select an option of annotation, the size should appear of not depending on hte option. can you update these points before we move on to the actual annotations ?
+  }
+  [todo] remeber to adjust the new layer (drawing section)
+  [todo] re add the data in the detail panel (micro and dimension)
+  [todo] change the controle automatically when the user select the flying or orbit cam
+  [todo] in the orbit cam use the scroll to do translation
+  [todo] change the icon for the geometric form in the annotation selection
+  [todo] select multiple layer and be able to delete or move them into a group all togheter  
+} 
+
+
+
+[todo] add a screen shot of the viewer state in the "viewer state file" instead of the basic place holder.
+
 [todo] making the annotation match the color of the allen atlas; getting the other skeleton of the annotation instead of volumetric data or both ? 
 [todo] add all regions (annotation) at the same time in a three like structure into the layers panel 
 
@@ -42,14 +75,7 @@ Alright now I have a bug relating the volumetric data. The problem is when a sli
         ok bug resolve, now I have a really wierd bug visually in the webgl scene. Now I see the annotations, but with a certain angle I see the annotation flip upside down. This happend when the camera is pointing to high or to low compare to the volume of the brain. So if I place the camera right in fornt of the annotation I see the annotation in the right angles, and when I stilt the camera up, at a certain angle it change the annotation upside down. THe smae happend if the camera is pointing to low. This is only happening with the annotation.
     }
 }
-
-[bug]{
-  camera not being save in the state (since the orbital control)
-  {
-    Good Now I just see that the camera is note save in the state anymore. I do want to save the position of the camera so anyone loading the state can see exacly what the camera of the user is pointing to when he shared the state. The camera position was in the state before an it was working perfectly. Its only in the recent change taht it stopped being in the state. 
-
-    There's on caveats to this. The camera movement should not trigger a new history. I experiement with this before and the problem if the movement add a new history state is that the history becom full of camera movement pretty fast. So I remove the camera from the trigger a state in the history because of that and I think that camera movement being up out of the state cause that now the state does not have the camera position, while it should.   
-
-    I have made quite a few change since the last time. So I am linking all the relevant files so you have the latest version to work with. 
-  }
+[bug] {
+  When the user reload the window, the base template come back for a second and the nthe state is mounted into the application. This is not a problem on it's own, but the basic template is registered as a state in the state history. This should not happened. 
 }
+

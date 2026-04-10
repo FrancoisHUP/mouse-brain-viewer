@@ -3,11 +3,11 @@
     "origin": [
       "http://localhost:4173",
       "http://localhost:5173",
+      "https://mouse-brain-viewer.pages.dev",
       "https://sbh-assistant.com",
-      "https://www.sbh-assistant.com",
-      "http://www.sbh-assistant.com"
+      "https://www.sbh-assistant.com"
     ],
-    "method": ["GET", "HEAD", "OPTIONS"],
+    "method": ["GET", "HEAD"],
     "responseHeader": ["Content-Type", "Range"],
     "maxAgeSeconds": 3600
   }

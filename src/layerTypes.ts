@@ -30,6 +30,34 @@ export type CustomSliceSource = {
   volumeLayerId: string;
 };
 
+export type AnnotationShape =
+  | "point"
+  | "line"
+  | "rectangle"
+  | "circle"
+  | "freehand"
+  | "eraser";
+
+export type FreehandStroke = {
+  points: [number, number, number][];
+  normals?: [number, number, number][];
+  attachedLayerId?: string;
+  attachedLayerName?: string;
+};
+
+export type AnnotationData = {
+  shape: AnnotationShape;
+  color: string;
+  opacity: number;
+  size: number;
+  metadata?: string;
+  points?: [number, number, number][];
+  normal?: [number, number, number];
+  attachedLayerId?: string;
+  attachedLayerName?: string;
+  freehandStrokes?: FreehandStroke[];
+};
+
 export type LayerRenderType =
   | "primitive"
   | "file"
@@ -91,6 +119,9 @@ export type LayerItemNode = BaseNode & {
 
   // For custom slices
   sliceParams?: SliceLayerParams;
+
+  // For drawing annotations
+  annotation?: AnnotationData;
 };
 
 export type LayerTreeNode = LayerGroupNode | LayerItemNode;
