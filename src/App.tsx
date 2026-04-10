@@ -593,7 +593,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                       </div>
                     </div>
 
-                    {selectedAnnotation?.shape !== "rectangle" && selectedAnnotation?.shape !== "circle" && selectedAnnotation?.shape !== "freehand" ? (
+                    {selectedAnnotation?.shape !== "freehand" && selectedAnnotation?.shape !== "eraser" ? (
                       <label style={{ display: "grid", gap: 6 }}>
                         <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
                           Size
@@ -1576,6 +1576,76 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSelectedNodeId(id);
   }
 
+  function handleCreateLineAnnotation(params: { start: ScenePointerHit; end: ScenePointerHit }) {
+    const id = createId();
+    const name = `Line ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+
+    addNodeAtBestLocation({
+      id,
+      kind: "layer",
+      name,
+      type: "annotation",
+      visible: true,
+      source: "drawing-layer",
+      sourceKind: "drawing",
+      description: `Line annotation on ${params.start.layerName}`,
+      annotation: {
+        shape: "line",
+        color: annotationDraft.color,
+        opacity: annotationDraft.opacity,
+        size: annotationDraft.size,
+        metadata: "",
+        points: [
+          [params.start.position[0], params.start.position[1], params.start.position[2]],
+          [params.end.position[0], params.end.position[1], params.end.position[2]],
+        ],
+        normal: [params.start.normal[0], params.start.normal[1], params.start.normal[2]],
+        attachedLayerId: params.start.layerId,
+        attachedLayerName: params.start.layerName,
+      },
+    });
+
+    setSelectedNodeId(id);
+  }
+
+  function handleCreateShapeAnnotation(params: {
+    shape: "rectangle" | "circle";
+    points: [number, number, number][];
+    normal: [number, number, number];
+    layerId: string;
+    layerName: string;
+  }) {
+    if (!params.points.length) return;
+
+    const id = createId();
+    const baseLabel = params.shape === "rectangle" ? "Rectangle" : "Circle";
+    const name = `${baseLabel} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+
+    addNodeAtBestLocation({
+      id,
+      kind: "layer",
+      name,
+      type: "annotation",
+      visible: true,
+      source: "drawing-layer",
+      sourceKind: "drawing",
+      description: `${baseLabel} annotation on ${params.layerName}`,
+      annotation: {
+        shape: params.shape,
+        color: annotationDraft.color,
+        opacity: annotationDraft.opacity,
+        size: annotationDraft.size,
+        metadata: "",
+        points: params.points,
+        normal: params.normal,
+        attachedLayerId: params.layerId,
+        attachedLayerName: params.layerName,
+      },
+    });
+
+    setSelectedNodeId(id);
+  }
+
   function handleCommitFreehandStroke(stroke: {
     points: [number, number, number][];
     normals: [number, number, number][];
@@ -2278,6 +2348,8 @@ export default function App({ startupSlices = [] }: AppProps) {
         annotationDepth={annotationDraft.depth}
         annotationEraseMode={annotationDraft.eraseMode}
         onCreatePointAnnotation={handleCreatePointAnnotationAtHit}
+        onCreateLineAnnotation={handleCreateLineAnnotation}
+        onCreateShapeAnnotation={handleCreateShapeAnnotation}
         onCommitFreehandStroke={handleCommitFreehandStroke}
         onEraseFreehand={handleEraseFreehandStroke}
       />
