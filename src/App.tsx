@@ -1615,16 +1615,13 @@ export default function App({ startupSlices = [] }: AppProps) {
           return {
             ...node,
             annotation: {
+              ...node.annotation,
               shape: "freehand",
-              color: annotationDraft.color,
+              color: node.annotation?.color ?? annotationDraft.color,
               opacity: node.annotation?.opacity ?? annotationDraft.opacity,
               size: annotationDraft.size,
               brushDepth: annotationDraft.depth,
               metadata: node.annotation?.metadata ?? "",
-              ...node.annotation,
-              color: node.annotation?.color ?? annotationDraft.color,
-              size: annotationDraft.size,
-              brushDepth: annotationDraft.depth,
               freehandStrokes: [
                 ...(node.annotation?.freehandStrokes ?? []),
                 {
@@ -1643,7 +1640,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       reusedLayerId = id;
       
       const selected = selectedNodeId ? findNodeById(prev, selectedNodeId) : null;
-      const createdNode = {
+      const createdNode: LayerItemNode = {
         id,
         kind: "layer",
         name: `Pencil ${annotationDraft.color.toUpperCase()}`,
@@ -1727,9 +1724,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
 
     setLayerTree((prev) => {
-      const next = prev.map((node) => node);
       function updateNodes(nodes: LayerTreeNode[]): LayerTreeNode[] {
-        return nodes.flatMap((node) => {
+        return nodes.flatMap((node): LayerTreeNode[] => {
           if (node.kind === "group") {
             return [{ ...node, children: updateNodes(node.children) }];
           }
@@ -1766,7 +1762,7 @@ export default function App({ startupSlices = [] }: AppProps) {
           }];
         });
       }
-      return updateNodes(next);
+      return updateNodes(prev);
     });
   }
 

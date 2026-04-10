@@ -50,6 +50,7 @@ export type AnnotationData = {
   color: string;
   opacity: number;
   size: number;
+  brushDepth?: number;
   metadata?: string;
   points?: [number, number, number][];
   normal?: [number, number, number];

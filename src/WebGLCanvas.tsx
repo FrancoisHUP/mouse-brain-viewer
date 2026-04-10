@@ -1293,7 +1293,6 @@ export default function WebGLCanvas({
 
           if (isOblique) {
             model = makeObliqueSliceModelMatrix(volume, {
-              mode: "oblique",
               normal: {
                 x: sliceParams.normal.x,
                 y: sliceParams.normal.y,
@@ -2142,7 +2141,6 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           if (annotation?.shape === "point" && annotation.points?.[0]) {
             const point = annotation.points[0];
             const size = Math.max(0.002, annotation.size ?? 0.06);
-            const brushDepth = Math.max(0.0015, annotation.brushDepth ?? Math.max(size * 0.28, 0.015));
             const opacity = clamp(annotation.opacity ?? 0.9, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
             const model = mat4.create();

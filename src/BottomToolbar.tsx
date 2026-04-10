@@ -791,6 +791,18 @@ function PencilToolButton({
               <ThicknessSlider shape={shape} size={size} onChange={(next) => onSizeChange(next)} />
             </div>
           ) : null}
+
+          {(shape === "freehand" || shape === "eraser") ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, color: "rgba(255,255,255,0.86)" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700 }}>Brush depth</span>
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.72 }}>{depth.toFixed(3)}</div>
+              </div>
+              <ThicknessSlider shape={shape} size={depth} onChange={(next) => onDepthChange(next)} />
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
