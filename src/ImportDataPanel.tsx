@@ -12,7 +12,7 @@ import {
   renameCustomExternalSource,
 } from "./customSourceStore";
 
-type LayerCreationMode = "drawing" | "external" | "custom";
+type LayerCreationMode = "external" | "custom";
 
 type ExternalSourceItem = {
   id: string;
@@ -34,24 +34,6 @@ type ExternalSourceGroup = {
   builtIn?: boolean;
   items: ExternalSourceItem[];
 };
-
-function PencilIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 113 3L7 19l-4 1 1-4 12.5-12.5z" />
-    </svg>
-  );
-}
 
 function LinkIcon() {
   return (
@@ -383,13 +365,12 @@ function getGroupKey(item: ExternalSourceItem) {
 export default function ImportDataPanel({
   open,
   onClose,
-  onAddDrawingLayer,
   onAddExternalSources,
   onAddFiles,
 }: {
   open: boolean;
   onClose: () => void;
-  onAddDrawingLayer: (name?: string) => void;
+  onAddDrawingLayer?: (name?: string) => void;
   onAddExternalSources: (
     sources: Array<{
       id: string;
@@ -405,7 +386,6 @@ export default function ImportDataPanel({
   onAddFiles: (files: FileList | null) => void;
 }) {
   const [mode, setMode] = useState<LayerCreationMode>("external");
-  const [drawingName, setDrawingName] = useState("Drawing Layer");
   const [isDragging, setIsDragging] = useState(false);
 
   const [externalSources, setExternalSources] = useState<ExternalSourceItem[]>([]);
@@ -431,7 +411,6 @@ export default function ImportDataPanel({
   useEffect(() => {
     if (!open) {
       setMode("external");
-      setDrawingName("Drawing Layer");
       setIsDragging(false);
       setSelectedExternalIds([]);
       setShowAddExternalForm(false);
@@ -637,11 +616,6 @@ export default function ImportDataPanel({
   }
 
   function handleSubmit() {
-    if (mode === "drawing") {
-      onAddDrawingLayer(drawingName);
-      return;
-    }
-
     if (mode === "external") {
       if (!selectedExternalSources.length) return;
 
@@ -715,7 +689,7 @@ export default function ImportDataPanel({
           <div>
             <div style={{ fontSize: 18, fontWeight: 800 }}>Add layer</div>
             <div data-theme-text="muted" style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
-              Choose the type of layer you want to add to the viewer.
+Choose a data source to add to the viewer.
             </div>
           </div>
 
@@ -739,13 +713,6 @@ export default function ImportDataPanel({
 
         <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
           <TabButton
-            active={mode === "drawing"}
-            title="Drawing layer"
-            subtitle="Create a user annotation layer"
-            icon={<PencilIcon />}
-            onClick={() => setMode("drawing")}
-          />
-          <TabButton
             active={mode === "external"}
             title="External source"
             subtitle="Select one or more hosted sources"
@@ -760,42 +727,6 @@ export default function ImportDataPanel({
             onClick={() => setMode("custom")}
           />
         </div>
-
-        {mode === "drawing" && (
-          <div
-            data-theme-surface="soft"
-            style={{
-              borderRadius: 16,
-              border: "1px solid rgba(255,255,255,0.10)",
-              background: "rgba(255,255,255,0.03)",
-              padding: 16,
-            }}
-          >
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
-              Create drawing layer
-            </div>
-
-            <label style={{ display: "block", fontSize: 12, opacity: 0.78, marginBottom: 6 }}>
-              Layer name
-            </label>
-            <input
-              value={drawingName}
-              onChange={(e) => setDrawingName(e.target.value)}
-              placeholder="Drawing Layer"
-              style={{
-                width: "100%",
-                height: 40,
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(255,255,255,0.05)",
-                color: "white",
-                padding: "0 12px",
-                boxSizing: "border-box",
-                outline: "none",
-              }}
-            />
-          </div>
-        )}
 
         {mode === "external" && (
           <div
@@ -1461,6 +1392,8 @@ export default function ImportDataPanel({
           <div style={{ fontSize: 12, opacity: 0.62 }}>
             {mode === "external" && selectedExternalSources.length > 0
               ? `${selectedExternalSources.length} source${selectedExternalSources.length > 1 ? "s" : ""} selected`
+              : mode === "custom"
+              ? "Upload files to create layers automatically"
               : "\u00A0"}
           </div>
 
@@ -1481,14 +1414,11 @@ export default function ImportDataPanel({
               Cancel
             </button>
 
-            {mode !== "custom" && (
+            {mode === "external" && (
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={
-                  (mode === "drawing" && !drawingName.trim()) ||
-                  (mode === "external" && selectedExternalSources.length === 0)
-                }
+                disabled={selectedExternalSources.length === 0}
                 style={{
                   height: 40,
                   padding: "0 14px",
@@ -1497,11 +1427,7 @@ export default function ImportDataPanel({
                   background: "rgba(120,190,255,0.18)",
                   color: "white",
                   cursor: "pointer",
-                  opacity:
-                    (mode === "drawing" && !drawingName.trim()) ||
-                    (mode === "external" && selectedExternalSources.length === 0)
-                      ? 0.5
-                      : 1,
+                  opacity: selectedExternalSources.length === 0 ? 0.5 : 1,
                 }}
               >
                 Add layer

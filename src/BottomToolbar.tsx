@@ -192,9 +192,20 @@ function AnnotationModeIcon({ shape }: { shape: AnnotationShape | "shape" }) {
     case "freehand":
       return <svg {...common}><path d="M5 16c2-5 4-8 6-8 2.5 0 2.5 6 5 6 1.1 0 2-.8 3-2" /></svg>;
     case "shape":
-      return <svg {...common}><rect x="4.5" y="7" width="8.5" height="9.5" rx="1.2" /><circle cx="16.8" cy="11.8" r="3.2" /></svg>;
+      return (
+        <svg {...common}>
+          <rect x="5" y="5" width="9.5" height="9.5" rx="1.6" />
+          <circle cx="15.2" cy="15.2" r="4.8" />
+        </svg>
+      );
     case "eraser":
-      return <svg {...common}><path d="M7 16l6-6 4 4-6 6H7z" /><path d="M14 7l3 3" /><path d="M4 20h8" /></svg>;
+      return (
+        <svg {...common}>
+          <path d="M6.5 13.5l6.5-6.5a2 2 0 012.8 0l4.2 4.2a2 2 0 010 2.8l-4 4a2 2 0 01-1.4.6H10a2 2 0 01-1.4-.6l-2.1-2.1a2 2 0 010-2.8z" />
+          <path d="M13.5 20H21" />
+          <path d="M10.5 10.5l5 5" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -202,11 +213,19 @@ function AnnotationModeIcon({ shape }: { shape: AnnotationShape | "shape" }) {
 
 function EyeDropperIcon() {
   return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M10 14L4 20" />
-      <path d="M14.5 4.5l5 5" />
-      <path d="M12 7l5 5" />
-      <path d="M8 16l8.5-8.5a2.1 2.1 0 10-3-3L5 13v3h3z" />
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M11 7l6 6" />
+      <path d="M19 5a2 2 0 00-2.8 0L7 14.2 4 20l5.8-3 9.2-9.2A2 2 0 0019 5z" />
+      <path d="M15 9l-6 6" />
     </svg>
   );
 }
@@ -247,7 +266,7 @@ function ToolButton({ id, label, active, onClick }: { id: ToolId; label: string;
   );
 }
 
-function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange }: { active: boolean; cameraMode: CameraControlMode; onClick: () => void; onCameraModeChange: (mode: CameraControlMode) => void; }) {
+function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange, onResetOrbitCenter }: { active: boolean; cameraMode: CameraControlMode; onClick: () => void; onCameraModeChange: (mode: CameraControlMode) => void; onResetOrbitCenter?: () => void; }) {
   const [isHovered, setIsHovered] = useState(false);
   const showMenu = isHovered;
   return (
@@ -274,7 +293,7 @@ function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange }: { a
               <button
                 key={option.id}
                 type="button"
-                onClick={() => onCameraModeChange(option.id)}
+                onClick={() => { onCameraModeChange(option.id); onClick(); }}
                 style={{
                   textAlign: "left",
                   borderRadius: 12,
@@ -290,6 +309,23 @@ function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange }: { a
               </button>
             );
           })}
+          <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "2px 0" }} />
+          <button
+            type="button"
+            onClick={() => { onClick(); onResetOrbitCenter?.(); }}
+            style={{
+              textAlign: "left",
+              borderRadius: 12,
+              border: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(255,255,255,0.04)",
+              color: "white",
+              padding: "10px 12px",
+              cursor: "pointer",
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Recenter orbit</div>
+            <div style={{ fontSize: 11, opacity: 0.68, marginTop: 4 }}>Smooth move back to the scene center.</div>
+          </button>
         </div>
       </div>
     </div>
@@ -297,13 +333,12 @@ function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange }: { a
 }
 
 function needsSizeControl(shape: AnnotationShape) {
-  return shape === "point" || shape === "line" || shape === "rectangle" || shape === "circle" || shape === "freehand" || shape === "eraser";
+  return shape === "point" || shape === "line" || shape === "freehand" || shape === "eraser";
 }
 
 function buildSizeLabel(shape: AnnotationShape) {
   if (shape === "point") return "Point size";
   if (shape === "line") return "Line thickness";
-  if (shape === "rectangle" || shape === "circle") return "Outline thickness";
   if (shape === "eraser") return "Eraser size";
   return "Brush size";
 }
@@ -875,6 +910,7 @@ export default function BottomToolbar({
   onToolChange,
   cameraMode,
   onCameraModeChange,
+  onResetOrbitCenter,
   onSaveCurrentViewer,
   saveNoticeOpen = false,
   saveNoticeContent = null,
@@ -916,6 +952,7 @@ export default function BottomToolbar({
   onToolChange: (tool: ToolId) => void;
   cameraMode: CameraControlMode;
   onCameraModeChange: (mode: CameraControlMode) => void;
+  onResetOrbitCenter?: () => void;
   onSaveCurrentViewer?: () => void;
   saveNoticeOpen?: boolean;
   saveNoticeContent?: ReactNode;
@@ -994,7 +1031,7 @@ export default function BottomToolbar({
           (tool.id === "save" && saveNoticeOpen);
 
         if (tool.id === "mouse") {
-          return <MoveToolButton key={tool.id} active={isActive} cameraMode={cameraMode} onClick={() => onToolChange(tool.id)} onCameraModeChange={onCameraModeChange} />;
+          return <MoveToolButton key={tool.id} active={isActive} cameraMode={cameraMode} onClick={() => onToolChange(tool.id)} onCameraModeChange={onCameraModeChange} onResetOrbitCenter={onResetOrbitCenter} />;
         }
 
         if (tool.id === "pencil") {
@@ -1029,7 +1066,7 @@ export default function BottomToolbar({
 
         return <ToolButton key={tool.id} id={tool.id} label={tool.label} active={isActive} onClick={() => onToolChange(tool.id)} />;
       }),
-    [activeTool, slicePopoverOpen, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onSaveCurrentViewer, onToolChange, saveNoticeContent, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
+    [activeTool, slicePopoverOpen, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onResetOrbitCenter, onSaveCurrentViewer, onToolChange, saveNoticeContent, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
   );
 
   return (

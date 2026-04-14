@@ -72,6 +72,20 @@ export type ScenePointerHit = {
   position: [number, number, number];
   normal: [number, number, number];
 };
+export type SelectedLayerRuntimeInfo = {
+  layerId: string;
+  sourceName?: string;
+  sourcePath?: string;
+  sourceType?: string;
+  requestedResolutionUm?: number | null;
+  resolvedResolutionUm?: number | null;
+  datasetIndex?: number | null;
+  datasetPath?: string | null;
+  voxelSizeUm?: { x?: number | null; y?: number | null; z?: number | null } | null;
+  dims?: { x: number; y: number; z: number } | null;
+  rawShape?: number[] | null;
+};
+
 
 function createShader(
   gl: WebGLRenderingContext,
@@ -345,6 +359,9 @@ export default function WebGLCanvas({
   onCreateShapeAnnotation,
   onCommitFreehandStroke,
   onEraseFreehand,
+  onSelectedLayerRuntimeInfoChange,
+  onCanvasElementChange,
+  orbitResetRequestKey = 0,
 }: {
   activeTool: ToolId;
   layerTree: LayerTreeNode[];
@@ -366,6 +383,9 @@ export default function WebGLCanvas({
   onCreateShapeAnnotation?: (params: { shape: "rectangle" | "circle"; points: [number, number, number][]; normal: [number, number, number]; layerId: string; layerName: string; }) => void;
   onCommitFreehandStroke?: (stroke: { points: [number, number, number][]; normals: [number, number, number][]; attachedLayerId?: string; attachedLayerName?: string; }) => void;
   onEraseFreehand?: (payload: { path: [number, number, number][]; radius: number }) => void;
+  onSelectedLayerRuntimeInfoChange?: (info: SelectedLayerRuntimeInfo | null) => void;
+  onCanvasElementChange?: (canvas: HTMLCanvasElement | null) => void;
+  orbitResetRequestKey?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -386,6 +406,8 @@ export default function WebGLCanvas({
     cameraState.position[1],
     cameraState.position[2]
   ))));
+  const orbitTargetRef = useRef(vec3.fromValues(0, 0, 0));
+  const orbitTargetGoalRef = useRef(vec3.fromValues(0, 0, 0));
 
   const activeToolRef = useRef<ToolId>(activeTool);
   const annotationShapeRef = useRef<AnnotationShape>(annotationShape);
@@ -411,6 +433,13 @@ export default function WebGLCanvas({
   const lastPublishedSceneHitRef = useRef<string>("null");
 
   const [loadTick, setLoadTick] = useState(0);
+
+  useEffect(() => {
+    onCanvasElementChange?.(canvasRef.current);
+    return () => {
+      onCanvasElementChange?.(null);
+    };
+  }, [onCanvasElementChange]);
 
   useEffect(() => {
     activeToolRef.current = activeTool;
@@ -467,7 +496,7 @@ export default function WebGLCanvas({
   useEffect(() => {
     cameraRef.current.mode = cameraState.mode ?? "fly";
     if ((cameraState.mode ?? "fly") === "orbit") {
-      targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(cameraRef.current.position, vec3.fromValues(0, 0, 0)));
+      targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(cameraRef.current.position, orbitTargetRef.current));
     }
   }, [cameraState.mode]);
 
@@ -480,8 +509,14 @@ export default function WebGLCanvas({
     camera.yaw = cameraState.yaw;
     camera.pitch = cameraState.pitch;
     camera.fovDeg = cameraState.fovDeg;
-    targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(camera.position, vec3.fromValues(0, 0, 0)));
+    targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(camera.position, orbitTargetRef.current));
   }, [cameraSyncKey]);
+
+  useEffect(() => {
+    orbitTargetGoalRef.current[0] = 0;
+    orbitTargetGoalRef.current[1] = 0;
+    orbitTargetGoalRef.current[2] = 0;
+  }, [orbitResetRequestKey]);
 
   function publishCameraIfNeeded(camera: CameraState) {
     const next: SerializableCameraState = {
@@ -513,6 +548,88 @@ export default function WebGLCanvas({
     () => collectVisibleLayerItems(layerTree, true),
     [layerTree]
   );
+  const selectedLayerRuntimeInfo = useMemo<SelectedLayerRuntimeInfo | null>(() => {
+    if (!selectedNodeId) return null;
+    const selectedNode = findNodeById(layerTree, selectedNodeId);
+    if (!selectedNode || selectedNode.kind !== "layer") return null;
+
+    if (selectedNode.type === "remote" && typeof selectedNode.source === "string") {
+      const base: SelectedLayerRuntimeInfo = {
+        layerId: selectedNode.id,
+        sourceName: selectedNode.name,
+        sourcePath: selectedNode.source,
+        sourceType: selectedNode.remoteFormat === "ome-zarr"
+          ? `OME-Zarr${selectedNode.remoteResolution ? ` · ${selectedNode.remoteResolution}` : ""}`
+          : selectedNode.remoteFormat === "mesh-obj"
+          ? "OBJ mesh"
+          : "Remote source",
+      };
+
+      if (isOmeZarrLayer(selectedNode)) {
+        const resolutionUm = getRemoteLayerResolutionUm(selectedNode);
+        const loaded = volumeCacheRef.current.get(
+          getVolumeCacheKey(selectedNode.source, resolutionUm, getRemoteLayerContentKind(selectedNode))
+        );
+        return {
+          ...base,
+          requestedResolutionUm: loaded?.requestedResolutionUm ?? resolutionUm,
+          resolvedResolutionUm: loaded?.resolvedResolutionUm ?? null,
+          datasetIndex: loaded?.datasetIndex ?? null,
+          datasetPath: loaded?.datasetPath ?? null,
+          voxelSizeUm: loaded ? {
+            x: loaded.voxelSizeUm.x ?? null,
+            y: loaded.voxelSizeUm.y ?? null,
+            z: loaded.voxelSizeUm.z ?? null,
+          } : null,
+          dims: loaded ? { ...loaded.dims } : null,
+          rawShape: loaded?.rawShape ? [...loaded.rawShape] : null,
+        };
+      }
+
+      return base;
+    }
+
+    if (selectedNode.type === "custom-slice") {
+      const customSource = hasVolumeLayerId(selectedNode.source) ? selectedNode.source : null;
+      const volumeNode = customSource?.volumeLayerId ? findNodeById(layerTree, customSource.volumeLayerId) : null;
+      if (
+        volumeNode &&
+        volumeNode.kind === "layer" &&
+        volumeNode.type === "remote" &&
+        typeof volumeNode.source === "string" &&
+        volumeNode.remoteFormat === "ome-zarr"
+      ) {
+        const resolutionUm = getRemoteLayerResolutionUm(volumeNode);
+        const loaded = volumeCacheRef.current.get(
+          getVolumeCacheKey(volumeNode.source, resolutionUm, getRemoteLayerContentKind(volumeNode))
+        );
+        return {
+          layerId: selectedNode.id,
+          sourceName: volumeNode.name,
+          sourcePath: volumeNode.source,
+          sourceType: `Custom slice · OME-Zarr${volumeNode.remoteResolution ? ` · ${volumeNode.remoteResolution}` : ""}`,
+          requestedResolutionUm: loaded?.requestedResolutionUm ?? resolutionUm,
+          resolvedResolutionUm: loaded?.resolvedResolutionUm ?? null,
+          datasetIndex: loaded?.datasetIndex ?? null,
+          datasetPath: loaded?.datasetPath ?? null,
+          voxelSizeUm: loaded ? {
+            x: loaded.voxelSizeUm.x ?? null,
+            y: loaded.voxelSizeUm.y ?? null,
+            z: loaded.voxelSizeUm.z ?? null,
+          } : null,
+          dims: loaded ? { ...loaded.dims } : null,
+          rawShape: loaded?.rawShape ? [...loaded.rawShape] : null,
+        };
+      }
+    }
+
+    return null;
+  }, [layerTree, selectedNodeId, loadTick]);
+
+  useEffect(() => {
+    onSelectedLayerRuntimeInfoChange?.(selectedLayerRuntimeInfo);
+  }, [onSelectedLayerRuntimeInfoChange, selectedLayerRuntimeInfo]);
+
 
   const volumesToLoad = useMemo(() => {
     const entries = new Map<
@@ -667,7 +784,7 @@ export default function WebGLCanvas({
     const canvasElement = canvasRef.current;
     if (!canvasElement) return;
 
-    const glContext = canvasElement.getContext("webgl");
+    const glContext = canvasElement.getContext("webgl", { preserveDrawingBuffer: true });
     if (!glContext) {
       throw new Error("WebGL not supported");
     }
@@ -1154,7 +1271,7 @@ export default function WebGLCanvas({
         vec3.add(target, camera.position, forward);
         mat4.lookAt(view, camera.position, target, [0, 1, 0]);
       } else {
-        mat4.lookAt(view, camera.position, orbitTarget, [0, 1, 0]);
+        mat4.lookAt(view, camera.position, orbitTargetRef.current, [0, 1, 0]);
       }
 
       return { projection, view, forward };
@@ -1326,9 +1443,9 @@ export default function WebGLCanvas({
     const camera = cameraRef.current;
 
     let targetFovDeg = camera.fovDeg;
-    const orbitTarget = vec3.fromValues(0, 0, 0);
     const keys = new Set<string>();
     let dragging = false;
+    let dragMode: "rotate" | "pan" | null = null;
     let freehandDrawing = false;
     let eraseDrawing = false;
     let freehandPoints: [number, number, number][] = [];
@@ -1369,7 +1486,7 @@ export default function WebGLCanvas({
     }
 
     function getCameraDistanceToTarget(): number {
-      return vec3.distance(camera.position, orbitTarget);
+      return vec3.distance(camera.position, orbitTargetRef.current);
     }
 
     function setCameraFromOrbitAngles(
@@ -1384,11 +1501,38 @@ export default function WebGLCanvas({
       const y = Math.sin(pitchRad) * distance;
       const z = Math.sin(yawRad) * Math.cos(pitchRad) * distance;
 
-      camera.position[0] = orbitTarget[0] - x;
-      camera.position[1] = orbitTarget[1] - y;
-      camera.position[2] = orbitTarget[2] - z;
+      camera.position[0] = orbitTargetRef.current[0] - x;
+      camera.position[1] = orbitTargetRef.current[1] - y;
+      camera.position[2] = orbitTargetRef.current[2] - z;
       camera.yaw = yawDeg;
       camera.pitch = pitchDeg;
+    }
+
+    function panOrbitTarget(dxPixels: number, dyPixels: number) {
+      const distance = Math.max(0.25, getCameraDistanceToTarget());
+      const worldUnitsPerPixel = (2 * distance * Math.tan((camera.fovDeg * Math.PI) / 360)) / Math.max(canvas.clientHeight, 1);
+      const forward = getForward();
+      const worldUp = vec3.fromValues(0, 1, 0);
+      const right = vec3.create();
+      vec3.cross(right, forward, worldUp);
+      if (vec3.length(right) <= 1e-6) {
+        vec3.set(right, 1, 0, 0);
+      } else {
+        vec3.normalize(right, right);
+      }
+      const up = vec3.create();
+      vec3.cross(up, right, forward);
+      if (vec3.length(up) <= 1e-6) {
+        vec3.set(up, 0, 1, 0);
+      } else {
+        vec3.normalize(up, up);
+      }
+      const pan = vec3.create();
+      vec3.scaleAndAdd(pan, pan, right, -dxPixels * worldUnitsPerPixel);
+      vec3.scaleAndAdd(pan, pan, up, dyPixels * worldUnitsPerPixel);
+      vec3.add(orbitTargetRef.current, orbitTargetRef.current, pan);
+      vec3.add(orbitTargetGoalRef.current, orbitTargetGoalRef.current, pan);
+      setCameraFromOrbitAngles(distance, camera.yaw, camera.pitch);
     }
 
     function updateCamera(dt: number) {
@@ -1929,7 +2073,10 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         const orbitAlpha = 1 - Math.exp(-zoomSharpness * dt);
         const currentDistance = getCameraDistanceToTarget();
         const nextDistance = currentDistance + (targetOrbitDistanceRef.current - currentDistance) * orbitAlpha;
-        if (Math.abs(nextDistance - currentDistance) > 1e-4) {
+        const beforeTarget = vec3.clone(orbitTargetRef.current);
+        vec3.lerp(orbitTargetRef.current, orbitTargetRef.current, orbitTargetGoalRef.current, orbitAlpha);
+        const targetMoved = vec3.distance(beforeTarget, orbitTargetRef.current) > 1e-5;
+        if (Math.abs(nextDistance - currentDistance) > 1e-4 || targetMoved) {
           setCameraFromOrbitAngles(nextDistance, camera.yaw, camera.pitch);
           publishCameraIfNeeded(camera);
         }
@@ -2364,10 +2511,29 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
     }
 
     function onMouseDown(e: MouseEvent) {
-      if (e.button !== 0) return;
-
       if (activeToolRef.current === "mouse") {
+        if (camera.mode === "orbit") {
+          if (e.button === 0) {
+            dragging = true;
+            dragMode = "rotate";
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            return;
+          }
+          if (e.button === 1) {
+            e.preventDefault();
+            dragging = true;
+            dragMode = "pan";
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            return;
+          }
+          return;
+        }
+
+        if (e.button !== 0) return;
         dragging = true;
+        dragMode = "rotate";
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
         return;
@@ -2428,6 +2594,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
     function onMouseUp(e: MouseEvent) {
       dragging = false;
+      dragMode = null;
 
       if (freehandDrawing && freehandPoints.length > 0) {
         onCommitFreehandStrokeRef.current?.({
@@ -2487,6 +2654,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
     function onMouseLeave() {
       dragging = false;
+      dragMode = null;
       shapeDragCurrentHitRef.current = null;
       publishHoveredSceneHit(null);
     }
@@ -2541,6 +2709,12 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         return;
       }
 
+      if (dragMode === "pan") {
+        panOrbitTarget(dx, dy);
+        publishCameraIfNeeded(camera);
+        return;
+      }
+
       const sensitivity = 0.2;
       const nextYaw = camera.yaw + dx * sensitivity;
       const nextPitch = clamp(camera.pitch - dy * sensitivity, -89, 89);
@@ -2569,7 +2743,12 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
     canvas.addEventListener("mouseleave", onMouseLeave);
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("mousemove", onMouseMove);
+    function onAuxClick(event: MouseEvent) {
+      if (event.button === 1) event.preventDefault();
+    }
+
     canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("auxclick", onAuxClick);
     window.addEventListener("resize", resizeCanvas);
 
     resizeCanvas();
@@ -2584,6 +2763,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("mousemove", onMouseMove);
       canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("auxclick", onAuxClick);
       window.removeEventListener("resize", resizeCanvas);
 
       for (const entry of sliceTextureCache.values()) {

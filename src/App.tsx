@@ -63,7 +63,7 @@ import type {
   SliceLayerParams,
   SlicePlane,
 } from "./layerTypes";
-import type { ScenePointerHit } from "./WebGLCanvas";
+import type { ScenePointerHit, SelectedLayerRuntimeInfo } from "./WebGLCanvas";
 import {
   collectAllLayerItems,
   collectGroups,
@@ -401,6 +401,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     DEFAULT_CAMERA_STATE
   );
   const [cameraSyncKey, setCameraSyncKey] = useState(0);
+  const [orbitResetRequestKey, setOrbitResetRequestKey] = useState(0);
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
@@ -423,6 +424,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [annotationDraft, setAnnotationDraft] = useState<AnnotationDraftSettings>(DEFAULT_ANNOTATION_DRAFT);
   const [annotationRecentColors, setAnnotationRecentColors] = useState<string[]>(() => loadRecentAnnotationColors());
   const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
+  const [selectedLayerRuntimeInfo, setSelectedLayerRuntimeInfo] = useState<SelectedLayerRuntimeInfo | null>(null);
 
   const initializedStartupSlicesRef = useRef(false);
   const hasHydratedHistoryRef = useRef(false);
@@ -432,6 +434,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const futureStatesRef = useRef<ViewerHistoryEntry[]>([]);
   const lastCommittedStateRef = useRef<ViewerStateV1 | null>(null);
   const lastCommittedHashRef = useRef<string>("");
+  const viewerCanvasElementRef = useRef<HTMLCanvasElement | null>(null);
 
   const [sliceVolumeLayerId, setSliceVolumeLayerId] = useState<string>("");
   const [sliceName, setSliceName] = useState<string>("");
@@ -459,6 +462,12 @@ export default function App({ startupSlices = [] }: AppProps) {
       : null;
 
   const selectedAnnotation = selectedAnnotationLayer?.annotation ?? null;
+
+  useEffect(() => {
+    if (!selectedNode || selectedNode.kind !== "layer" || selectedNode.type === "annotation") {
+      setSelectedLayerRuntimeInfo((prev) => (prev ? null : prev));
+    }
+  }, [selectedNode]);
 
   const inspectorPanelContent: ReactNode = (
     <div
@@ -593,7 +602,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                       </div>
                     </div>
 
-                    {selectedAnnotation?.shape !== "freehand" && selectedAnnotation?.shape !== "eraser" ? (
+                    {selectedAnnotation?.shape !== "rectangle" && selectedAnnotation?.shape !== "circle" && selectedAnnotation?.shape !== "freehand" ? (
                       <label style={{ display: "grid", gap: 6 }}>
                         <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
                           Size
@@ -635,6 +644,55 @@ export default function App({ startupSlices = [] }: AppProps) {
                       />
                     </label>
                   </>
+                ) : selectedNode.kind === "layer" ? (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <div
+                      data-theme-surface="soft"
+                      style={{
+                        borderRadius: 12,
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        padding: 12,
+                        fontSize: 12,
+                        lineHeight: 1.55,
+                        display: "grid",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>Source information</div>
+                      <div><strong>Type:</strong> {selectedLayerRuntimeInfo?.sourceType ?? (selectedNode.type === "remote" ? "Remote layer" : selectedNode.type === "custom-slice" ? "Custom slice" : selectedNode.type === "file" ? "Uploaded file" : "Primitive")}</div>
+                      <div><strong>Description:</strong> {selectedNode.description ?? "—"}</div>
+                      {selectedLayerRuntimeInfo?.sourceName ? <div><strong>Source name:</strong> {selectedLayerRuntimeInfo.sourceName}</div> : null}
+                      {selectedLayerRuntimeInfo?.sourcePath ? (
+                        <div style={{ wordBreak: "break-all" }}><strong>Source path:</strong> {selectedLayerRuntimeInfo.sourcePath}</div>
+                      ) : typeof selectedNode.source === "string" ? (
+                        <div style={{ wordBreak: "break-all" }}><strong>Source path:</strong> {selectedNode.source}</div>
+                      ) : null}
+                    </div>
+
+                    {(selectedLayerRuntimeInfo?.requestedResolutionUm != null || selectedLayerRuntimeInfo?.dims || selectedLayerRuntimeInfo?.datasetPath || selectedLayerRuntimeInfo?.rawShape) ? (
+                      <div
+                        data-theme-surface="soft"
+                        style={{
+                          borderRadius: 12,
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          padding: 12,
+                          fontSize: 12,
+                          lineHeight: 1.55,
+                          display: "grid",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>Loaded dataset</div>
+                        {selectedLayerRuntimeInfo?.requestedResolutionUm != null ? <div><strong>Requested resolution:</strong> {selectedLayerRuntimeInfo.requestedResolutionUm} µm</div> : null}
+                        {selectedLayerRuntimeInfo?.resolvedResolutionUm != null ? <div><strong>Resolved resolution:</strong> {selectedLayerRuntimeInfo.resolvedResolutionUm} µm</div> : null}
+                        {selectedLayerRuntimeInfo?.datasetIndex != null ? <div><strong>Dataset index:</strong> {selectedLayerRuntimeInfo.datasetIndex}</div> : null}
+                        {selectedLayerRuntimeInfo?.datasetPath ? <div style={{ wordBreak: "break-all" }}><strong>OME-Zarr path:</strong> {selectedLayerRuntimeInfo.datasetPath}</div> : null}
+                        {selectedLayerRuntimeInfo?.voxelSizeUm ? <div><strong>Voxel size (z,y,x):</strong> {selectedLayerRuntimeInfo.voxelSizeUm.z ?? "?"}, {selectedLayerRuntimeInfo.voxelSizeUm.y ?? "?"}, {selectedLayerRuntimeInfo.voxelSizeUm.x ?? "?"} µm</div> : null}
+                        {selectedLayerRuntimeInfo?.dims ? <div><strong>Dims (z,y,x):</strong> {selectedLayerRuntimeInfo.dims.z}, {selectedLayerRuntimeInfo.dims.y}, {selectedLayerRuntimeInfo.dims.x}</div> : null}
+                        {selectedLayerRuntimeInfo?.rawShape ? <div><strong>Raw shape:</strong> [{selectedLayerRuntimeInfo.rawShape.join(", ")}]</div> : null}
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <div
                     data-theme-surface="soft"
@@ -1360,6 +1418,34 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
   }
 
+  function captureViewerThumbnailDataUrl(): string | undefined {
+    const sourceCanvas = viewerCanvasElementRef.current;
+    if (!sourceCanvas || sourceCanvas.width <= 0 || sourceCanvas.height <= 0) {
+      return undefined;
+    }
+
+    try {
+      const maxWidth = 400;
+      const aspect = sourceCanvas.width / Math.max(sourceCanvas.height, 1);
+      const targetWidth = Math.min(maxWidth, sourceCanvas.width);
+      const targetHeight = Math.max(1, Math.round(targetWidth / Math.max(aspect, 1e-6)));
+
+      const previewCanvas = document.createElement("canvas");
+      previewCanvas.width = targetWidth;
+      previewCanvas.height = targetHeight;
+      const ctx = previewCanvas.getContext("2d");
+      if (!ctx) return undefined;
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(sourceCanvas, 0, 0, targetWidth, targetHeight);
+      return previewCanvas.toDataURL("image/jpeg", 0.82);
+    } catch (error) {
+      console.warn("Failed to capture viewer thumbnail.", error);
+      return undefined;
+    }
+  }
+
   function handleSaveCurrentViewerToLibrary(name?: string) {
     if (!isSerializableLayerTree(currentViewerState.scene.layerTree)) {
       setLibraryMessage(null);
@@ -1375,6 +1461,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       ownerKind: "owned",
       name: name?.trim() || buildDefaultSavedViewerName("Viewer"),
       state: currentViewerState,
+      thumbnailDataUrl: captureViewerThumbnailDataUrl(),
     });
 
     setViewerLibrary((prev) => [entry, ...prev]);
@@ -1576,76 +1663,6 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSelectedNodeId(id);
   }
 
-  function handleCreateLineAnnotation(params: { start: ScenePointerHit; end: ScenePointerHit }) {
-    const id = createId();
-    const name = `Line ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
-
-    addNodeAtBestLocation({
-      id,
-      kind: "layer",
-      name,
-      type: "annotation",
-      visible: true,
-      source: "drawing-layer",
-      sourceKind: "drawing",
-      description: `Line annotation on ${params.start.layerName}`,
-      annotation: {
-        shape: "line",
-        color: annotationDraft.color,
-        opacity: annotationDraft.opacity,
-        size: annotationDraft.size,
-        metadata: "",
-        points: [
-          [params.start.position[0], params.start.position[1], params.start.position[2]],
-          [params.end.position[0], params.end.position[1], params.end.position[2]],
-        ],
-        normal: [params.start.normal[0], params.start.normal[1], params.start.normal[2]],
-        attachedLayerId: params.start.layerId,
-        attachedLayerName: params.start.layerName,
-      },
-    });
-
-    setSelectedNodeId(id);
-  }
-
-  function handleCreateShapeAnnotation(params: {
-    shape: "rectangle" | "circle";
-    points: [number, number, number][];
-    normal: [number, number, number];
-    layerId: string;
-    layerName: string;
-  }) {
-    if (!params.points.length) return;
-
-    const id = createId();
-    const baseLabel = params.shape === "rectangle" ? "Rectangle" : "Circle";
-    const name = `${baseLabel} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
-
-    addNodeAtBestLocation({
-      id,
-      kind: "layer",
-      name,
-      type: "annotation",
-      visible: true,
-      source: "drawing-layer",
-      sourceKind: "drawing",
-      description: `${baseLabel} annotation on ${params.layerName}`,
-      annotation: {
-        shape: params.shape,
-        color: annotationDraft.color,
-        opacity: annotationDraft.opacity,
-        size: annotationDraft.size,
-        metadata: "",
-        points: params.points,
-        normal: params.normal,
-        attachedLayerId: params.layerId,
-        attachedLayerName: params.layerName,
-      },
-    });
-
-    setSelectedNodeId(id);
-  }
-
   function handleCommitFreehandStroke(stroke: {
     points: [number, number, number][];
     normals: [number, number, number][];
@@ -1836,6 +1853,78 @@ export default function App({ startupSlices = [] }: AppProps) {
     });
   }
 
+
+  function handleCreateLineAnnotation(params: {
+    start: ScenePointerHit;
+    end: ScenePointerHit;
+  }) {
+    const id = createId();
+    const name = `Line ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+
+    addNodeAtBestLocation({
+      id,
+      kind: "layer",
+      name,
+      type: "annotation",
+      visible: true,
+      source: "drawing-layer",
+      sourceKind: "drawing",
+      description: `Line annotation on ${params.start.layerName}`,
+      annotation: {
+        shape: "line",
+        color: annotationDraft.color,
+        opacity: annotationDraft.opacity,
+        size: annotationDraft.size,
+        metadata: "",
+        points: [
+          [params.start.position[0], params.start.position[1], params.start.position[2]],
+          [params.end.position[0], params.end.position[1], params.end.position[2]],
+        ],
+        normal: [params.start.normal[0], params.start.normal[1], params.start.normal[2]],
+        attachedLayerId: params.start.layerId,
+        attachedLayerName: params.start.layerName,
+      },
+    });
+
+    setSelectedNodeId(id);
+  }
+
+  function handleCreateShapeAnnotation(params: {
+    shape: "rectangle" | "circle";
+    points: [number, number, number][];
+    normal: [number, number, number];
+    layerId: string;
+    layerName: string;
+  }) {
+    if (!params.points.length) return;
+    const id = createId();
+    const label = params.shape === "rectangle" ? "Rectangle" : "Circle";
+    const name = `${label} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+
+    addNodeAtBestLocation({
+      id,
+      kind: "layer",
+      name,
+      type: "annotation",
+      visible: true,
+      source: "drawing-layer",
+      sourceKind: "drawing",
+      description: `${label} annotation on ${params.layerName}`,
+      annotation: {
+        shape: params.shape,
+        color: annotationDraft.color,
+        opacity: annotationDraft.opacity,
+        size: annotationDraft.size,
+        metadata: "",
+        points: params.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+        normal: [params.normal[0], params.normal[1], params.normal[2]],
+        attachedLayerId: params.layerId,
+        attachedLayerName: params.layerName,
+      },
+    });
+
+    setSelectedNodeId(id);
+  }
   function handleAddDrawingLayer(name?: string) {
     const prettyShape =
       annotationDraft.shape === "freehand"
@@ -2311,6 +2400,11 @@ export default function App({ startupSlices = [] }: AppProps) {
     };
   }, [currentViewerState, historyRevision]);
 
+  function handleRequestResetOrbitCenter() {
+    setActiveTool("mouse");
+    setOrbitResetRequestKey((prev) => prev + 1);
+  }
+
   return (
     <div
       data-app-theme={appPreferences.theme}
@@ -2352,6 +2446,11 @@ export default function App({ startupSlices = [] }: AppProps) {
         onCreateShapeAnnotation={handleCreateShapeAnnotation}
         onCommitFreehandStroke={handleCommitFreehandStroke}
         onEraseFreehand={handleEraseFreehandStroke}
+        onSelectedLayerRuntimeInfoChange={setSelectedLayerRuntimeInfo}
+        onCanvasElementChange={(canvas) => {
+          viewerCanvasElementRef.current = canvas;
+        }}
+        orbitResetRequestKey={orbitResetRequestKey}
       />
 
       <LayerPanel
@@ -2486,6 +2585,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onToolChange={handleToolChange}
         cameraMode={cameraState.mode}
         onCameraModeChange={handleCameraModeChange}
+        onResetOrbitCenter={handleRequestResetOrbitCenter}
         onSaveCurrentViewer={handleSaveCurrentViewerToLibrary}
         saveNoticeOpen={saveNoticeOpen}
         onRequestCloseSaveNotice={handleCloseSaveNotice}
