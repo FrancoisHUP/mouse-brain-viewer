@@ -71,10 +71,13 @@ import {
   findNodeById,
   getFirstLayerId,
   insertIntoGroup,
+  insertNodesBeforeNode,
+  insertNodesIntoGroup,
   isGroupNode,
   isRemoteOmeLayer,
   moveNodeBeforeNode,
   moveNodeToGroup,
+  removeNodesByIds,
   renameNodeById,
   setGroupExpandedById,
   updateNodeById,
@@ -1992,20 +1995,87 @@ export default function App({ startupSlices = [] }: AppProps) {
     setLayerTree((prev) => renameNodeById(prev, nodeId, trimmed));
   }
 
+  function reconcileSelectionAfterTreeMutation(next: LayerTreeNode[], removedIds: string[] = []) {
+    if (!selectedNodeId) return;
+    if (removedIds.includes(selectedNodeId) || !findNodeById(next, selectedNodeId)) {
+      setSelectedNodeId(getFirstLayerId(next));
+    }
+    if (removedIds.includes(sliceVolumeLayerId) || (sliceVolumeLayerId && !findNodeById(next, sliceVolumeLayerId))) {
+      const nextOmeLayer = collectAllLayerItems(next).find(isRemoteOmeLayer) ?? null;
+      setSliceVolumeLayerId(nextOmeLayer?.id ?? "");
+    }
+  }
+
   function handleDeleteNode(nodeId: string) {
     setLayerTree((prev) => {
       const next = deleteNodeById(prev, nodeId);
-
-      if (selectedNodeId === nodeId || (selectedNodeId && !findNodeById(next, selectedNodeId))) {
-        setSelectedNodeId(getFirstLayerId(next));
-      }
-
-      if (sliceVolumeLayerId === nodeId) {
-        const nextOmeLayer = collectAllLayerItems(next).find(isRemoteOmeLayer) ?? null;
-        setSliceVolumeLayerId(nextOmeLayer?.id ?? "");
-      }
-
+      reconcileSelectionAfterTreeMutation(next, [nodeId]);
       return next;
+    });
+  }
+
+  function handleDeleteNodes(nodeIds: string[]) {
+    const uniqueIds = Array.from(new Set(nodeIds));
+    if (!uniqueIds.length) return;
+    setLayerTree((prev) => {
+      const next = removeNodesByIds(prev, uniqueIds).tree;
+      reconcileSelectionAfterTreeMutation(next, uniqueIds);
+      return next;
+    });
+  }
+
+  function handleCreateGroupFromNodes(nodeIds: string[]) {
+    const uniqueIds = Array.from(new Set(nodeIds));
+    if (uniqueIds.length < 2) return;
+
+    setLayerTree((prev) => {
+      const { tree: withoutNodes, removed } = removeNodesByIds(prev, uniqueIds);
+      if (removed.length < 2) return prev;
+
+      const newGroupId = createId();
+      const newGroup: LayerTreeNode = {
+        id: newGroupId,
+        kind: "group",
+        name: "New Group",
+        visible: true,
+        expanded: true,
+        children: removed,
+      };
+
+      const next = [...withoutNodes, newGroup];
+      setSelectedNodeId(newGroupId);
+      reconcileSelectionAfterTreeMutation(next);
+      return next;
+    });
+  }
+
+  function handleDropNodesIntoGroup(nodeIds: string[], groupId: string) {
+    const uniqueIds = Array.from(new Set(nodeIds)).filter((id) => id !== groupId);
+    if (!uniqueIds.length) return;
+    setLayerTree((prev) => {
+      const { tree: withoutNodes, removed } = removeNodesByIds(prev, uniqueIds);
+      if (!removed.length) return prev;
+      return insertNodesIntoGroup(withoutNodes, groupId, removed);
+    });
+  }
+
+  function handleDropNodesToRoot(nodeIds: string[]) {
+    const uniqueIds = Array.from(new Set(nodeIds));
+    if (!uniqueIds.length) return;
+    setLayerTree((prev) => {
+      const { tree: withoutNodes, removed } = removeNodesByIds(prev, uniqueIds);
+      if (!removed.length) return prev;
+      return [...withoutNodes, ...removed];
+    });
+  }
+
+  function handleReorderNodesBefore(nodeIds: string[], overId: string) {
+    const uniqueIds = Array.from(new Set(nodeIds)).filter((id) => id !== overId);
+    if (!uniqueIds.length) return;
+    setLayerTree((prev) => {
+      const { tree: withoutNodes, removed } = removeNodesByIds(prev, uniqueIds);
+      if (!removed.length) return prev;
+      return insertNodesBeforeNode(withoutNodes, overId, removed);
     });
   }
 
@@ -2467,9 +2537,14 @@ export default function App({ startupSlices = [] }: AppProps) {
         onAddLayer={handleOpenAddLayer}
         onRenameNode={handleRenameNode}
         onDeleteNode={handleDeleteNode}
+        onDeleteNodes={handleDeleteNodes}
+        onCreateGroupFromNodes={handleCreateGroupFromNodes}
         onDropNodeIntoGroup={handleDropNodeIntoGroup}
         onDropNodeToRoot={handleDropNodeToRoot}
         onReorderBefore={handleReorderBefore}
+        onDropNodesIntoGroup={handleDropNodesIntoGroup}
+        onDropNodesToRoot={handleDropNodesToRoot}
+        onReorderNodesBefore={handleReorderNodesBefore}
       />
 
       <ImportDataPanel

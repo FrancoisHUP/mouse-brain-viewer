@@ -467,6 +467,54 @@ export function setNodeVisibleState(
   }));
 }
 
+
+export function removeNodesByIds(
+  nodes: LayerTreeNode[],
+  ids: string[]
+): { tree: LayerTreeNode[]; removed: LayerTreeNode[] } {
+  let tree = nodes;
+  const removed: LayerTreeNode[] = [];
+
+  for (const id of ids) {
+    const result = removeNodeById(tree, id);
+    tree = result.tree;
+    if (result.removed) {
+      removed.push(result.removed);
+    }
+  }
+
+  return { tree, removed };
+}
+
+export function insertNodesIntoGroup(
+  nodes: LayerTreeNode[],
+  groupId: string | null,
+  newNodes: LayerTreeNode[]
+): LayerTreeNode[] {
+  if (!newNodes.length) return nodes;
+  if (groupId === null) {
+    return [...nodes, ...newNodes];
+  }
+
+  let next = nodes;
+  for (const node of newNodes) {
+    next = insertIntoGroup(next, groupId, node);
+  }
+  return next;
+}
+
+export function insertNodesBeforeNode(
+  nodes: LayerTreeNode[],
+  beforeId: string,
+  newNodes: LayerTreeNode[]
+): LayerTreeNode[] {
+  let next = nodes;
+  for (const node of newNodes) {
+    next = insertBeforeId(next, beforeId, node);
+  }
+  return next;
+}
+
 export function moveNodeToGroup(
   nodes: LayerTreeNode[],
   nodeId: string,
