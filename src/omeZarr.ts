@@ -59,7 +59,26 @@ export type ObliqueSliceSpec = {
   height?: number;
 };
 
-export type OMEResolutionMicrons = 10 | 25 | 50 | 100;
+export type OMEResolutionMicrons = number;
+
+export type OMEZarrScaleInfo = {
+  datasetIndex: number;
+  datasetPath: string;
+  resolutionUm: number | null;
+  resolutionLabel: string;
+  voxelSizeUm: { z: number | null; y: number | null; x: number | null };
+  rawShape: number[];
+  dims: { z: number; y: number; x: number };
+  estimatedBytes: number;
+  estimatedMemoryBytes: number;
+  canLoad: boolean;
+};
+
+export type ProbedOmeZarrSource = {
+  url: string;
+  scales: OMEZarrScaleInfo[];
+  recommendedScale: OMEZarrScaleInfo | null;
+};
 
 export const IDENTITY_PROFILE: ViewerOrientationProfile = {
   xy: {},
@@ -108,6 +127,145 @@ export const ALLEN_OBLIQUE_TRANSFORM: SliceTransform = {};
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
+const DEFAULT_BROWSER_VOLUME_BUDGET_BYTES = 1_500_000_000;
+
+function safeRoundResolution(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "unknown";
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function coerceNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function inferResolutionLabel(resolutionUm: number | null, datasetPath: string): string {
+  return resolutionUm != null ? `${safeRoundResolution(resolutionUm)}um` : datasetPath;
+}
+
+function parseRootMetadata(payload: any): any {
+  if (!payload || typeof payload !== "object") return {};
+  if (Array.isArray(payload.multiscales)) return payload;
+  if (payload.attributes && typeof payload.attributes === "object") return payload.attributes;
+  return payload;
+}
+
+async function fetchJsonIfOk(url: string): Promise<any | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRootMetadata(url: string): Promise<any> {
+  const clean = stripTrailingSlash(url);
+  const zarrJson = await fetchJsonIfOk(`${clean}/zarr.json`);
+  if (zarrJson) return parseRootMetadata(zarrJson);
+  const zattrs = await fetchJsonIfOk(`${clean}/.zattrs`);
+  if (zattrs) return parseRootMetadata(zattrs);
+  throw new Error("Could not read OME-Zarr root metadata. Check the URL and CORS settings.");
+}
+
+async function fetchDatasetShape(url: string, datasetPath: string): Promise<number[]> {
+  const clean = stripTrailingSlash(url);
+  const v3 = await fetchJsonIfOk(`${clean}/${datasetPath}/zarr.json`);
+  if (v3 && Array.isArray(v3.shape)) return v3.shape.map((value: any) => Number(value));
+  const v2 = await fetchJsonIfOk(`${clean}/${datasetPath}/.zarray`);
+  if (v2 && Array.isArray(v2.shape)) return v2.shape.map((value: any) => Number(value));
+  throw new Error(`Could not read shape metadata for dataset ${datasetPath}.`);
+}
+
+function inferVoxelSizeUmFromDataset(dataset: any): { z: number | null; y: number | null; x: number | null } {
+  const transforms = Array.isArray(dataset?.coordinateTransformations) ? dataset.coordinateTransformations : [];
+  const scaleTransform = transforms.find((entry: any) => entry && entry.type === "scale" && Array.isArray(entry.scale));
+  const scale = Array.isArray(scaleTransform?.scale) ? scaleTransform.scale : [];
+  const spatial = scale.slice(-3).map((value: any) => coerceNumber(value));
+  return {
+    z: spatial[0] ?? null,
+    y: spatial[1] ?? null,
+    x: spatial[2] ?? null,
+  };
+}
+
+function inferResolutionUm(voxelSizeUm: { z: number | null; y: number | null; x: number | null }): number | null {
+  const values = [voxelSizeUm.z, voxelSizeUm.y, voxelSizeUm.x].filter((value): value is number => value != null && Number.isFinite(value));
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function estimateDatasetMemoryBytes(rawShape: number[], contentKind: VolumeContentKind): { estimatedBytes: number; estimatedMemoryBytes: number } {
+  const voxelCount = rawShape.reduce((acc, value) => acc * Math.max(1, Number(value) || 1), 1);
+  const bytesPerVoxel = contentKind === "annotation" ? 4 : 4;
+  const estimatedBytes = voxelCount * bytesPerVoxel;
+  const estimatedMemoryBytes = Math.ceil(estimatedBytes * 1.35);
+  return { estimatedBytes, estimatedMemoryBytes };
+}
+
+export async function probeOmeZarrSource(
+  url: string,
+  contentKind: VolumeContentKind = "intensity",
+  memoryBudgetBytes: number = DEFAULT_BROWSER_VOLUME_BUDGET_BYTES
+): Promise<ProbedOmeZarrSource> {
+  const clean = stripTrailingSlash(url);
+  const metadata = await fetchRootMetadata(clean);
+  const multiscales = Array.isArray(metadata?.multiscales) ? metadata.multiscales : [];
+  const primary = multiscales[0];
+  const datasets = Array.isArray(primary?.datasets) ? primary.datasets : [];
+
+  if (!datasets.length) {
+    throw new Error("Supported external sources must be OME-Zarr multiscale datasets.");
+  }
+
+  const scales: OMEZarrScaleInfo[] = [];
+  for (let index = 0; index < datasets.length; index += 1) {
+    const dataset = datasets[index];
+    const datasetPath = typeof dataset?.path === "string" ? dataset.path : `s${index}`;
+    const rawShape = await fetchDatasetShape(clean, datasetPath);
+    const dims = inferSpatialDims(rawShape);
+    const voxelSizeUm = inferVoxelSizeUmFromDataset(dataset);
+    const resolutionUm = inferResolutionUm(voxelSizeUm);
+    const estimates = estimateDatasetMemoryBytes(rawShape, contentKind);
+    scales.push({
+      datasetIndex: index,
+      datasetPath,
+      resolutionUm,
+      resolutionLabel: inferResolutionLabel(resolutionUm, datasetPath),
+      voxelSizeUm,
+      rawShape,
+      dims,
+      estimatedBytes: estimates.estimatedBytes,
+      estimatedMemoryBytes: estimates.estimatedMemoryBytes,
+      canLoad: estimates.estimatedMemoryBytes <= memoryBudgetBytes,
+    });
+  }
+
+  const recommendedScale = scales.find((scale) => scale.canLoad) ?? scales[scales.length - 1] ?? null;
+  return { url: clean, scales, recommendedScale };
+}
+
+function findDatasetForRequestedResolution(probe: ProbedOmeZarrSource, requested: string | number): OMEZarrScaleInfo | null {
+  const requestedString = String(requested).trim().toLowerCase();
+  const numeric = Number.parseFloat(requestedString.replace(/[^0-9.]+/g, ""));
+  const byPath = probe.scales.find((scale) => scale.datasetPath.toLowerCase() === requestedString);
+  if (byPath) return byPath;
+  const byLabel = probe.scales.find((scale) => scale.resolutionLabel.toLowerCase() === requestedString);
+  if (byLabel) return byLabel;
+  const byUmLabel = probe.scales.find((scale) => `${safeRoundResolution(scale.resolutionUm)}um` === requestedString);
+  if (byUmLabel) return byUmLabel;
+  if (Number.isFinite(numeric)) {
+    const exact = probe.scales.find((scale) => scale.resolutionUm != null && Math.abs(scale.resolutionUm - numeric) < 0.51);
+    if (exact) return exact;
+    const sorted = [...probe.scales]
+      .filter((scale) => scale.resolutionUm != null)
+      .sort((a, b) => Math.abs((a.resolutionUm ?? 0) - numeric) - Math.abs((b.resolutionUm ?? 0) - numeric));
+    if (sorted.length) return sorted[0];
+  }
+  return probe.recommendedScale;
+}
+
 
 function inferSpatialDims(shape: number[]): { z: number; y: number; x: number } {
   if (shape.length < 3) {
@@ -380,22 +538,6 @@ function getAdjustedPlaneBasis(
   return { u, v, n };
 }
 
-function getDatasetPathForRequestedResolution(
-  requested: OMEResolutionMicrons
-): { index: number; path: string } {
-  switch (requested) {
-    case 10:
-      return { index: 0, path: "s0" };
-    case 25:
-      return { index: 1, path: "s1" };
-    case 50:
-      return { index: 2, path: "s2" };
-    case 100:
-    default:
-      return { index: 3, path: "s3" };
-  }
-}
-
 async function loadVolumeByDatasetPath(
   url: string,
   datasetIndex: number,
@@ -445,45 +587,41 @@ async function loadVolumeByDatasetPath(
 
 export async function loadVolumeAtResolution(
   url: string,
-  requestedResolutionUm: OMEResolutionMicrons,
+  requestedResolutionUm: OMEResolutionMicrons | string,
   contentKind: VolumeContentKind = "intensity"
 ): Promise<LoadedVolume> {
   const clean = stripTrailingSlash(url);
-  const { index, path } = getDatasetPathForRequestedResolution(requestedResolutionUm);
+  const probe = await probeOmeZarrSource(clean, contentKind);
+  const selected = findDatasetForRequestedResolution(probe, requestedResolutionUm);
 
-  const voxelSizeUm = {
-    z: requestedResolutionUm,
-    y: requestedResolutionUm,
-    x: requestedResolutionUm,
-  };
-
-  console.log("[OME-Zarr] requested:", requestedResolutionUm, "resolved:", {
-    index,
-    path,
-    voxelSizeUm,
-    resolvedResolutionUm: requestedResolutionUm,
-    contentKind,
-  });
+  if (!selected) {
+    throw new Error(`No compatible OME-Zarr scale was found for requested resolution ${requestedResolutionUm}.`);
+  }
 
   return loadVolumeByDatasetPath(
     clean,
-    index,
-    path,
-    requestedResolutionUm,
-    requestedResolutionUm,
-    voxelSizeUm,
+    selected.datasetIndex,
+    selected.datasetPath,
+    typeof requestedResolutionUm === "number" ? requestedResolutionUm : selected.resolutionUm,
+    selected.resolutionUm,
+    selected.voxelSizeUm,
     contentKind
   );
 }
 
 export async function loadLowestResolutionVolume(url: string): Promise<LoadedVolume> {
+  const probe = await probeOmeZarrSource(url, "intensity");
+  const lowest = probe.scales[probe.scales.length - 1];
+  if (!lowest) {
+    throw new Error("No OME-Zarr datasets were detected.");
+  }
   return loadVolumeByDatasetPath(
     url,
-    3,
-    "s3",
-    100,
-    100,
-    { z: 100, y: 100, x: 100 },
+    lowest.datasetIndex,
+    lowest.datasetPath,
+    lowest.resolutionUm,
+    lowest.resolutionUm,
+    lowest.voxelSizeUm,
     "intensity"
   );
 }

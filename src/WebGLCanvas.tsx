@@ -202,23 +202,15 @@ function getRemoteLayerContentKind(layer: LayerItemNode): RemoteContentKind {
   return layer.remoteContentKind ?? "intensity";
 }
 
-function getRemoteLayerResolutionUm(layer: LayerItemNode): 10 | 25 | 50 | 100 {
-  switch (getRemoteLayerResolution(layer)) {
-    case "10um":
-      return 10;
-    case "25um":
-      return 25;
-    case "50um":
-      return 50;
-    case "100um":
-    default:
-      return 100;
-  }
+function getRemoteLayerResolutionUm(layer: LayerItemNode): number {
+  const raw = String(getRemoteLayerResolution(layer) ?? "100um").trim().toLowerCase();
+  const numeric = Number.parseFloat(raw.replace(/[^0-9.]+/g, ""));
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : 100;
 }
 
 function getVolumeCacheKey(
   url: string,
-  resolutionUm: 10 | 25 | 50 | 100,
+  resolutionUm: number,
   contentKind: RemoteContentKind
 ): string {
   return `${url}::${resolutionUm}::${contentKind}`;
@@ -634,7 +626,7 @@ export default function WebGLCanvas({
   const volumesToLoad = useMemo(() => {
     const entries = new Map<
       string,
-      { cacheKey: string; url: string; resolutionUm: 10 | 25 | 50 | 100; contentKind: RemoteContentKind }
+      { cacheKey: string; url: string; resolutionUm: number; contentKind: RemoteContentKind }
     >();
 
     for (const layer of visibleLayers) {

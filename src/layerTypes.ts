@@ -82,11 +82,7 @@ export type RemoteRenderMode =
   | "slices"
   | "volume";
 
-export type RemoteOmeResolution =
-  | "10um"
-  | "25um"
-  | "50um"
-  | "100um";
+export type RemoteOmeResolution = string;
 
 export type RemoteContentKind =
   | "intensity"

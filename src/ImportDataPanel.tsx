@@ -10,7 +10,10 @@ import {
   deleteCustomExternalSource,
   getCustomExternalSources,
   renameCustomExternalSource,
+  type CustomExternalSource,
+  type CustomExternalSourceScale,
 } from "./customSourceStore";
+import { probeOmeZarrSource } from "./omeZarr";
 
 type LayerCreationMode = "external" | "custom";
 
@@ -24,6 +27,10 @@ type ExternalSourceItem = {
   remoteContentKind?: RemoteContentKind;
   renderMode?: RemoteRenderMode;
   remoteResolution?: RemoteOmeResolution;
+  provider?: CustomExternalSource["provider"];
+  availableScales?: CustomExternalSourceScale[];
+  recommendedResolution?: RemoteOmeResolution;
+  inspectionError?: string | null;
 };
 
 type ExternalSourceGroup = {
@@ -33,6 +40,11 @@ type ExternalSourceGroup = {
   icon: "generic" | "custom";
   builtIn?: boolean;
   items: ExternalSourceItem[];
+};
+
+type CustomSourceUiState = {
+  renderMode: Exclude<RemoteRenderMode, "auto">;
+  remoteResolution: RemoteOmeResolution;
 };
 
 function LinkIcon() {
@@ -362,6 +374,90 @@ function getGroupKey(item: ExternalSourceItem) {
   });
 }
 
+function inferProvider(url: string): CustomExternalSource["provider"] {
+  const lower = url.trim().toLowerCase();
+  if (!lower) return "unknown";
+  if (lower.includes("storage.googleapis.com") || lower.includes(".storage.googleapis.com")) return "gcs";
+  if (lower.includes("amazonaws.com") || lower.includes(".s3.")) return "s3";
+  if (lower.includes("blob.core.windows.net")) return "azure";
+  if (lower.startsWith("http://") || lower.startsWith("https://")) return "generic_http";
+  return "unknown";
+}
+
+function formatProviderLabel(provider: CustomExternalSource["provider"]): string {
+  if (provider === "gcs") return "Google Cloud Storage";
+  if (provider === "s3") return "Amazon S3";
+  if (provider === "azure") return "Azure Blob Storage";
+  if (provider === "generic_http") return "a public web host";
+  return "an external host";
+}
+
+function deriveSourceName(url: string): string {
+  const cleaned = url.trim().replace(/\/+$/, "");
+  if (!cleaned) return "Custom OME-Zarr Source";
+  const parts = cleaned.split("/").filter(Boolean);
+  const last = parts[parts.length - 1] ?? cleaned;
+  return last || "Custom OME-Zarr Source";
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function resolutionSortValue(value?: string | null): number {
+  if (!value) return Number.MAX_SAFE_INTEGER;
+  const numeric = Number.parseFloat(String(value).replace(/[^0-9.]+/g, ""));
+  return Number.isFinite(numeric) ? numeric : Number.MAX_SAFE_INTEGER;
+}
+
+function toExternalSourceItem(source: CustomExternalSource): ExternalSourceItem {
+  return {
+    id: source.id,
+    name: source.name,
+    url: source.url,
+    icon: "custom",
+    builtIn: false,
+    remoteFormat: source.remoteFormat ?? "ome-zarr",
+    remoteContentKind: source.remoteContentKind ?? "intensity",
+    provider: source.provider ?? "unknown",
+    availableScales: [...(source.availableScales ?? [])].sort(
+      (a, b) => resolutionSortValue(a.resolutionLabel) - resolutionSortValue(b.resolutionLabel)
+    ),
+    recommendedResolution: source.recommendedResolution,
+    inspectionError: source.inspectionError ?? null,
+    remoteResolution: source.remoteResolution,
+  };
+}
+
+function getSelectableScales(item: ExternalSourceItem): CustomExternalSourceScale[] {
+  const scales = item.availableScales ?? [];
+  return scales.filter((scale) => scale.canLoad);
+}
+
+function getDefaultCustomResolution(item: ExternalSourceItem): RemoteOmeResolution {
+  const selectable = getSelectableScales(item);
+  if (item.recommendedResolution && selectable.some((scale) => scale.resolutionLabel === item.recommendedResolution)) {
+    return item.recommendedResolution;
+  }
+  if (item.remoteResolution && selectable.some((scale) => scale.resolutionLabel === item.remoteResolution)) {
+    return item.remoteResolution;
+  }
+  return selectable[0]?.resolutionLabel ?? item.recommendedResolution ?? item.remoteResolution ?? "100um";
+}
+
+function buildCustomLayerName(item: ExternalSourceItem, renderMode: Exclude<RemoteRenderMode, "auto">, resolution: string) {
+  const modeLabel = renderMode === "volume" ? "Volume" : "Slices";
+  return `${item.name} (${modeLabel} · ${getResolutionLabel(resolution) || resolution})`;
+}
+
 export default function ImportDataPanel({
   open,
   onClose,
@@ -390,23 +486,50 @@ export default function ImportDataPanel({
 
   const [externalSources, setExternalSources] = useState<ExternalSourceItem[]>([]);
   const [selectedExternalIds, setSelectedExternalIds] = useState<string[]>([]);
+  const [customSourceUiState, setCustomSourceUiState] = useState<Record<string, CustomSourceUiState>>({});
   const [showAddExternalForm, setShowAddExternalForm] = useState(false);
   const [newExternalName, setNewExternalName] = useState("");
   const [newExternalUrl, setNewExternalUrl] = useState("");
+  const [inspectError, setInspectError] = useState<string | null>(null);
+  const [isInspectingSource, setIsInspectingSource] = useState(false);
+  const [addSourceSuccessMessage, setAddSourceSuccessMessage] = useState<string | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   const [editingCustomSourceId, setEditingCustomSourceId] = useState<string | null>(null);
   const [editingCustomSourceName, setEditingCustomSourceName] = useState("");
+  const [openCustomSourceMenuId, setOpenCustomSourceMenuId] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const addSourceNameInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    const customSources = getCustomExternalSources();
+    const customSources = getCustomExternalSources().map(toExternalSourceItem);
     setExternalSources([...BUILT_IN_EXTERNAL_SOURCES, ...customSources]);
   }, []);
+
+  useEffect(() => {
+    setCustomSourceUiState((prev) => {
+      let changed = false;
+      const next = { ...prev };
+
+      for (const item of externalSources) {
+        if (item.builtIn || item.icon !== "custom") continue;
+        const selectable = getSelectableScales(item);
+        if (!selectable.length) continue;
+        if (next[item.id]) continue;
+
+        next[item.id] = {
+          renderMode: "volume",
+          remoteResolution: getDefaultCustomResolution(item),
+        };
+        changed = true;
+      }
+
+      return changed ? next : prev;
+    });
+  }, [externalSources]);
 
   useEffect(() => {
     if (!open) {
@@ -416,10 +539,14 @@ export default function ImportDataPanel({
       setShowAddExternalForm(false);
       setNewExternalName("");
       setNewExternalUrl("");
+      setInspectError(null);
+      setIsInspectingSource(false);
+      setAddSourceSuccessMessage(null);
       setShowSearch(false);
       setSearchQuery("");
       setEditingCustomSourceId(null);
       setEditingCustomSourceName("");
+      setOpenCustomSourceMenuId(null);
     }
   }, [open]);
 
@@ -440,6 +567,18 @@ export default function ImportDataPanel({
       return () => window.clearTimeout(id);
     }
   }, [showAddExternalForm]);
+
+  useEffect(() => {
+    if (!openCustomSourceMenuId) return;
+
+    function handlePointerDown() {
+      setOpenCustomSourceMenuId(null);
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [openCustomSourceMenuId]);
+
 
   const groupedExternalSources = useMemo<ExternalSourceGroup[]>(() => {
     const groups = new Map<string, ExternalSourceItem[]>();
@@ -470,13 +609,7 @@ export default function ImportDataPanel({
 
     const grouped: ExternalSourceGroup[] = Array.from(groups.values()).map((items) => {
       const sortedItems = [...items].sort((a, b) => {
-        const order: Record<string, number> = {
-          "10um": 10,
-          "25um": 25,
-          "50um": 50,
-          "100um": 100,
-        };
-        return (order[a.remoteResolution ?? ""] ?? 999) - (order[b.remoteResolution ?? ""] ?? 999);
+        return resolutionSortValue(a.remoteResolution) - resolutionSortValue(b.remoteResolution);
       });
 
       const defaultItem = getDefaultGroupItem(sortedItems);
@@ -491,7 +624,7 @@ export default function ImportDataPanel({
       };
     });
 
-    return [...singles, ...grouped].sort((a, b) => a.name.localeCompare(b.name));
+    return [...singles, ...grouped];
   }, [externalSources]);
 
   const filteredGroupedExternalSources = useMemo(() => {
@@ -500,11 +633,15 @@ export default function ImportDataPanel({
 
     return groupedExternalSources.filter((group) => {
       const groupNameMatches = group.name.toLowerCase().includes(query);
-      const itemNameMatches = group.items.some((item) =>
-        item.name.toLowerCase().includes(query)
-      );
+      const itemNameMatches = group.items.some((item) => item.name.toLowerCase().includes(query));
       const resolutionMatches = group.items.some((item) =>
-        getResolutionLabel(item.remoteResolution).toLowerCase().includes(query)
+        [
+          getResolutionLabel(item.remoteResolution),
+          ...(item.availableScales ?? []).map((scale) => getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel),
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(query)
       );
       return groupNameMatches || itemNameMatches || resolutionMatches;
     });
@@ -518,8 +655,13 @@ export default function ImportDataPanel({
   if (!open) return null;
 
   function toggleExternalSelection(id: string) {
+    const item = externalSources.find((entry) => entry.id === id);
+    if (item?.icon === "custom" && !item.builtIn && getSelectableScales(item).length === 0) {
+      return;
+    }
+
     setSelectedExternalIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+      prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id]
     );
   }
 
@@ -527,9 +669,7 @@ export default function ImportDataPanel({
     const selectedItem = group.items.find((item) => selectedExternalIds.includes(item.id));
 
     setSelectedExternalIds((prev) => {
-      const withoutGroupItems = prev.filter(
-        (id) => !group.items.some((item) => item.id === id)
-      );
+      const withoutGroupItems = prev.filter((id) => !group.items.some((item) => item.id === id));
 
       if (selectedItem) {
         return withoutGroupItems;
@@ -544,9 +684,7 @@ export default function ImportDataPanel({
     const isAlreadySelected = selectedExternalIds.includes(itemId);
 
     setSelectedExternalIds((prev) => {
-      const withoutGroupItems = prev.filter(
-        (id) => !group.items.some((item) => item.id === id)
-      );
+      const withoutGroupItems = prev.filter((id) => !group.items.some((item) => item.id === id));
 
       if (isAlreadySelected) {
         return withoutGroupItems;
@@ -556,24 +694,61 @@ export default function ImportDataPanel({
     });
   }
 
-  function handleAddCustomExternalSource() {
-    const name = newExternalName.trim();
+  async function handleInspectAndAddCustomExternalSource() {
     const url = newExternalUrl.trim();
-    if (!name || !url) return;
+    const name = newExternalName.trim() || deriveSourceName(url);
+    if (!url) return;
 
-    const newSource = addCustomExternalSource({
-      name,
-      url,
-      remoteContentKind: "intensity",
-      renderMode: "auto",
-    });
+    setIsInspectingSource(true);
+    setInspectError(null);
 
-    setExternalSources((prev) => [...prev, newSource]);
-    setSelectedExternalIds((prev) => [...prev, newSource.id]);
-    setShowAddExternalForm(false);
-    setNewExternalName("");
-    setNewExternalUrl("");
-    setSearchQuery("");
+    try {
+      const probe = await probeOmeZarrSource(url, "intensity");
+      const newSource = addCustomExternalSource({
+        name,
+        url,
+        remoteFormat: "ome-zarr",
+        remoteContentKind: "intensity",
+        provider: inferProvider(url),
+        availableScales: probe.scales.map((scale) => ({
+          datasetIndex: scale.datasetIndex,
+          datasetPath: scale.datasetPath,
+          resolutionUm: scale.resolutionUm,
+          resolutionLabel: scale.resolutionLabel,
+          voxelSizeUm: scale.voxelSizeUm,
+          rawShape: scale.rawShape,
+          dims: scale.dims,
+          estimatedBytes: scale.estimatedBytes,
+          estimatedMemoryBytes: scale.estimatedMemoryBytes,
+          canLoad: scale.canLoad,
+        })),
+        recommendedResolution: probe.recommendedScale?.resolutionLabel,
+      });
+
+      const externalItem = toExternalSourceItem(newSource);
+      setExternalSources((prev) => [externalItem, ...prev]);
+      setCustomSourceUiState((prev) => ({
+        ...prev,
+        [externalItem.id]: {
+          renderMode: "volume",
+          remoteResolution: getDefaultCustomResolution(externalItem),
+        },
+      }));
+      setSelectedExternalIds((prev) => [...prev, externalItem.id]);
+      setAddSourceSuccessMessage("Successfully added");
+      setNewExternalName("");
+      setNewExternalUrl("");
+      setSearchQuery("");
+      window.setTimeout(() => {
+        setAddSourceSuccessMessage(null);
+        setShowAddExternalForm(false);
+      }, 3200);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to inspect the external source.";
+      setInspectError(message);
+    } finally {
+      setIsInspectingSource(false);
+    }
   }
 
   function handleStartRenameCustomSource(item: ExternalSourceItem) {
@@ -608,6 +783,11 @@ export default function ImportDataPanel({
 
     setExternalSources((prev) => prev.filter((item) => item.id !== itemId));
     setSelectedExternalIds((prev) => prev.filter((id) => id !== itemId));
+    setCustomSourceUiState((prev) => {
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
 
     if (editingCustomSourceId === itemId) {
       setEditingCustomSourceId(null);
@@ -615,24 +795,67 @@ export default function ImportDataPanel({
     }
   }
 
-  function handleSubmit() {
-    if (mode === "external") {
-      if (!selectedExternalSources.length) return;
+  function setCustomSourceRenderMode(itemId: string, renderMode: Exclude<RemoteRenderMode, "auto">) {
+    setCustomSourceUiState((prev) => ({
+      ...prev,
+      [itemId]: {
+        ...(prev[itemId] ?? { remoteResolution: "100um", renderMode: "volume" }),
+        renderMode,
+      },
+    }));
+  }
 
-      onAddExternalSources(
-        selectedExternalSources.map((item) => ({
+  function setCustomSourceResolution(itemId: string, remoteResolution: RemoteOmeResolution) {
+    setCustomSourceUiState((prev) => ({
+      ...prev,
+      [itemId]: {
+        ...(prev[itemId] ?? { remoteResolution, renderMode: "volume" }),
+        remoteResolution,
+      },
+    }));
+  }
+
+  function handleSubmit() {
+    if (mode !== "external") return;
+    if (!selectedExternalSources.length) return;
+
+    const sourcesToAdd = selectedExternalSources.flatMap((item) => {
+      if (item.icon === "custom" && !item.builtIn) {
+        const selectable = getSelectableScales(item);
+        if (!selectable.length) return [];
+
+        const uiState = customSourceUiState[item.id] ?? {
+          renderMode: "volume",
+          remoteResolution: getDefaultCustomResolution(item),
+        };
+        const selectedScale = selectable.find((scale) => scale.resolutionLabel === uiState.remoteResolution) ?? selectable[0];
+
+        return [{
           id: item.id,
-          name: item.name,
+          name: buildCustomLayerName(item, uiState.renderMode, selectedScale.resolutionLabel),
           url: item.url,
           icon: item.icon,
-          remoteFormat: item.remoteFormat,
-          remoteContentKind: item.remoteContentKind,
-          renderMode: item.renderMode,
-          remoteResolution: item.remoteResolution,
-        }))
-      );
-      return;
-    }
+          remoteFormat: item.remoteFormat ?? "ome-zarr",
+          remoteContentKind: item.remoteContentKind ?? "intensity",
+          renderMode: uiState.renderMode,
+          remoteResolution: selectedScale.resolutionLabel,
+        }];
+      }
+
+      return [{
+        id: item.id,
+        name: item.name,
+        url: item.url,
+        icon: item.icon,
+        remoteFormat: item.remoteFormat,
+        remoteContentKind: item.remoteContentKind,
+        renderMode: item.renderMode,
+        remoteResolution: item.remoteResolution,
+      }];
+    });
+
+    if (!sourcesToAdd.length) return;
+    onAddExternalSources(sourcesToAdd);
   }
 
   function handleDrop(files: FileList | null) {
@@ -664,9 +887,12 @@ export default function ImportDataPanel({
         data-theme-surface="panel"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: "min(860px, calc(100vw - 32px))",
-          maxHeight: "min(88vh, 920px)",
-          overflowY: "auto",
+          width: "min(940px, calc(100vw - 32px))",
+          height: "min(86vh, 820px)",
+          maxHeight: "min(86vh, 820px)",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
           borderRadius: 20,
           border: "1px solid rgba(255,255,255,0.10)",
           background: "rgba(12,14,18,0.96)",
@@ -677,6 +903,8 @@ export default function ImportDataPanel({
           padding: 18,
         }}
       >
+        <style>{`@keyframes custom-source-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+
         <div
           style={{
             display: "flex",
@@ -689,7 +917,7 @@ export default function ImportDataPanel({
           <div>
             <div style={{ fontSize: 18, fontWeight: 800 }}>Add layer</div>
             <div data-theme-text="muted" style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
-Choose a data source to add to the viewer.
+              Choose a data source to add to the viewer.
             </div>
           </div>
 
@@ -728,6 +956,7 @@ Choose a data source to add to the viewer.
           />
         </div>
 
+        <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {mode === "external" && (
           <div
             data-theme-surface="soft"
@@ -736,6 +965,10 @@ Choose a data source to add to the viewer.
               border: "1px solid rgba(255,255,255,0.10)",
               background: "rgba(255,255,255,0.03)",
               padding: 16,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              flex: 1,
             }}
           >
             <div
@@ -752,7 +985,7 @@ Choose a data source to add to the viewer.
                   Select external sources
                 </div>
                 <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>
-                  You can select multiple sources and add them all at once.
+                  Built-in sources are ready immediately. Custom URLs are inspected as OME-Zarr first, then you choose a scale and whether to add a volume or slices.
                 </div>
               </div>
 
@@ -866,7 +1099,10 @@ Choose a data source to add to the viewer.
 
                 <button
                   type="button"
-                  onClick={() => setShowAddExternalForm((prev) => !prev)}
+                  onClick={() => {
+                    setShowAddExternalForm((prev) => !prev);
+                    setInspectError(null);
+                  }}
                   title={showAddExternalForm ? "Close custom source form" : "Add custom source"}
                   style={{
                     height: 38,
@@ -896,7 +1132,7 @@ Choose a data source to add to the viewer.
             <div
               style={{
                 marginBottom: showAddExternalForm ? 14 : 0,
-                maxHeight: showAddExternalForm ? 180 : 0,
+                maxHeight: showAddExternalForm ? (addSourceSuccessMessage ? 84 : 178) : 0,
                 opacity: showAddExternalForm ? 1 : 0,
                 transform: showAddExternalForm ? "translateY(0)" : "translateY(-6px)",
                 overflow: "hidden",
@@ -914,76 +1150,190 @@ Choose a data source to add to the viewer.
                   padding: 14,
                 }}
               >
-                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>
-                  Add custom external source
-                </div>
-
                 <div
                   style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1.4fr auto",
-                    gap: 10,
+                    position: "relative",
+                    minHeight: addSourceSuccessMessage ? 42 : 0,
                   }}
                 >
-                  <input
-                    ref={addSourceNameInputRef}
-                    value={newExternalName}
-                    onChange={(e) => setNewExternalName(e.target.value)}
-                    placeholder="Source name"
+                  <div
                     style={{
-                      width: "100%",
-                      height: 40,
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      background: "rgba(255,255,255,0.05)",
-                      color: "white",
-                      padding: "0 12px",
-                      boxSizing: "border-box",
-                      outline: "none",
-                    }}
-                  />
-
-                  <input
-                    value={newExternalUrl}
-                    onChange={(e) => setNewExternalUrl(e.target.value)}
-                    placeholder="https://..."
-                    style={{
-                      width: "100%",
-                      height: 40,
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      background: "rgba(255,255,255,0.05)",
-                      color: "white",
-                      padding: "0 12px",
-                      boxSizing: "border-box",
-                      outline: "none",
-                    }}
-                  />
-
-                  <button
-                    type="button"
-                    onClick={handleAddCustomExternalSource}
-                    disabled={!newExternalName.trim() || !newExternalUrl.trim()}
-                    style={{
-                      height: 40,
-                      padding: "0 14px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(160,220,255,0.35)",
-                      background: "rgba(120,190,255,0.18)",
-                      color: "white",
-                      cursor: "pointer",
-                      opacity: !newExternalName.trim() || !newExternalUrl.trim() ? 0.5 : 1,
+                      position: addSourceSuccessMessage ? "absolute" : "relative",
+                      inset: addSourceSuccessMessage ? 0 : "auto",
+                      opacity: addSourceSuccessMessage ? 0 : 1,
+                      transform: addSourceSuccessMessage ? "translateY(-6px)" : "translateY(0)",
+                      transition: "opacity 220ms ease, transform 220ms ease",
+                      pointerEvents: addSourceSuccessMessage ? "none" : "auto",
                     }}
                   >
-                    Add
-                  </button>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>
+                      Add custom external OME-Zarr source
+                    </div>
+
+                    <div
+                      data-theme-text="muted"
+                      style={{
+                        fontSize: 11,
+                        opacity: 0.74,
+                        marginTop: 6,
+                        marginBottom: 10,
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      Paste a public OME-Zarr link to add your own dataset to the viewer.
+                    </div>
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1.5fr auto",
+                        gap: 10,
+                      }}
+                    >
+                      <input
+                        ref={addSourceNameInputRef}
+                        value={newExternalName}
+                        onChange={(e) => setNewExternalName(e.target.value)}
+                        placeholder="Source name (optional)"
+                        style={{
+                          width: "100%",
+                          height: 40,
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(255,255,255,0.05)",
+                          color: "white",
+                          padding: "0 12px",
+                          boxSizing: "border-box",
+                          outline: "none",
+                        }}
+                      />
+
+                      <input
+                        value={newExternalUrl}
+                        onChange={(e) => setNewExternalUrl(e.target.value)}
+                        placeholder="https://.../dataset.ome.zarr/"
+                        style={{
+                          width: "100%",
+                          height: 40,
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(255,255,255,0.05)",
+                          color: "white",
+                          padding: "0 12px",
+                          boxSizing: "border-box",
+                          outline: "none",
+                        }}
+                      />
+
+                      <button
+                        type="button"
+                        onClick={handleInspectAndAddCustomExternalSource}
+                        disabled={!newExternalUrl.trim() || isInspectingSource}
+                        style={{
+                          height: 40,
+                          padding: "0 14px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(160,220,255,0.35)",
+                          background: "rgba(120,190,255,0.18)",
+                          color: "white",
+                          cursor: "pointer",
+                          opacity: !newExternalUrl.trim() || isInspectingSource ? 0.5 : 1,
+                        }}
+                      >
+                        <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
+                          {isInspectingSource ? (
+                            <>
+                              <span
+                                style={{
+                                  width: 14,
+                                  height: 14,
+                                  borderRadius: 999,
+                                  border: "2px solid rgba(255,255,255,0.28)",
+                                  borderTopColor: "white",
+                                  display: "inline-block",
+                                  animation: "custom-source-spin 0.9s linear infinite",
+                                }}
+                              />
+                              Connecting
+                            </>
+                          ) : (
+                            <>
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M8 12h8" />
+                                <path d="M12 8v8" />
+                                <path d="M21 12a9 9 0 10-3.2 6.9" />
+                              </svg>
+                              Connect
+                            </>
+                          )}
+                        </span>
+                      </button>
+                    </div>
+
+                    {inspectError ? (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,120,120,0.22)",
+                          background: "rgba(255,80,80,0.08)",
+                          color: "#ffd0d0",
+                          padding: "10px 12px",
+                          fontSize: 12,
+                          lineHeight: 1.45,
+                          overflowWrap: "anywhere",
+                          wordBreak: "break-word",
+                          maxWidth: "100%",
+                        }}
+                      >
+                        {inspectError}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div
+                    style={{
+                      position: addSourceSuccessMessage ? "relative" : "absolute",
+                      inset: addSourceSuccessMessage ? "auto" : 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: addSourceSuccessMessage ? 1 : 0,
+                      transform: addSourceSuccessMessage ? "translateY(0)" : "translateY(6px)",
+                      transition: "opacity 220ms ease, transform 220ms ease",
+                      pointerEvents: addSourceSuccessMessage ? "auto" : "none",
+                    }}
+                  >
+                    <div
+                      style={{
+                        borderRadius: 12,
+                        border: "1px solid rgba(120,220,150,0.22)",
+                        background: "rgba(70,180,100,0.12)",
+                        color: "#d7ffe2",
+                        padding: "10px 12px",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 8,
+                        lineHeight: 1.35,
+                        fontSize: 11,
+                        fontWeight: 700,
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "0 0 auto" }}>
+                        <path d="M20 6L9 17l-5-5" />
+                      </svg>
+                      <span>{addSourceSuccessMessage ?? ""}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
 
             <div
               style={{
-                maxHeight: 430,
+                flex: 1,
+                minHeight: 0,
+                maxHeight: "none",
                 overflowY: "auto",
                 paddingRight: 4,
                 scrollbarWidth: "thin",
@@ -994,15 +1344,13 @@ Choose a data source to add to the viewer.
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
                   gap: 12,
                   alignItems: "stretch",
                 }}
               >
                 {filteredGroupedExternalSources.map((group) => {
-                  const selectedItem = group.items.find((item) =>
-                    selectedExternalIds.includes(item.id)
-                  );
+                  const selectedItem = group.items.find((item) => selectedExternalIds.includes(item.id));
                   const groupSelected = !!selectedItem;
 
                   if (group.kind === "single") {
@@ -1010,12 +1358,17 @@ Choose a data source to add to the viewer.
                     const selected = selectedExternalIds.includes(item.id);
                     const isCustom = item.icon === "custom" && item.builtIn === false;
                     const isEditing = editingCustomSourceId === item.id;
-
+                    const selectableScales = getSelectableScales(item);
+                    const hasDetectedScales = (item.availableScales?.length ?? 0) > 0;
+                    const uiState = customSourceUiState[item.id] ?? {
+                      renderMode: "volume",
+                      remoteResolution: getDefaultCustomResolution(item),
+                    };
                     return (
                       <div
                         key={item.id}
                         style={{
-                          minHeight: 180,
+                          minHeight: 196,
                           height: "100%",
                           borderRadius: 16,
                           border: selected
@@ -1024,6 +1377,7 @@ Choose a data source to add to the viewer.
                           background: selected
                             ? "rgba(92,149,230,0.18)"
                             : "rgba(255,255,255,0.04)",
+                          boxShadow: "none",
                           color: "white",
                           padding: 14,
                           textAlign: "left",
@@ -1031,18 +1385,20 @@ Choose a data source to add to the viewer.
                           flexDirection: "column",
                           justifyContent: "space-between",
                           gap: 12,
+                          transition: "border-color 180ms ease, background 180ms ease, box-shadow 220ms ease",
                         }}
                       >
-                        <button
-                          type="button"
-                          onClick={() => toggleExternalSelection(item.id)}
+                        <div
+                          onClick={() => {
+                            if (isCustom && !selectableScales.length) return;
+                            toggleExternalSelection(item.id);
+                          }}
                           style={{
-                            border: "none",
-                            background: "transparent",
                             color: "inherit",
                             padding: 0,
                             margin: 0,
-                            cursor: "pointer",
+                            cursor: isCustom && !selectableScales.length ? "not-allowed" : "pointer",
+                            opacity: isCustom && !selectableScales.length ? 0.75 : 1,
                             textAlign: "left",
                             display: "flex",
                             flexDirection: "column",
@@ -1050,22 +1406,122 @@ Choose a data source to add to the viewer.
                             gap: 12,
                           }}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
                             {item.icon === "custom" ? <SourceCustomIcon /> : <SourceGenericIcon />}
 
-                            <div
-                              style={{
-                                width: 18,
-                                height: 18,
-                                borderRadius: 999,
-                                border: selected
-                                  ? "1px solid rgba(160,220,255,0.95)"
-                                  : "1px solid rgba(255,255,255,0.24)",
-                                background: selected ? "rgba(92,149,230,0.92)" : "transparent",
-                                flexShrink: 0,
-                                marginTop: 2,
-                              }}
-                            />
+                            <div style={{ display: "flex", alignItems: "flex-start", gap: 8, position: "relative" }}>
+                              {isCustom ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenCustomSourceMenuId((prev) => (prev === item.id ? null : item.id));
+                                    }}
+                                    style={{
+                                      width: 28,
+                                      height: 28,
+                                      borderRadius: 10,
+                                      border: "1px solid rgba(255,255,255,0.10)",
+                                      background: "rgba(255,255,255,0.05)",
+                                      color: "white",
+                                      cursor: "pointer",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                                      <circle cx="12" cy="5" r="1.8" />
+                                      <circle cx="12" cy="12" r="1.8" />
+                                      <circle cx="12" cy="19" r="1.8" />
+                                    </svg>
+                                  </button>
+
+                                  {openCustomSourceMenuId === item.id ? (
+                                    <div
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => e.stopPropagation()}
+                                      style={{
+                                        position: "absolute",
+                                        top: 34,
+                                        right: 0,
+                                        minWidth: 128,
+                                        borderRadius: 12,
+                                        border: "1px solid rgba(255,255,255,0.10)",
+                                        background: "rgba(20,24,30,0.98)",
+                                        boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
+                                        overflow: "hidden",
+                                        zIndex: 20,
+                                      }}
+                                    >
+                                      <button
+                                        type="button"
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleStartRenameCustomSource(item);
+                                          setOpenCustomSourceMenuId(null);
+                                        }}
+                                        style={{
+                                          width: "100%",
+                                          height: 36,
+                                          padding: "0 12px",
+                                          border: "none",
+                                          background: "transparent",
+                                          color: "white",
+                                          textAlign: "left",
+                                          cursor: "pointer",
+                                          fontSize: 12,
+                                        }}
+                                      >
+                                        Rename
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleDeleteCustomSource(item.id);
+                                          setOpenCustomSourceMenuId(null);
+                                        }}
+                                        style={{
+                                          width: "100%",
+                                          height: 36,
+                                          padding: "0 12px",
+                                          border: "none",
+                                          background: "transparent",
+                                          color: "white",
+                                          textAlign: "left",
+                                          cursor: "pointer",
+                                          fontSize: 12,
+                                        }}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </>
+                              ) : null}
+
+                              <div
+                                style={{
+                                  width: 18,
+                                  height: 18,
+                                  borderRadius: 999,
+                                  border: selected
+                                    ? "1px solid rgba(160,220,255,0.95)"
+                                    : "1px solid rgba(255,255,255,0.24)",
+                                  background: selected ? "rgba(92,149,230,0.92)" : "transparent",
+                                  flexShrink: 0,
+                                  marginTop: 5,
+                                }}
+                              />
+                            </div>
                           </div>
 
                           <div>
@@ -1104,60 +1560,151 @@ Choose a data source to add to the viewer.
                                   data-theme-text="muted"
                                   style={{
                                     fontSize: 11,
-                                    opacity: 0.6,
+                                    opacity: 0.7,
                                     marginTop: 6,
-                                    whiteSpace: "nowrap",
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
+                                    lineHeight: 1.45,
                                   }}
                                 >
-                                  {item.builtIn ? "Built-in source" : "Custom external source"}
+                                  {item.builtIn
+                                    ? "Built-in source"
+                                    : `External OME-Zarr dataset${item.provider ? ` from ${formatProviderLabel(item.provider)}` : ""}`}
+                                  
                                 </div>
                               </>
                             )}
                           </div>
-                        </button>
-
-                        <div style={{ minHeight: 30, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {isCustom ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleStartRenameCustomSource(item)}
-                                style={{
-                                  height: 30,
-                                  padding: "0 10px",
-                                  borderRadius: 999,
-                                  border: "1px solid rgba(255,255,255,0.14)",
-                                  background: "rgba(255,255,255,0.05)",
-                                  color: "white",
-                                  cursor: "pointer",
-                                  fontSize: 11,
-                                  fontWeight: 700,
-                                }}
-                              >
-                                Rename
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteCustomSource(item.id)}
-                                style={{
-                                  height: 30,
-                                  padding: "0 10px",
-                                  borderRadius: 999,
-                                  border: "1px solid rgba(255,120,120,0.22)",
-                                  background: "rgba(255,80,80,0.10)",
-                                  color: "white",
-                                  cursor: "pointer",
-                                  fontSize: 11,
-                                  fontWeight: 700,
-                                }}
-                              >
-                                Delete
-                              </button>
-                            </>
-                          ) : null}
                         </div>
+
+                        {isCustom ? (
+                          <div style={{ display: "grid", gap: 10 }}>
+                            {hasDetectedScales ? (
+                              <>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => selected && setCustomSourceRenderMode(item.id, "volume")}
+                                    disabled={!selected}
+                                    style={{
+                                      height: 30,
+                                      padding: "0 10px",
+                                      borderRadius: 999,
+                                      border: selected && uiState.renderMode === "volume"
+                                        ? "1px solid rgba(92,149,230,0.88)"
+                                        : "1px solid rgba(255,255,255,0.14)",
+                                      background: selected && uiState.renderMode === "volume"
+                                        ? "rgba(92,149,230,0.26)"
+                                        : "rgba(255,255,255,0.05)",
+                                      color: selected ? "white" : "rgba(255,255,255,0.62)",
+                                      cursor: selected ? "pointer" : "default",
+                                      fontSize: 11,
+                                      fontWeight: 700,
+                                      opacity: selected ? 1 : 0.72,
+                                    }}
+                                  >
+                                    Volume
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => selected && setCustomSourceRenderMode(item.id, "slices")}
+                                    disabled={!selected}
+                                    style={{
+                                      height: 30,
+                                      padding: "0 10px",
+                                      borderRadius: 999,
+                                      border: selected && uiState.renderMode === "slices"
+                                        ? "1px solid rgba(92,149,230,0.88)"
+                                        : "1px solid rgba(255,255,255,0.14)",
+                                      background: selected && uiState.renderMode === "slices"
+                                        ? "rgba(92,149,230,0.26)"
+                                        : "rgba(255,255,255,0.05)",
+                                      color: selected ? "white" : "rgba(255,255,255,0.62)",
+                                      cursor: selected ? "pointer" : "default",
+                                      fontSize: 11,
+                                      fontWeight: 700,
+                                      opacity: selected ? 1 : 0.72,
+                                    }}
+                                  >
+                                    Slices
+                                  </button>
+                                </div>
+
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  {(item.availableScales ?? []).map((scale) => {
+                                    const resolutionSelected = selected && uiState.remoteResolution === scale.resolutionLabel;
+                                    return (
+                                      <button
+                                        key={`${item.id}-${scale.datasetPath}`}
+                                        type="button"
+                                        onClick={() => selected && scale.canLoad && setCustomSourceResolution(item.id, scale.resolutionLabel)}
+                                        title={`${getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel}${scale.canLoad ? "" : " · too large for browser budget"}`}
+                                        disabled={!selected || !scale.canLoad}
+                                        style={{
+                                          height: 30,
+                                          padding: "0 10px",
+                                          borderRadius: 999,
+                                          border: resolutionSelected
+                                            ? "1px solid rgba(92,149,230,0.88)"
+                                            : scale.canLoad
+                                            ? "1px solid rgba(255,255,255,0.14)"
+                                            : "1px solid rgba(255,255,255,0.10)",
+                                          background: resolutionSelected
+                                            ? "rgba(92,149,230,0.26)"
+                                            : scale.canLoad
+                                            ? "rgba(255,255,255,0.05)"
+                                            : "rgba(255,255,255,0.04)",
+                                          color: !selected
+                                            ? "rgba(255,255,255,0.62)"
+                                            : scale.canLoad
+                                            ? "white"
+                                            : "rgba(255,255,255,0.46)",
+                                          cursor: selected && scale.canLoad ? "pointer" : "default",
+                                          fontSize: 11,
+                                          fontWeight: 700,
+                                          opacity: selected ? (scale.canLoad ? 1 : 0.8) : 0.72,
+                                        }}
+                                      >
+                                        {getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+
+                                {selectableScales.length === 0 ? (
+                                  <div
+                                    data-theme-text="muted"
+                                    style={{
+                                      fontSize: 11,
+                                      lineHeight: 1.45,
+                                      opacity: 0.72,
+                                    }}
+                                  >
+                                    No browser-loadable resolution detected.
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : (
+                              <div
+                                style={{
+                                  borderRadius: 10,
+                                  border: "1px solid rgba(255,120,120,0.18)",
+                                  background: "rgba(255,80,80,0.08)",
+                                  padding: 10,
+                                  fontSize: 11,
+                                  lineHeight: 1.45,
+                                  color: "#ffd0d0",
+                                  overflowWrap: "anywhere",
+                                  wordBreak: "break-word",
+                                }}
+                              >
+                                {item.inspectionError ?? "This source does not have any browser-loadable OME-Zarr scale."}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ minHeight: 30, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            {isCustom ? null : null}
+                          </div>
+                        )}
                       </div>
                     );
                   }
@@ -1323,6 +1870,10 @@ Choose a data source to add to the viewer.
               border: "1px solid rgba(255,255,255,0.10)",
               background: "rgba(255,255,255,0.03)",
               padding: 16,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              flex: 1,
             }}
           >
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
@@ -1379,6 +1930,8 @@ Choose a data source to add to the viewer.
             />
           </div>
         )}
+
+        </div>
 
         <div
           style={{
