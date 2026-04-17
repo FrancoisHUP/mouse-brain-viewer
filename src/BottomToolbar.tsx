@@ -922,6 +922,7 @@ export default function BottomToolbar({
   statePopoverContent = null,
   onRequestCloseStatePopover,
   accountPopoverOpen = false,
+  shareBlockedLayerNames = [],
   annotationShape,
   annotationColor,
   annotationOpacity,
@@ -964,6 +965,7 @@ export default function BottomToolbar({
   statePopoverContent?: ReactNode;
   onRequestCloseStatePopover?: () => void;
   accountPopoverOpen?: boolean;
+  shareBlockedLayerNames?: string[];
   annotationShape: AnnotationShape;
   annotationColor: string;
   annotationOpacity: number;
@@ -1081,6 +1083,60 @@ export default function BottomToolbar({
       <div ref={rootRef} style={{ position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)", zIndex: 30 }}>
         <div style={{ position: "absolute", left: "50%", bottom: slicePopoverOpen ? "calc(100% + 260px)" : "calc(100% + 12px)", transform: statePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)", opacity: statePopoverOpen ? 1 : 0, pointerEvents: statePopoverOpen ? "auto" : "none", transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease", visibility: statePopoverOpen ? "visible" : "hidden" }}>
           <div data-theme-surface="panel" style={{ minWidth: 520, maxWidth: 760, borderRadius: 18, background: "rgba(12,14,18,0.94)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
+            {shareBlockedLayerNames.length > 0 ? (
+              <div
+                style={{
+                  marginBottom: 12,
+                  borderRadius: 14,
+                  border: "1px solid rgba(255, 184, 77, 0.32)",
+                  background: "rgba(255, 184, 77, 0.10)",
+                  padding: 12,
+                  display: "grid",
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 999,
+                      background: "rgba(255, 184, 77, 0.95)",
+                      boxShadow: "0 0 0 4px rgba(255, 184, 77, 0.14)",
+                      flexShrink: 0,
+                    }}
+                  />
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255, 225, 175, 0.98)" }}>
+                    Some layers cannot be shared
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, lineHeight: 1.5, color: "rgba(255,255,255,0.84)" }}>
+                  This viewer uses {shareBlockedLayerNames.length} personal browser-hosted {shareBlockedLayerNames.length === 1 ? "layer" : "layers"}. These layers stay local to your browser and will not be available to other people through the shared link.
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {shareBlockedLayerNames.map((layerName) => (
+                    <span
+                      key={layerName}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        minHeight: 26,
+                        padding: "4px 10px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(255,255,255,0.10)",
+                        background: "rgba(255,255,255,0.06)",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "rgba(255,255,255,0.88)",
+                      }}
+                    >
+                      {layerName}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {statePopoverContent}
           </div>
         </div>

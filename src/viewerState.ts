@@ -15,6 +15,7 @@ export type ViewerStateV1 = {
   version: 1;
   layout: {
     layerPanelCollapsed: boolean;
+    inspectorCollapsed: boolean;
   };
   camera: SerializableCameraState;
   scene: {
@@ -52,7 +53,7 @@ export function isSerializableLayerTree(tree: LayerTreeNode[]): boolean {
     }
 
     if (node.type === "file") {
-      return false;
+      return typeof node.source === "string";
     }
 
     if (node.type === "remote" && typeof node.source !== "string") {
@@ -65,6 +66,29 @@ export function isSerializableLayerTree(tree: LayerTreeNode[]): boolean {
   return tree.every(isSerializableNode);
 }
 
+export function getLocalOnlyLayerNames(tree: LayerTreeNode[]): string[] {
+  const blockedNames: string[] = [];
+
+  function visit(node: LayerTreeNode) {
+    if (node.kind === "group") {
+      node.children.forEach(visit);
+      return;
+    }
+
+    if (node.type === "file" && node.sourceKind === "custom-upload" && !!node.localOnly) {
+      blockedNames.push(node.name);
+    }
+  }
+
+  tree.forEach(visit);
+
+  return blockedNames;
+}
+
+export function hasLocalOnlyLayers(tree: LayerTreeNode[]): boolean {
+  return getLocalOnlyLayerNames(tree).length > 0;
+}
+
 export function createViewerState(params: {
   activeTool: ToolId;
   selectedNodeId: string | null;
@@ -73,12 +97,14 @@ export function createViewerState(params: {
   sliceName: string;
   sliceParamsDraft: SliceLayerParams;
   layerPanelCollapsed: boolean;
+  inspectorCollapsed: boolean;
   camera: SerializableCameraState;
 }): ViewerStateV1 {
   return {
     version: 1,
     layout: {
       layerPanelCollapsed: params.layerPanelCollapsed,
+      inspectorCollapsed: params.inspectorCollapsed,
     },
     camera: {
       ...DEFAULT_CAMERA_STATE,
@@ -150,6 +176,10 @@ export function parseViewerState(raw: string): ViewerStateV1 {
 
   return {
     ...(parsed as ViewerStateV1),
+    layout: {
+      layerPanelCollapsed: parsed.layout?.layerPanelCollapsed ?? false,
+      inspectorCollapsed: parsed.layout?.inspectorCollapsed ?? false,
+    },
     camera: {
       mode: parsed.camera.mode ?? DEFAULT_CAMERA_STATE.mode,
       position:

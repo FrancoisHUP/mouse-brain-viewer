@@ -88,6 +88,43 @@ export type RemoteContentKind =
   | "intensity"
   | "annotation";
 
+export type LocalDataFormat = "nrrd" | "nii" | "tiff" | "obj" | "ome-zarr" | "zarr" | "unknown";
+
+export type LocalDataKind = "volume" | "mesh" | "unknown";
+
+export type LocalDatasetScale = {
+  datasetIndex: number;
+  datasetPath: string;
+  resolutionUm: number | null;
+  resolutionLabel: string;
+  voxelSizeUm: { z: number | null; y: number | null; x: number | null };
+  rawShape: number[];
+  dims: { z: number; y: number; x: number };
+  estimatedBytes: number;
+  estimatedMemoryBytes: number;
+  canLoad: boolean;
+  unsupportedReason?: string | null;
+};
+
+export type LocalDatasetInfo = {
+  datasetId?: string;
+  shareable: false;
+  format: LocalDataFormat;
+  kind: LocalDataKind;
+  fileName: string;
+  mimeType?: string;
+  fileSizeBytes: number;
+  dims?: { z: number; y: number; x: number } | null;
+  rawShape?: number[] | null;
+  voxelSizeUm?: { z: number | null; y: number | null; x: number | null } | null;
+  warning?: string | null;
+  availableScales?: LocalDatasetScale[] | null;
+  recommendedResolution?: string | null;
+  selectedResolution?: string | null;
+  selectedDatasetPath?: string | null;
+  treeRootPath?: string | null;
+};
+
 type BaseNode = {
   id: string;
   name: string;
@@ -116,6 +153,12 @@ export type LayerItemNode = BaseNode & {
 
   // For custom slices
   sliceParams?: SliceLayerParams;
+
+  // For browser-hosted local uploads
+  localOnly?: boolean;
+  localDataFormat?: LocalDataFormat;
+  localDataKind?: LocalDataKind;
+  localDatasetInfo?: LocalDatasetInfo | null;
 
   // For drawing annotations
   annotation?: AnnotationData;
@@ -595,4 +638,16 @@ export function moveNodeBeforeNode(
   if (!removed) return nodes;
 
   return insertBeforeId(withoutNode, beforeId, removed);
+}
+
+export function isLocalOnlyFileLayer(
+  node: LayerTreeNode | null | undefined
+): node is LayerItemNode {
+  return (
+    !!node &&
+    node.kind === "layer" &&
+    node.type === "file" &&
+    node.sourceKind === "custom-upload" &&
+    !!node.localOnly
+  );
 }

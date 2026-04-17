@@ -12,6 +12,7 @@ const DEMO_STATE: ViewerStateV1 = {
   version: 1,
   layout: {
     layerPanelCollapsed: false,
+    inspectorCollapsed: false,
   },
   camera: {
     mode: "fly",

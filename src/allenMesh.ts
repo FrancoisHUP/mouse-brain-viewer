@@ -30,6 +30,9 @@ type MeshBoundsInfo = {
   sizeX: number;
   sizeY: number;
   sizeZ: number;
+  centerX: number;
+  centerY: number;
+  centerZ: number;
 };
 
 const ALLEN_REFERENCE_DIMS_10UM = {
@@ -38,6 +41,14 @@ const ALLEN_REFERENCE_DIMS_10UM = {
   z: 1140,
 };
 
+
+const ALLEN_MESH_AXIS_CORRECTION = {
+  // Targeted correction after centering/orientation.
+  // In the current Allen mesh orientation, X maps to the front↔back brain extent.
+  x: 0.92,
+  y: 1.10,
+  z: 1.34,
+};
 const ALLEN_MESH_CONFIG = {
   orientation: {
     flipX: false,
@@ -47,21 +58,7 @@ const ALLEN_MESH_CONFIG = {
     rotateYQuarterTurns: 1,
     rotateZQuarterTurns: 0,
   } satisfies MeshOrientationTweak,
-
-  /**
-   * Extra per-axis correction after normalization.
-   * Keep using the values you tuned visually.
-   */
-  axisScale: [1.335, 1.06, 0.90] as [number, number, number],
-
-  /**
-   * Final translation in your currently working coordinate convention.
-   * These values are large because of the transform convention currently used.
-   */
-  positionOffset: [-1650, -7300, 600] as [number, number, number],
 };
-
-
 
 export function getMeshCacheKey(url: string): string {
   return url;
@@ -115,6 +112,9 @@ function getBoundsInfo(mesh: LoadedMesh): MeshBoundsInfo {
     sizeX: Math.max(maxX - minX, 1e-6),
     sizeY: Math.max(maxY - minY, 1e-6),
     sizeZ: Math.max(maxZ - minZ, 1e-6),
+    centerX: (minX + maxX) * 0.5,
+    centerY: (minY + maxY) * 0.5,
+    centerZ: (minZ + maxZ) * 0.5,
   };
 }
 
@@ -275,47 +275,40 @@ function applyAllenViewerCorrections(model: mat4) {
   }
 }
 
-function applyObjBoundsNormalization(model: mat4, bounds: MeshBoundsInfo) {
+function applyCenteredBoundsNormalization(model: mat4, bounds: MeshBoundsInfo) {
   mat4.scale(model, model, [
-    1 / bounds.sizeX,
-    1 / bounds.sizeY,
-    1 / bounds.sizeZ,
+    2 / bounds.sizeX,
+    2 / bounds.sizeY,
+    2 / bounds.sizeZ,
   ]);
   mat4.translate(model, model, [
-    -bounds.minX,
-    -bounds.minY,
-    -bounds.minZ,
+    -bounds.centerX,
+    -bounds.centerY,
+    -bounds.centerZ,
   ]);
 }
 
-function applyAllenDisplayBox(model: mat4) {
+function applyAllenDisplayScale(model: mat4) {
   const { sx, sy, sz } = getAllenReferenceDisplayScale();
-  mat4.translate(model, model, [-sx, -sy, -sz]);
-  mat4.scale(model, model, [2 * sx, 2 * sy, 2 * sz]);
+  mat4.scale(model, model, [
+    sx * ALLEN_MESH_AXIS_CORRECTION.x,
+    sy * ALLEN_MESH_AXIS_CORRECTION.y,
+    sz * ALLEN_MESH_AXIS_CORRECTION.z,
+  ]);
 }
 
 export function getAllenMeshModelMatrix(mesh: LoadedMesh): mat4 {
   const bounds = getBoundsInfo(mesh);
   const model = mat4.create();
 
-  /**
-   * Keep the transform order that already works visually.
-   *
-   * 1. Move mesh into the Allen display box
-   * 2. Apply manual orientation tweak
-   * 3. Apply viewer reverse-index conventions
-   * 4. Normalize OBJ coordinates into [0..1]-like space
-   * 5. Apply per-axis correction scale
-   * 6. Apply final registration offset
-   */
-
-  applyAllenDisplayBox(model);
+  // Final mapping:
+  // OBJ mesh -> centered normalized box [-1, 1] -> Allen orientation -> Allen display scale.
+  // This keeps the mesh centered at the world origin and scaled to the same display box
+  // as the built-in Allen volume, instead of using old hand-tuned offsets.
+  applyAllenDisplayScale(model);
   applyManualOrientation(model);
   applyAllenViewerCorrections(model);
-  applyObjBoundsNormalization(model, bounds);
-
-  mat4.scale(model, model, ALLEN_MESH_CONFIG.axisScale);
-  mat4.translate(model, model, ALLEN_MESH_CONFIG.positionOffset);
+  applyCenteredBoundsNormalization(model, bounds);
 
   return model;
 }

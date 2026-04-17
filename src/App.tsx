@@ -4,8 +4,10 @@ import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
+import LocalDatasetManagerPanel from "./LocalDatasetManagerPanel";
 import SliceToolPopover from "./SliceToolPopover";
 import UserProfilePanel from "./UserProfilePanel";
+import StatePanel from "./StatePanel";
 import {
   loadAppPreferences,
   type AppPreferences,
@@ -24,6 +26,8 @@ import {
 import {
   DEFAULT_CAMERA_STATE,
   createViewerState,
+  getLocalOnlyLayerNames,
+  hasLocalOnlyLayers,
   isSerializableLayerTree,
   mergeViewerState,
   parseViewerState,
@@ -63,6 +67,8 @@ import type {
   SliceLayerParams,
   SlicePlane,
 } from "./layerTypes";
+import { type LocalImportCandidate } from "./localDataHandlers";
+import { deleteLocalDatasetRecord, renameLocalDatasetRecord, storeLocalDatasetFile, storeLocalDatasetTree } from "./localDataStore";
 import type { ScenePointerHit, SelectedLayerRuntimeInfo } from "./WebGLCanvas";
 import {
   collectAllLayerItems,
@@ -189,26 +195,7 @@ function normalizeHexColor(color: string): string {
   return /^[0-9a-fA-F]{6}$/.test(safe) ? `#${safe.toLowerCase()}` : DEFAULT_ANNOTATION_DRAFT.color;
 }
 
-const INITIAL_TREE: LayerTreeNode[] = [
-  {
-    id: "reference-data",
-    kind: "group",
-    name: "Reference Data",
-    visible: true,
-    expanded: true,
-    children: [
-      {
-        id: "base-square",
-        kind: "layer",
-        name: "Base Slice Plane",
-        type: "primitive",
-        visible: true,
-        source: "built-in",
-        sourceKind: "built-in",
-      },
-    ],
-  },
-];
+const INITIAL_TREE: LayerTreeNode[] = [];
 
 function detectRemoteFormat(url: string): RemoteDataFormat {
   const lower = url.toLowerCase();
@@ -394,6 +381,7 @@ function getThemeRootCss(theme: AppPreferences["theme"]): string {
 export default function App({ startupSlices = [] }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolId>("mouse");
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
+  const [isLocalDatasetManagerOpen, setIsLocalDatasetManagerOpen] = useState(false);
   const [isUserProfilePanelOpen, setIsUserProfilePanelOpen] = useState(false);
   const [layerTree, setLayerTree] = useState<LayerTreeNode[]>(INITIAL_TREE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
@@ -428,6 +416,17 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [annotationRecentColors, setAnnotationRecentColors] = useState<string[]>(() => loadRecentAnnotationColors());
   const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
   const [selectedLayerRuntimeInfo, setSelectedLayerRuntimeInfo] = useState<SelectedLayerRuntimeInfo | null>(null);
+
+  const [localSceneLoadState, setLocalSceneLoadState] = useState<{ active: boolean; pending: number }>({ active: false, pending: 0 });
+  const [dismissLocalSceneLoadNotice, setDismissLocalSceneLoadNotice] = useState(false);
+
+  useEffect(() => {
+    if (!localSceneLoadState.active) {
+      setDismissLocalSceneLoadNotice(false);
+      return;
+    }
+    setDismissLocalSceneLoadNotice(false);
+  }, [localSceneLoadState.active]);
 
   const initializedStartupSlicesRef = useRef(false);
   const hasHydratedHistoryRef = useRef(false);
@@ -741,6 +740,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         sliceName,
         sliceParamsDraft,
         layerPanelCollapsed: isLayerPanelCollapsed,
+        inspectorCollapsed: isInspectorCollapsed,
         camera: cameraState,
       }),
     [
@@ -751,6 +751,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       sliceName,
       sliceParamsDraft,
       isLayerPanelCollapsed,
+      isInspectorCollapsed,
       cameraState,
     ]
   );
@@ -769,6 +770,8 @@ export default function App({ startupSlices = [] }: AppProps) {
   const canRedo = futureStatesRef.current.length > 0;
   const canClearHistory = canUndo || canRedo;
   const isStateModalOpen = activeTool === "export";
+  const localOnlyLayerNames = useMemo(() => getLocalOnlyLayerNames(layerTree), [layerTree]);
+  const isCurrentViewerShareSerializable = useMemo(() => isSerializableLayerTree(layerTree), [layerTree]);
 
   function formatHistoryTimestamp(timestamp: number) {
     const date = new Date(timestamp);
@@ -949,6 +952,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSliceName(nextState.ui.sliceName ?? "");
     setSliceParamsDraft(nextState.ui.sliceParamsDraft);
     setIsLayerPanelCollapsed(nextState.layout.layerPanelCollapsed);
+    setIsInspectorCollapsed(nextState.layout.inspectorCollapsed ?? false);
     setCameraState(nextState.camera);
     if (options?.syncCamera !== false) {
       setCameraSyncKey((value) => value + 1);
@@ -1290,17 +1294,6 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function openExportStateModal() {
-    if (!isSerializableLayerTree(layerTree)) {
-      setStateError(
-        "This viewer contains uploaded file layers. Undo/redo still works in memory, but browser persistence and copy-paste export support only serializable layers like remote volumes, slices, and annotations."
-      );
-      setStateShareMessage(null);
-      setStateModalMode("export");
-      setStateTextDraft("");
-      setActiveTool("export");
-      return;
-    }
-
     setStateError(null);
     setStateShareMessage(null);
     setStateModalMode("export");
@@ -1374,9 +1367,17 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   async function handleShareViewerState() {
+    if (hasLocalOnlyLayers(layerTree)) {
+      setStateError(
+        "This view includes local files stored only in this browser. The view layout can be shared, but those local layers will not appear for other people. Sign in and upload them online later if you want a fully shareable view."
+      );
+      setStateShareMessage(null);
+      return;
+    }
+
     if (!isSerializableLayerTree(layerTree)) {
       setStateError(
-        "This viewer contains uploaded file layers. Share links only support serializable layers like remote volumes, slices, and annotations."
+        "This view contains layers that cannot be turned into a share link."
       );
       setStateShareMessage(null);
       return;
@@ -1453,7 +1454,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (!isSerializableLayerTree(currentViewerState.scene.layerTree)) {
       setLibraryMessage(null);
       setLibraryError(
-        "This viewer contains uploaded file layers. Saved viewers only support serializable layers like remote volumes, slices, and annotations."
+        "This viewer contains layers that cannot be saved locally."
       );
       setSaveNoticeOpen(false);
       setSaveNoticeMessage(null);
@@ -1586,38 +1587,126 @@ export default function App({ startupSlices = [] }: AppProps) {
     });
   }
 
-  function handleAddFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  function buildLocalLayerDisplayName(baseName: string, options: { renderMode?: RemoteRenderMode; selectedResolution?: string | null; kind?: string | null }) {
+    const modeLabel = options.renderMode && options.renderMode !== "auto"
+      ? (options.renderMode === "volume" ? "Volume" : "Slices")
+      : null;
+    const resolutionLabel = options.selectedResolution ? options.selectedResolution.replace("um", " µm") : null;
+    const suffix = [modeLabel, resolutionLabel].filter(Boolean).join(" · ");
+    if (options.kind === "volume" && suffix) return `${baseName} (${suffix})`;
+    return baseName;
+  }
 
+  async function handleRenameLocalDataset(datasetId: string, nextName: string) {
+    const trimmed = nextName.trim();
+    if (!trimmed) return;
+    await renameLocalDatasetRecord(datasetId, trimmed);
     setLayerTree((prev) => {
-      let next = prev;
-
-      for (const file of Array.from(files)) {
-        const node: LayerTreeNode = {
-          id: createId(),
-          kind: "layer",
-          name: file.name,
-          type: "file",
-          visible: true,
-          source: file,
-          sourceKind: "custom-upload",
-          mimeType: file.type || undefined,
-          description: "User uploaded data",
-        };
-
-        const selected = selectedNodeId ? findNodeById(next, selectedNodeId) : null;
-
-        if (selected && isGroupNode(selected)) {
-          next = insertIntoGroup(next, selected.id, node);
-        } else {
-          next = [...next, node];
+      const visit = (nodes: LayerTreeNode[]): LayerTreeNode[] => nodes.map((node) => {
+        if (node.kind === "group") return { ...node, children: visit(node.children) };
+        if (node.type === "file" && node.sourceKind === "custom-upload" && typeof node.source === "string" && node.source === datasetId) {
+          const info = node.localDatasetInfo ?? null;
+          return {
+            ...node,
+            name: buildLocalLayerDisplayName(trimmed, {
+              renderMode: node.renderMode,
+              selectedResolution: info?.selectedResolution ?? null,
+              kind: info?.kind ?? node.localDataKind ?? null,
+            }),
+            localDatasetInfo: info ? { ...info, fileName: trimmed } : info,
+          };
         }
-      }
+        return node;
+      });
+      return visit(prev);
+    });
+  }
 
+  async function handleDeleteLocalDataset(datasetId: string) {
+    await deleteLocalDatasetRecord(datasetId);
+    setLayerTree((prev) => {
+      const matchingIds = collectAllLayerItems(prev)
+        .filter((node) => node.type === "file" && node.sourceKind === "custom-upload" && typeof node.source === "string" && node.source === datasetId)
+        .map((node) => node.id);
+      if (!matchingIds.length) return prev;
+      const next = removeNodesByIds(prev, matchingIds).tree;
+      reconcileSelectionAfterTreeMutation(next, matchingIds);
       return next;
     });
+  }
 
-    setIsImportPanelOpen(false);
+  async function handleAddLocalImports(
+    candidates: LocalImportCandidate[]
+  ): Promise<{ addedCount: number; errors: string[] }> {
+    if (!candidates.length) return { addedCount: 0, errors: [] };
+
+    const addedNodes: LayerTreeNode[] = [];
+    const errors: string[] = [];
+
+    for (const candidate of candidates) {
+      try {
+        const isTree = candidate.entries.length > 1 || candidate.inspection.format === "ome-zarr" || candidate.inspection.format === "zarr";
+        const stored = isTree
+          ? await storeLocalDatasetTree(candidate.name, candidate.entries)
+          : await storeLocalDatasetFile(candidate.entries[0].file);
+        const renderMode = candidate.inspection.kind === "volume" ? (candidate.inspection.renderMode ?? "slices") : undefined;
+        const displayName = buildLocalLayerDisplayName(candidate.name, {
+          renderMode,
+          selectedResolution: candidate.inspection.info.selectedResolution,
+          kind: candidate.inspection.kind,
+        });
+
+        addedNodes.push({
+          id: createId(),
+          kind: "layer",
+          name: displayName,
+          type: "file",
+          visible: true,
+          source: stored.id,
+          sourceKind: "custom-upload",
+          mimeType: candidate.inspection.info.mimeType || undefined,
+          description: "Stored only in this browser. This layer is not included in share links.",
+          renderMode,
+          localOnly: true,
+          localDataFormat: candidate.inspection.format,
+          localDataKind: candidate.inspection.kind,
+          localDatasetInfo: {
+            ...candidate.inspection.info,
+            datasetId: stored.id,
+          },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unsupported local dataset.";
+        errors.push(`${candidate.name}: ${message}`);
+      }
+    }
+
+    if (addedNodes.length > 0) {
+      setLayerTree((prev) => {
+        let next = prev;
+
+        for (const node of addedNodes) {
+          const selected = selectedNodeId ? findNodeById(next, selectedNodeId) : null;
+          if (selected && isGroupNode(selected)) {
+            next = insertIntoGroup(next, selected.id, node);
+          } else {
+            next = [...next, node];
+          }
+        }
+
+        return next;
+      });
+    }
+
+    if (errors.length > 0 && addedNodes.length === 0) {
+      setStateError(errors.join("\n"));
+      setStateShareMessage(null);
+    } else {
+      setStateError(null);
+      setStateShareMessage(null);
+    }
+
+    return { addedCount: addedNodes.length, errors };
   }
 
   function handleAddGroup() {
@@ -2520,8 +2609,98 @@ export default function App({ startupSlices = [] }: AppProps) {
         onCanvasElementChange={(canvas) => {
           viewerCanvasElementRef.current = canvas;
         }}
+        onLocalSceneLoadStateChange={setLocalSceneLoadState}
+        localSceneLoadingActive={localSceneLoadState.active}
         orbitResetRequestKey={orbitResetRequestKey}
       />
+
+
+      <style>{`
+        @keyframes local-load-indeterminate {
+          0% { transform: translateX(-120%); }
+          100% { transform: translateX(320%); }
+        }
+        @keyframes local-load-panel-in {
+          0% { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+
+      {localSceneLoadState.active && !dismissLocalSceneLoadNotice ? (
+        <div
+          data-theme-surface="panel"
+          style={{
+            position: "absolute",
+            right: 18,
+            bottom: 104,
+            zIndex: 18,
+            width: "min(320px, calc(100vw - 40px))",
+            borderRadius: 16,
+            border: "1px solid rgba(255,255,255,0.10)",
+            boxShadow: "0 12px 28px rgba(0,0,0,0.30)",
+            padding: "12px 14px",
+            display: "grid",
+            gap: 8,
+            animation: "local-load-panel-in 180ms ease",
+            fontFamily: "sans-serif",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, fontFamily: "sans-serif" }}>Loading local data…</div>
+              <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.74, lineHeight: 1.45, marginTop: 4, fontFamily: "sans-serif" }}>
+                Preparing local data in the background. You can keep using the viewer while it loads.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDismissLocalSceneLoadNotice(true)}
+              aria-label="Dismiss loading notification"
+              title="Dismiss"
+              style={{
+                width: 28,
+                height: 28,
+                flex: "0 0 auto",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.04)",
+                color: "inherit",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                lineHeight: 1,
+              }}
+            >
+              ×
+            </button>
+          </div>
+          <div
+            data-theme-surface="soft"
+            style={{
+              height: 7,
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.08)",
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "34%",
+                borderRadius: 999,
+                background: "linear-gradient(90deg, rgba(120,190,255,0.08), rgba(120,190,255,0.92), rgba(120,190,255,0.08))",
+                animation: "local-load-indeterminate 1.15s linear infinite",
+              }}
+            />
+          </div>
+          <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.7 }}>
+            {localSceneLoadState.pending} pending item{localSceneLoadState.pending > 1 ? "s" : ""}
+          </div>
+        </div>
+      ) : null}
 
       <LayerPanel
         layerTree={layerTree}
@@ -2553,7 +2732,18 @@ export default function App({ startupSlices = [] }: AppProps) {
         onClose={() => setIsImportPanelOpen(false)}
         onAddDrawingLayer={handleAddDrawingLayer}
         onAddExternalSources={handleAddExternalSources}
-        onAddFiles={handleAddFiles}
+        onAddLocalImports={handleAddLocalImports}
+        onOpenLocalDatasetManager={() => {
+          setIsImportPanelOpen(false);
+          setIsLocalDatasetManagerOpen(true);
+        }}
+      />
+
+      <LocalDatasetManagerPanel
+        open={isLocalDatasetManagerOpen}
+        onClose={() => setIsLocalDatasetManagerOpen(false)}
+        onRenameDataset={handleRenameLocalDataset}
+        onDeleteDataset={handleDeleteLocalDataset}
       />
 
       <UserProfilePanel
@@ -2824,116 +3014,20 @@ export default function App({ startupSlices = [] }: AppProps) {
           )
         }
         statePopoverContent={
-          <div data-slice-tool="true" style={{ fontFamily: "sans-serif" }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 12,
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 700 }}>
-                  {stateModalMode === "export" ? "Export Viewer State" : "Import Viewer State"}
-                </div>
-                <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-                  Copy this state to reproduce the current viewer, or paste one to restore it.
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" onClick={openExportStateModal} style={secondaryButtonStyle}>
-                  Export
-                </button>
-                <button type="button" onClick={openImportStateModal} style={secondaryButtonStyle}>
-                  Import
-                </button>
-              </div>
-            </div>
-
-            <textarea
-              value={stateTextDraft}
-              onChange={(e) => setStateTextDraft(e.target.value)}
-              readOnly={stateModalMode === "export"}
-              placeholder={stateModalMode === "import" ? "Paste a viewer state JSON here..." : ""}
-              spellCheck={false}
-              style={{
-                width: "100%",
-                minHeight: 260,
-                resize: "vertical",
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(255,255,255,0.05)",
-                color: "white",
-                padding: 12,
-                boxSizing: "border-box",
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                fontSize: 12,
-                lineHeight: 1.45,
-                outline: "none",
-              }}
-            />
-
-            {stateError && (
-              <div
-                style={{
-                  marginTop: 10,
-                  fontSize: 12,
-                  color: "#ffb4b4",
-                  lineHeight: 1.4,
-                }}
-              >
-                {stateError}
-              </div>
-            )}
-
-            {!stateError && stateShareMessage && (
-              <div
-                style={{
-                  marginTop: 10,
-                  fontSize: 12,
-                  color: "rgba(170,230,190,0.95)",
-                  lineHeight: 1.4,
-                }}
-              >
-                {stateShareMessage}
-              </div>
-            )}
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginTop: 12,
-                gap: 10,
-              }}
-            >
-              <div style={{ fontSize: 12, opacity: 0.62 }}>
-                Undo/redo snapshots are saved after actions settle and restored from browser storage.
-              </div>
-
-              <div style={{ display: "flex", gap: 8 }}>
-                {stateModalMode === "export" && (
-                  <>
-                    <button type="button" onClick={handleShareViewerState} style={secondaryButtonStyle}>
-                      Share Link
-                    </button>
-                    <button type="button" onClick={handleCopyExportState} style={primaryButtonStyle}>
-                      Copy JSON
-                    </button>
-                  </>
-                )}
-
-                {stateModalMode === "import" && (
-                  <button type="button" onClick={handleApplyImportedState} style={primaryButtonStyle}>
-                    Load State
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
+          <StatePanel
+            mode={stateModalMode}
+            stateTextDraft={stateTextDraft}
+            stateError={stateError}
+            stateShareMessage={stateShareMessage}
+            localOnlyLayerNames={localOnlyLayerNames}
+            isSerializable={isCurrentViewerShareSerializable}
+            onStateTextDraftChange={setStateTextDraft}
+            onOpenExport={openExportStateModal}
+            onOpenImport={openImportStateModal}
+            onShareViewerState={handleShareViewerState}
+            onCopyExportState={handleCopyExportState}
+            onApplyImportedState={handleApplyImportedState}
+          />
         }
       />
     </div>

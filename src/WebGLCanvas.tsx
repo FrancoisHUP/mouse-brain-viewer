@@ -14,6 +14,7 @@ import {
 import {
   ALLEN_CUSTOM_SLICE_PROFILE,
   ALLEN_VOLUME_PROFILE,
+  IDENTITY_PROFILE,
   clampSliceIndex,
   extractObliqueSlice2D,
   extractOrientedCenterSlices,
@@ -40,6 +41,7 @@ import {
   transformPoint,
   type RayHit,
 } from "./scenePicking";
+import { disposeLocalDataLoadWorker, loadLocalBrowserMeshInWorker, loadLocalBrowserVolumeInWorker } from "./localDataLoadWorkerClient";
 
 type CameraState = {
   mode: CameraControlMode;
@@ -175,6 +177,35 @@ function isMeshLayer(layer: LayerItemNode): boolean {
   );
 }
 
+function isLocalVolumeLayer(layer: LayerItemNode): boolean {
+  return (
+    layer.type === "file" &&
+    typeof layer.source === "string" &&
+    layer.sourceKind === "custom-upload" &&
+    layer.localDataKind === "volume" &&
+    !!layer.localOnly &&
+    !!layer.localDatasetInfo
+  );
+}
+
+function isLocalMeshLayer(layer: LayerItemNode): boolean {
+  return (
+    layer.type === "file" &&
+    typeof layer.source === "string" &&
+    layer.sourceKind === "custom-upload" &&
+    layer.localDataKind === "mesh" &&
+    !!layer.localOnly
+  );
+}
+
+function getLocalVolumeCacheKey(datasetId: string): string {
+  return `local-volume::${datasetId}`;
+}
+
+function getLocalMeshCacheKey(datasetId: string): string {
+  return `local-mesh::${datasetId}`;
+}
+
 type CustomSliceSourceRef = {
   volumeLayerId?: string | null;
 };
@@ -245,6 +276,11 @@ function collectReferencedVolumeCacheKeys(nodes: LayerTreeNode[]): Set<string> {
         continue;
       }
 
+      if (isLocalVolumeLayer(node) && typeof node.source === "string") {
+        keys.add(getLocalVolumeCacheKey(node.source));
+        continue;
+      }
+
       if (isCustomSliceLayer(node)) {
         const customSource = hasVolumeLayerId(node.source) ? node.source : null;
 
@@ -252,16 +288,12 @@ function collectReferencedVolumeCacheKeys(nodes: LayerTreeNode[]): Set<string> {
           ? findNodeById(nodes, customSource.volumeLayerId)
           : null;
 
-        if (
-          volumeNode &&
-          volumeNode.kind === "layer" &&
-          volumeNode.type === "remote" &&
-          typeof volumeNode.source === "string" &&
-          volumeNode.remoteFormat === "ome-zarr"
-        ) {
-          keys.add(
-            getVolumeCacheKey(volumeNode.source, getRemoteLayerResolutionUm(volumeNode), getRemoteLayerContentKind(volumeNode))
-          );
+        if (volumeNode && volumeNode.kind === "layer" && typeof volumeNode.source === "string") {
+          if (volumeNode.type === "remote" && volumeNode.remoteFormat === "ome-zarr") {
+            keys.add(getVolumeCacheKey(volumeNode.source, getRemoteLayerResolutionUm(volumeNode), getRemoteLayerContentKind(volumeNode)));
+          } else if (isLocalVolumeLayer(volumeNode)) {
+            keys.add(getLocalVolumeCacheKey(volumeNode.source));
+          }
         }
       }
     }
@@ -283,6 +315,8 @@ function collectReferencedMeshCacheKeys(nodes: LayerTreeNode[]): Set<string> {
 
       if (isRemoteMeshLayer(node) && typeof node.source === "string") {
         keys.add(getMeshCacheKey(node.source));
+      } else if (isLocalMeshLayer(node) && typeof node.source === "string") {
+        keys.add(getLocalMeshCacheKey(node.source));
       }
     }
   }
@@ -297,14 +331,8 @@ function getPlaneSliceCount(volume: LoadedVolume, plane: SlicePlane): number {
   return volume.dims.x;
 }
 
-function chooseVolumeRenderPlane(forward: vec3): SlicePlane {
-  const ax = Math.abs(forward[0]);
-  const ay = Math.abs(forward[1]);
-  const az = Math.abs(forward[2]);
-
-  if (az >= ax && az >= ay) return "xy";
-  if (ay >= ax && ay >= az) return "xz";
-  return "yz";
+function chooseStableVolumeRenderPlane(_volume: LoadedVolume): SlicePlane {
+  return "xy";
 }
 
 function buildVolumeDisplayIndices(total: number): number[] {
@@ -353,6 +381,8 @@ export default function WebGLCanvas({
   onEraseFreehand,
   onSelectedLayerRuntimeInfoChange,
   onCanvasElementChange,
+  onLocalSceneLoadStateChange,
+  localSceneLoadingActive = false,
   orbitResetRequestKey = 0,
 }: {
   activeTool: ToolId;
@@ -377,6 +407,8 @@ export default function WebGLCanvas({
   onEraseFreehand?: (payload: { path: [number, number, number][]; radius: number }) => void;
   onSelectedLayerRuntimeInfoChange?: (info: SelectedLayerRuntimeInfo | null) => void;
   onCanvasElementChange?: (canvas: HTMLCanvasElement | null) => void;
+  onLocalSceneLoadStateChange?: (state: { active: boolean; pending: number }) => void;
+  localSceneLoadingActive?: boolean;
   orbitResetRequestKey?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -425,6 +457,12 @@ export default function WebGLCanvas({
   const lastPublishedSceneHitRef = useRef<string>("null");
 
   const [loadTick, setLoadTick] = useState(0);
+  void localSceneLoadingActive;
+
+  function publishLocalLoadState() {
+    const pending = loadingUrlsRef.current.size + loadingMeshesRef.current.size;
+    onLocalSceneLoadStateChange?.({ active: pending > 0, pending });
+  }
 
   useEffect(() => {
     onCanvasElementChange?.(canvasRef.current);
@@ -432,6 +470,12 @@ export default function WebGLCanvas({
       onCanvasElementChange?.(null);
     };
   }, [onCanvasElementChange]);
+
+  useEffect(() => {
+    return () => {
+      disposeLocalDataLoadWorker();
+    };
+  }, []);
 
   useEffect(() => {
     activeToolRef.current = activeTool;
@@ -581,6 +625,25 @@ export default function WebGLCanvas({
       return base;
     }
 
+    if (selectedNode.type === "file" && typeof selectedNode.source === "string" && selectedNode.localOnly) {
+      const info = selectedNode.localDatasetInfo ?? null;
+      return {
+        layerId: selectedNode.id,
+        sourceName: selectedNode.name,
+        sourcePath: `browser-local://${selectedNode.source}`,
+        sourceType: selectedNode.localDataKind === "mesh"
+          ? `Local OBJ mesh`
+          : selectedNode.localDataFormat === "nrrd"
+          ? `Local NRRD volume`
+          : selectedNode.localDataFormat === "tiff"
+          ? `Local TIFF volume`
+          : "Local browser file",
+        voxelSizeUm: info?.voxelSizeUm ?? null,
+        dims: info?.dims ?? null,
+        rawShape: info?.rawShape ?? null,
+      };
+    }
+
     if (selectedNode.type === "custom-slice") {
       const customSource = hasVolumeLayerId(selectedNode.source) ? selectedNode.source : null;
       const volumeNode = customSource?.volumeLayerId ? findNodeById(layerTree, customSource.volumeLayerId) : null;
@@ -622,11 +685,39 @@ export default function WebGLCanvas({
     onSelectedLayerRuntimeInfoChange?.(selectedLayerRuntimeInfo);
   }, [onSelectedLayerRuntimeInfoChange, selectedLayerRuntimeInfo]);
 
+  useEffect(() => {
+    publishLocalLoadState();
+  }, [onLocalSceneLoadStateChange]);
+
+
+  function getLoadedVolumeForLayer(layer: LayerItemNode): { cacheKey: string; volume: LoadedVolume; profile: ViewerOrientationProfile } | null {
+    if (isOmeZarrLayer(layer) && typeof layer.source === "string") {
+      const cacheKey = getVolumeCacheKey(layer.source, getRemoteLayerResolutionUm(layer), getRemoteLayerContentKind(layer));
+      const volume = volumeCacheRef.current.get(cacheKey);
+      return volume ? { cacheKey, volume, profile: ALLEN_VOLUME_PROFILE } : null;
+    }
+
+    if (isLocalVolumeLayer(layer) && typeof layer.source === "string") {
+      const cacheKey = getLocalVolumeCacheKey(layer.source);
+      const volume = volumeCacheRef.current.get(cacheKey);
+      return volume ? { cacheKey, volume, profile: IDENTITY_PROFILE } : null;
+    }
+
+    return null;
+  }
 
   const volumesToLoad = useMemo(() => {
     const entries = new Map<
       string,
-      { cacheKey: string; url: string; resolutionUm: number; contentKind: RemoteContentKind }
+      {
+        cacheKey: string;
+        url: string;
+        resolutionUm: number | null;
+        contentKind: RemoteContentKind;
+        local: boolean;
+        datasetId: string | null;
+        info: any;
+      }
     >();
 
     for (const layer of visibleLayers) {
@@ -635,33 +726,32 @@ export default function WebGLCanvas({
         const resolutionUm = getRemoteLayerResolutionUm(layer);
         const contentKind = getRemoteLayerContentKind(layer);
         const cacheKey = getVolumeCacheKey(url, resolutionUm, contentKind);
-        entries.set(cacheKey, { cacheKey, url, resolutionUm, contentKind });
+        entries.set(cacheKey, { cacheKey, url, resolutionUm, contentKind, local: false, datasetId: null, info: null });
+        continue;
+      }
+
+      if (isLocalVolumeLayer(layer)) {
+        const datasetId = layer.source as string;
+        const cacheKey = getLocalVolumeCacheKey(datasetId);
+        entries.set(cacheKey, { cacheKey, url: datasetId, resolutionUm: null, contentKind: "intensity", local: true, datasetId, info: layer.localDatasetInfo ?? null });
         continue;
       }
 
       if (isCustomSliceLayer(layer)) {
         const customSource = hasVolumeLayerId(layer.source) ? layer.source : null;
+        const volumeNode = customSource?.volumeLayerId ? findNodeById(layerTree, customSource.volumeLayerId) : null;
 
-        const volumeNode = customSource?.volumeLayerId
-          ? findNodeById(layerTree, customSource.volumeLayerId)
-          : null;
-
-        if (
-          volumeNode &&
-          volumeNode.kind === "layer" &&
-          volumeNode.type === "remote" &&
-          typeof volumeNode.source === "string" &&
-          volumeNode.remoteFormat === "ome-zarr"
-        ) {
-          const resolutionUm = getRemoteLayerResolutionUm(volumeNode);
-          const contentKind = getRemoteLayerContentKind(volumeNode);
-          const cacheKey = getVolumeCacheKey(volumeNode.source, resolutionUm, contentKind);
-          entries.set(cacheKey, {
-            cacheKey,
-            url: volumeNode.source,
-            resolutionUm,
-            contentKind,
-          });
+        if (volumeNode && volumeNode.kind === "layer" && typeof volumeNode.source === "string") {
+          if (volumeNode.type === "remote" && volumeNode.remoteFormat === "ome-zarr") {
+            const resolutionUm = getRemoteLayerResolutionUm(volumeNode);
+            const contentKind = getRemoteLayerContentKind(volumeNode);
+            const cacheKey = getVolumeCacheKey(volumeNode.source, resolutionUm, contentKind);
+            entries.set(cacheKey, { cacheKey, url: volumeNode.source, resolutionUm, contentKind, local: false, datasetId: null, info: null });
+          } else if (isLocalVolumeLayer(volumeNode)) {
+            const datasetId = volumeNode.source;
+            const cacheKey = getLocalVolumeCacheKey(datasetId);
+            entries.set(cacheKey, { cacheKey, url: datasetId, resolutionUm: null, contentKind: "intensity", local: true, datasetId, info: volumeNode.localDatasetInfo ?? null });
+          }
         }
       }
     }
@@ -670,14 +760,21 @@ export default function WebGLCanvas({
   }, [visibleLayers, layerTree]);
 
   const meshesToLoad = useMemo(() => {
-    const entries = new Map<string, { cacheKey: string; url: string }>();
+    const entries = new Map<string, { cacheKey: string; url: string; local: boolean; datasetId: string | null }>();
 
     for (const layer of visibleLayers) {
-      if (!isMeshLayer(layer)) continue;
+      if (isMeshLayer(layer)) {
+        const url = layer.source as string;
+        const cacheKey = getMeshCacheKey(url);
+        entries.set(cacheKey, { cacheKey, url, local: false, datasetId: null });
+        continue;
+      }
 
-      const url = layer.source as string;
-      const cacheKey = getMeshCacheKey(url);
-      entries.set(cacheKey, { cacheKey, url });
+      if (isLocalMeshLayer(layer)) {
+        const datasetId = layer.source as string;
+        const cacheKey = getLocalMeshCacheKey(datasetId);
+        entries.set(cacheKey, { cacheKey, url: datasetId, local: true, datasetId });
+      }
     }
 
     return Array.from(entries.values());
@@ -689,15 +786,20 @@ export default function WebGLCanvas({
       if (loadingUrlsRef.current.has(item.cacheKey)) continue;
 
       loadingUrlsRef.current.add(item.cacheKey);
+      publishLocalLoadState();
 
-      loadVolumeAtResolution(item.url, item.resolutionUm, item.contentKind)
+      const loadPromise = item.local
+        ? loadLocalBrowserVolumeInWorker(item.datasetId as string, item.info)
+        : loadVolumeAtResolution(item.url, item.resolutionUm ?? 100, item.contentKind);
+
+      loadPromise
         .then((volume) => {
           volumeCacheRef.current.set(item.cacheKey, volume);
           setLoadTick((v) => v + 1);
         })
         .catch((err) => {
           console.error(
-            "Failed to load OME-Zarr volume:",
+            "Failed to load volume:",
             item.url,
             item.resolutionUm,
             err
@@ -705,6 +807,7 @@ export default function WebGLCanvas({
         })
         .finally(() => {
           loadingUrlsRef.current.delete(item.cacheKey);
+          publishLocalLoadState();
         });
     }
   }, [volumesToLoad]);
@@ -715,8 +818,13 @@ export default function WebGLCanvas({
       if (loadingMeshesRef.current.has(item.cacheKey)) continue;
 
       loadingMeshesRef.current.add(item.cacheKey);
+      publishLocalLoadState();
 
-      loadObjMesh(item.url)
+      const loadPromise = item.local
+        ? loadLocalBrowserMeshInWorker(item.datasetId as string)
+        : loadObjMesh(item.url);
+
+      loadPromise
         .then((mesh) => {
           meshCacheRef.current.set(item.cacheKey, mesh);
           setLoadTick((v) => v + 1);
@@ -726,6 +834,7 @@ export default function WebGLCanvas({
         })
         .finally(() => {
           loadingMeshesRef.current.delete(item.cacheKey);
+          publishLocalLoadState();
         });
     }
   }, [meshesToLoad]);
@@ -920,6 +1029,23 @@ export default function WebGLCanvas({
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, planeIndices, gl.STATIC_DRAW);
+
+    function buildRingVertices(segments: number) {
+      const positions: number[] = [];
+      for (let i = 0; i < segments; i += 1) {
+        const t = (i / segments) * Math.PI * 2;
+        positions.push(Math.cos(t), Math.sin(t), 0);
+      }
+      return new Float32Array(positions);
+    }
+
+    const ringVertices = buildRingVertices(72);
+    const ringVertexBuffer = gl.createBuffer();
+    if (!ringVertexBuffer) {
+      throw new Error("Failed to create ring buffer");
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, ringVertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, ringVertices, gl.STATIC_DRAW);
 
     function buildSphereGeometry(latSegments: number, lonSegments: number) {
       const positions: number[] = [];
@@ -1117,6 +1243,8 @@ export default function WebGLCanvas({
             width?: number;
             height?: number;
           }
+      ,
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
     ): AxisSliceTextureEntry {
       const cached = customSliceTextureCache.get(cacheKey);
       if (cached) return cached;
@@ -1137,7 +1265,7 @@ export default function WebGLCanvas({
               volume,
               sliceSpec.plane,
               sliceSpec.index,
-              ALLEN_VOLUME_PROFILE
+              profile
             );
 
       const texture = createSliceTexture(slice.width, slice.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(slice.pixels) : sliceToRgbaBytes(slice.pixels));
@@ -1292,12 +1420,6 @@ export default function WebGLCanvas({
       return intersectRayQuad(ray, a, b, c, d);
     }
 
-    function makePrimitiveLayerModel(index: number): mat4 {
-      const model = mat4.create();
-      mat4.translate(model, model, [index * 0.15, index * 0.15, -index * 0.05]);
-      return model;
-    }
-
     function publishHoveredSceneHit(hit: ScenePointerHit | null) {
       hoveredSceneHitRef.current = hit;
       const key = hit
@@ -1309,7 +1431,7 @@ export default function WebGLCanvas({
     }
 
     function pickSceneAtClientPosition(clientX: number, clientY: number): ScenePointerHit | null {
-      const { projection, view, forward } = getViewProjectionMatrices();
+      const { projection, view } = getViewProjectionMatrices();
       const layers = collectVisibleLayerItems(layerTreeRef.current, true);
       let bestHit: ScenePointerHit | null = null;
 
@@ -1330,21 +1452,16 @@ export default function WebGLCanvas({
       for (let i = 0; i < layers.length; i += 1) {
         const layer = layers[i];
 
-        if (isOmeZarrLayer(layer) && typeof layer.source === "string") {
-          const volumeKey = getVolumeCacheKey(
-            layer.source,
-            getRemoteLayerResolutionUm(layer),
-            getRemoteLayerContentKind(layer)
-          );
-          const volume = volumeCacheRef.current.get(volumeKey);
-          if (!volume) continue;
+        const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
+        if (loadedVolumeEntry) {
+          const { volume, profile } = loadedVolumeEntry;
 
           if (layer.renderMode === "volume") {
-            const plane = chooseVolumeRenderPlane(forward);
+            const plane = chooseStableVolumeRenderPlane(volume);
             const totalSlices = getPlaneSliceCount(volume, plane);
             const displayIndices = buildVolumeDisplayIndices(totalSlices);
             for (const displayIndex of displayIndices) {
-              const model = makeSliceModelMatrix(volume, plane, displayIndex, ALLEN_VOLUME_PROFILE);
+              const model = makeSliceModelMatrix(volume, plane, displayIndex, profile);
               considerHit(layer, intersectModelPlane(model, clientX, clientY, projection, view));
             }
           } else if (layer.renderMode === "slices") {
@@ -1374,23 +1491,13 @@ export default function WebGLCanvas({
           if (!volumeLayerId || !sliceParams) continue;
 
           const volumeNode = findNodeById(layerTreeRef.current, volumeLayerId);
-          if (
-            !volumeNode ||
-            volumeNode.kind !== "layer" ||
-            volumeNode.type !== "remote" ||
-            typeof volumeNode.source !== "string" ||
-            volumeNode.remoteFormat !== "ome-zarr"
-          ) {
+          if (!volumeNode || volumeNode.kind !== "layer") {
             continue;
           }
 
-          const volumeKey = getVolumeCacheKey(
-            volumeNode.source,
-            getRemoteLayerResolutionUm(volumeNode),
-            getRemoteLayerContentKind(volumeNode)
-          );
-          const volume = volumeCacheRef.current.get(volumeKey);
-          if (!volume) continue;
+          const loadedVolumeEntry = getLoadedVolumeForLayer(volumeNode);
+          if (!loadedVolumeEntry) continue;
+          const { volume, profile } = loadedVolumeEntry;
 
           let model: mat4 | null = null;
           const isOblique =
@@ -1410,10 +1517,10 @@ export default function WebGLCanvas({
               offset: sliceParams.offset ?? 0,
               width: sliceParams.width ?? 256,
               height: sliceParams.height ?? 256,
-            }, ALLEN_VOLUME_PROFILE);
+            }, profile);
           } else if (isAxisAlignedSliceParams(sliceParams)) {
             const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
-            model = makeSliceModelMatrix(volume, sliceParams.plane, safeIndex, ALLEN_VOLUME_PROFILE);
+            model = makeSliceModelMatrix(volume, sliceParams.plane, safeIndex, profile);
           }
 
           if (model) {
@@ -1424,8 +1531,11 @@ export default function WebGLCanvas({
         }
 
         if (layer.type === "primitive") {
-          const model = makePrimitiveLayerModel(i);
-          considerHit(layer, intersectModelPlane(model, clientX, clientY, projection, view));
+          continue;
+        }
+
+        if ((isLocalVolumeLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
+          continue;
         }
       }
 
@@ -1580,20 +1690,6 @@ export default function WebGLCanvas({
       }
     >();
 
-    function drawColorPlane(mvp: mat4, color: [number, number, number, number]) {
-      resetVertexAttribArrays();
-
-      gl.useProgram(colorProgram);
-      gl.uniformMatrix4fv(uColorMVP, false, mvp);
-      gl.uniform4f(uColor, color[0], color[1], color[2], color[3]);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
-      gl.enableVertexAttribArray(aColorPosition);
-      gl.vertexAttribPointer(aColorPosition, 3, gl.FLOAT, false, 0, 0);
-
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
-      gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
-    }
 
     function drawColorSphere(mvp: mat4, color: [number, number, number, number]) {
       resetVertexAttribArrays();
@@ -2001,11 +2097,10 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       volumeKey: string,
       volume: LoadedVolume,
       highlighted: boolean,
-      forward: vec3,
       view: mat4,
       projection: mat4
     ) {
-      const plane = chooseVolumeRenderPlane(forward);
+      const plane = chooseStableVolumeRenderPlane(volume);
       const totalSlices = getPlaneSliceCount(volume, plane);
       const displayIndices = buildVolumeDisplayIndices(totalSlices);
       const alpha = volume.contentKind === "annotation" ? (highlighted ? 0.92 : 0.78) : getVolumeStackAlpha(displayIndices.length, highlighted);
@@ -2079,7 +2174,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       gl.clearColor(bgR, bgG, bgB, 1.0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-      const { projection, view, forward } = getViewProjectionMatrices();
+      const { projection, view } = getViewProjectionMatrices();
 
       const layers = collectVisibleLayerItems(layerTreeRef.current, true);
 
@@ -2087,8 +2182,9 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         const layer = layers[i];
         const isHighlighted = highlightedLayerIds.has(layer.id);
 
-        if (isMeshLayer(layer) && typeof layer.source === "string") {
-          const mesh = meshCacheRef.current.get(getMeshCacheKey(layer.source));
+        if ((isMeshLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
+          const meshKey = isMeshLayer(layer) ? getMeshCacheKey(layer.source) : getLocalMeshCacheKey(layer.source);
+          const mesh = meshCacheRef.current.get(meshKey);
 
           if (mesh) {
             const model = getAllenMeshModelMatrix(mesh);
@@ -2108,17 +2204,13 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           continue;
         }
 
-        if (isOmeZarrLayer(layer) && typeof layer.source === "string") {
-          const volumeKey = getVolumeCacheKey(
-            layer.source,
-            getRemoteLayerResolutionUm(layer),
-            getRemoteLayerContentKind(layer)
-          );
-          const volume = volumeCacheRef.current.get(volumeKey);
+        const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
+        if (loadedVolumeEntry) {
+          const { cacheKey: volumeKey, volume } = loadedVolumeEntry;
 
           if (volume) {
             if (layer.renderMode === "volume") {
-              renderVolumeLayer(volumeKey, volume, isHighlighted, forward, view, projection);
+              renderVolumeLayer(volumeKey, volume, isHighlighted, view, projection);
             } else if (layer.renderMode === "slices") {
               const textures = getOrCreateSliceTextures(volumeKey, volume);
               const alpha = isHighlighted ? 0.98 : 0.92;
@@ -2176,26 +2268,15 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           }
 
           const volumeNode = findNodeById(layerTreeRef.current, volumeLayerId);
-
-          if (
-            !volumeNode ||
-            volumeNode.kind !== "layer" ||
-            volumeNode.type !== "remote" ||
-            typeof volumeNode.source !== "string" ||
-            volumeNode.remoteFormat !== "ome-zarr"
-          ) {
+          if (!volumeNode || volumeNode.kind !== "layer") {
             continue;
           }
 
-          const volumeKey = getVolumeCacheKey(
-            volumeNode.source,
-            getRemoteLayerResolutionUm(volumeNode),
-            getRemoteLayerContentKind(volumeNode)
-          );
-          const volume = volumeCacheRef.current.get(volumeKey);
-          if (!volume) {
+          const loadedVolumeEntry = getLoadedVolumeForLayer(volumeNode);
+          if (!loadedVolumeEntry) {
             continue;
           }
+          const { cacheKey: volumeKey, volume, profile } = loadedVolumeEntry;
 
           let sliceTex: AxisSliceTextureEntry | undefined;
           let model: mat4;
@@ -2232,14 +2313,14 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
               offset,
               width,
               height,
-            });
+            }, profile);
 
             model = makeObliqueSliceModelMatrix(volume, {
               normal: { x: nx, y: ny, z: nz },
               offset,
               width,
               height,
-            }, ALLEN_VOLUME_PROFILE);
+            }, profile);
           } else if (isAxisAlignedSliceParams(sliceParams)) {
             const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
             const cacheKey = `${volumeKey}|${sliceParams.plane}|${safeIndex}`;
@@ -2248,7 +2329,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
               mode: "axis",
               plane: sliceParams.plane,
               index: safeIndex,
-            });
+            }, profile);
 
             model = makeSliceModelMatrix(
               volume,
@@ -2356,20 +2437,16 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           continue;
         }
 
-        const model = mat4.create();
-        const mv = mat4.create();
-        const mvp = mat4.create();
+        if (layer.type === "primitive") {
+          continue;
+        }
 
-        mat4.translate(model, model, [i * 0.15, i * 0.15, -i * 0.05]);
-        mat4.multiply(mv, view, model);
-        mat4.multiply(mvp, projection, mv);
+        if ((isLocalVolumeLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
+          continue;
+        }
 
-        if (activeToolRef.current === "pencil" && isHighlighted) {
-          drawColorPlane(mvp, [1.0, 0.84, 0.22, 1.0]);
-        } else if (isHighlighted) {
-          drawColorPlane(mvp, [0.72, 0.96, 1.0, 1.0]);
-        } else {
-          drawColorPlane(mvp, [0.18, 0.45, 0.58, 0.72]);
+        if (layer.type === "remote") {
+          continue;
         }
       }
 
@@ -2780,6 +2857,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       gl.deleteBuffer(planeVertexBuffer);
       gl.deleteBuffer(planeTexCoordBuffer);
       gl.deleteBuffer(planeIndexBuffer);
+      gl.deleteBuffer(ringVertexBuffer);
       gl.deleteBuffer(sphereVertexBuffer);
       gl.deleteBuffer(sphereIndexBuffer);
       gl.deleteBuffer(cylinderVertexBuffer);

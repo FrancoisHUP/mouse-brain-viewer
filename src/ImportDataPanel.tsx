@@ -14,14 +14,22 @@ import {
   type CustomExternalSourceScale,
 } from "./customSourceStore";
 import { probeOmeZarrSource } from "./omeZarr";
+import { createLocalImportPreview, inspectLocalInputEntries, type LocalImportCandidate, type LocalImportPreview, type LocalInputEntry, type LocalInspectionProgress } from "./localDataHandlers";
 
 type LayerCreationMode = "external" | "custom";
+
+type SourceIconKind =
+  | "custom"
+  | "brain-outline"
+  | "brain-filled"
+  | "brain-annotation"
+  | "axes-3d";
 
 type ExternalSourceItem = {
   id: string;
   name: string;
   url: string;
-  icon: "generic" | "custom";
+  icon: SourceIconKind;
   builtIn?: boolean;
   remoteFormat?: RemoteDataFormat;
   remoteContentKind?: RemoteContentKind;
@@ -37,7 +45,7 @@ type ExternalSourceGroup = {
   kind: "single" | "group";
   id: string;
   name: string;
-  icon: "generic" | "custom";
+  icon: SourceIconKind;
   builtIn?: boolean;
   items: ExternalSourceItem[];
 };
@@ -122,7 +130,107 @@ function AddSourceIcon() {
   );
 }
 
-function SourceGenericIcon() {
+function PreviewAxisTile({
+  label,
+  src,
+  loading,
+  error,
+}: {
+  label: string;
+  src?: string | null;
+  loading?: boolean;
+  error?: string | null;
+}) {
+  return (
+    <div
+      style={{
+        borderRadius: 12,
+        border: "1px solid rgba(255,255,255,0.10)",
+        background: "rgba(255,255,255,0.04)",
+        overflow: "hidden",
+        minHeight: 84,
+        display: "grid",
+        gridTemplateRows: "1fr auto",
+      }}
+    >
+      <div
+        style={{
+          minHeight: 64,
+          maxHeight: 64,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "rgba(255,255,255,0.03)",
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={`${label} preview`}
+            style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center", display: "block" }}
+          />
+        ) : loading ? (
+          <div
+            style={{
+              width: "82%",
+              height: 8,
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.08)",
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                transform: "translateX(-100%)",
+                background:
+                  "linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(140,190,255,0.12) 20%, rgba(180,220,255,0.85) 50%, rgba(140,190,255,0.12) 80%, rgba(255,255,255,0) 100%)",
+                animation: "preview-shimmer 1.35s ease-in-out infinite",
+              }}
+            />
+          </div>
+        ) : (
+          <div
+            data-theme-text="muted"
+            style={{ fontSize: 11, opacity: error ? 0.9 : 0.6, padding: 10, textAlign: "center", lineHeight: 1.4 }}
+          >
+            {error ?? "Preview unavailable"}
+          </div>
+        )}
+      </div>
+      <div style={{ padding: "7px 10px", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", opacity: 0.72 }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", opacity: 0.58, textTransform: "uppercase" }}>{children}</div>;
+}
+
+function DatasetStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        borderRadius: 10,
+        border: "1px solid rgba(255,255,255,0.08)",
+        background: "rgba(255,255,255,0.03)",
+        padding: "8px 10px",
+        minWidth: 0,
+      }}
+    >
+      <div style={{ fontSize: 10, opacity: 0.58, textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</div>
+      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 4, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+    </div>
+  );
+}
+
+function SourceIconFrame({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
@@ -134,10 +242,104 @@ function SourceGenericIcon() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        flexShrink: 0,
       }}
     >
-      <DataIcon />
+      {children}
     </div>
+  );
+}
+
+function BrainOutlineGlyph() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10.2 4.55C9.48 4.18 8.68 4 7.8 4 5.71 4 4 5.71 4 7.8c0 .53.11 1.03.31 1.49A4.47 4.47 0 0 0 3 12.52c0 2.08 1.45 3.85 3.39 4.26A4.27 4.27 0 0 0 10.58 20h.17c.48 0 .96-.08 1.41-.24" />
+      <path d="M13.8 4.55c.72-.37 1.52-.55 2.4-.55C18.29 4 20 5.71 20 7.8c0 .53-.11 1.03-.31 1.49A4.47 4.47 0 0 1 21 12.52c0 2.08-1.45 3.85-3.39 4.26A4.27 4.27 0 0 1 13.42 20h-.17c-.48 0-.96-.08-1.41-.24" />
+      <path d="M12 6v11.1" />
+      <path d="M8.55 8.55c1 .15 1.78.97 1.9 1.98" />
+      <path d="M15.45 8.55c-1 .15-1.78.97-1.9 1.98" />
+      <path d="M8.3 13.65c1.2.08 2.19.9 2.55 2.01" />
+      <path d="M15.7 13.65c-1.2.08-2.19.9-2.55 2.01" />
+    </svg>
+  );
+}
+
+function BrainFilledGlyph() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="none"
+    >
+      <path
+        d="M10.2 4.55C9.48 4.18 8.68 4 7.8 4 5.71 4 4 5.71 4 7.8c0 .53.11 1.03.31 1.49A4.47 4.47 0 0 0 3 12.52c0 2.08 1.45 3.85 3.39 4.26A4.27 4.27 0 0 0 10.58 20h.17c.48 0 .96-.08 1.41-.24L12 19.68l.24.08c.45.16.93.24 1.41.24h.17a4.27 4.27 0 0 0 4.19-3.22A4.33 4.33 0 0 0 21 12.52c0-1.34-.59-2.54-1.52-3.36.2-.46.31-.96.31-1.49C19.79 5.71 18.09 4 16 4c-.88 0-1.68.18-2.4.55L12 5.35l-1.8-.8Z"
+        fill="currentColor"
+      />
+      <path
+        d="M12 6v11.1M8.55 8.55c1 .15 1.78.97 1.9 1.98M15.45 8.55c-1 .15-1.78.97-1.9 1.98M8.3 13.65c1.2.08 2.19.9 2.55 2.01M15.7 13.65c-1.2.08-2.19.9-2.55 2.01"
+        fill="none"
+        stroke="rgba(12,14,18,0.72)"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function BrainAnnotationGlyph() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10.2 4.55C9.48 4.18 8.68 4 7.8 4 5.71 4 4 5.71 4 7.8c0 .53.11 1.03.31 1.49A4.47 4.47 0 0 0 3 12.52c0 2.08 1.45 3.85 3.39 4.26A4.27 4.27 0 0 0 10.58 20h.17c.48 0 .96-.08 1.41-.24" />
+      <path d="M13.8 4.55c.72-.37 1.52-.55 2.4-.55C18.29 4 20 5.71 20 7.8c0 .53-.11 1.03-.31 1.49A4.47 4.47 0 0 1 21 12.52c0 2.08-1.45 3.85-3.39 4.26A4.27 4.27 0 0 1 13.42 20h-.17c-.48 0-.96-.08-1.41-.24" />
+      <path d="M12 6v11.1" />
+      <path d="M8.55 8.55c1 .15 1.78.97 1.9 1.98" />
+      <path d="M15.45 8.55c-1 .15-1.78.97-1.9 1.98" />
+      <path d="M8.3 13.65c1.2.08 2.19.9 2.55 2.01" />
+      <path d="M15.7 13.65c-1.2.08-2.19.9-2.55 2.01" />
+      <rect x="13.7" y="13.2" width="7.2" height="7" rx="1.7" fill="rgba(12,14,18,0.88)" stroke="none" />
+      <path d="M15.2 17.3l3.55-3.55 1.6 1.6-3.55 3.55-1.95.35z" />
+      <path d="M17.95 14.55l1.6 1.6" />
+    </svg>
+  );
+}
+
+function Axes3DGlyph() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 4.5v15" />
+      <path d="M4.75 12h14.5" />
+      <path d="M6.7 17.3l10.6-10.6" />
+    </svg>
   );
 }
 
@@ -173,6 +375,21 @@ function SourceCustomIcon() {
         <path d="M7.5 19H5a1 1 0 01-1-1v-2.5" />
       </svg>
     </div>
+  );
+}
+
+function SourceIcon({ icon }: { icon: SourceIconKind }) {
+  if (icon === "custom") {
+    return <SourceCustomIcon />;
+  }
+
+  return (
+    <SourceIconFrame>
+      {icon === "brain-outline" ? <BrainOutlineGlyph /> : null}
+      {icon === "brain-filled" ? <BrainFilledGlyph /> : null}
+      {icon === "brain-annotation" ? <BrainAnnotationGlyph /> : null}
+      {icon === "axes-3d" ? <Axes3DGlyph /> : null}
+    </SourceIconFrame>
   );
 }
 
@@ -250,7 +467,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-brain-skeleton-mesh",
     name: "Allen Mouse Brain Skeleton Mesh",
     url: ALLEN_BRAIN_SKELETON_URL,
-    icon: "generic",
+    icon: "brain-outline",
     builtIn: true,
     remoteFormat: "mesh-obj",
   },
@@ -258,7 +475,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-average-brain-volume-25um",
     name: "Allen Average Mouse Brain (Volume · 25 µm)",
     url: ALLEN_URL,
-    icon: "generic",
+    icon: "brain-filled",
     builtIn: true,
     renderMode: "volume",
     remoteResolution: "25um",
@@ -267,7 +484,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-average-brain-volume-50um",
     name: "Allen Average Mouse Brain (Volume · 50 µm)",
     url: ALLEN_URL,
-    icon: "generic",
+    icon: "brain-filled",
     builtIn: true,
     renderMode: "volume",
     remoteResolution: "50um",
@@ -276,7 +493,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-average-brain-volume-100um",
     name: "Allen Average Mouse Brain (Volume · 100 µm)",
     url: ALLEN_URL,
-    icon: "generic",
+    icon: "brain-filled",
     builtIn: true,
     renderMode: "volume",
     remoteResolution: "100um",
@@ -285,7 +502,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-annotation-volume-25um",
     name: "Allen Annotation (Overlay · 25 µm)",
     url: ALLEN_ANNOTATION_URL,
-    icon: "generic",
+    icon: "brain-annotation",
     builtIn: true,
     remoteFormat: "ome-zarr",
     remoteContentKind: "annotation",
@@ -296,7 +513,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-annotation-volume-50um",
     name: "Allen Annotation (Overlay · 50 µm)",
     url: ALLEN_ANNOTATION_URL,
-    icon: "generic",
+    icon: "brain-annotation",
     builtIn: true,
     remoteFormat: "ome-zarr",
     remoteContentKind: "annotation",
@@ -307,7 +524,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-annotation-volume-100um",
     name: "Allen Annotation (Overlay · 100 µm)",
     url: ALLEN_ANNOTATION_URL,
-    icon: "generic",
+    icon: "brain-annotation",
     builtIn: true,
     remoteFormat: "ome-zarr",
     remoteContentKind: "annotation",
@@ -318,7 +535,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-average-brain-slices-25um",
     name: "Allen Average Mouse Brain (Slices · 25 µm)",
     url: ALLEN_URL,
-    icon: "generic",
+    icon: "axes-3d",
     builtIn: true,
     renderMode: "slices",
     remoteResolution: "25um",
@@ -327,7 +544,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-average-brain-slices-50um",
     name: "Allen Average Mouse Brain (Slices · 50 µm)",
     url: ALLEN_URL,
-    icon: "generic",
+    icon: "axes-3d",
     builtIn: true,
     renderMode: "slices",
     remoteResolution: "50um",
@@ -336,7 +553,7 @@ const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
     id: "allen-average-brain-slices-100um",
     name: "Allen Average Mouse Brain (Slices · 100 µm)",
     url: ALLEN_URL,
-    icon: "generic",
+    icon: "axes-3d",
     builtIn: true,
     renderMode: "slices",
     remoteResolution: "100um",
@@ -412,6 +629,28 @@ function formatBytes(bytes: number): string {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function formatVoxelSizeValue(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "?";
+  return (Math.round(value * 100) / 100).toFixed(2);
+}
+
+function formatLocalScaleReason(reason?: string | null): string | null {
+  if (!reason) return null;
+  if (/too large for browser memory budget/i.test(reason)) {
+    return "This resolution is too large to load in the browser.";
+  }
+  if (/local zarr compression method that is not supported/i.test(reason) || /unsupported local zarr compressor/i.test(reason)) {
+    return "This resolution uses a compression method that is not supported in the browser yet.";
+  }
+  if (/local zarr v3 dataset uses codecs/i.test(reason) || /codec decoding is not implemented/i.test(reason)) {
+    return "This dataset uses local Zarr v3 codecs that are not supported in the browser yet.";
+  }
+  if (/unsupported zarr array order/i.test(reason)) {
+    return "This resolution uses a Zarr array layout that is not supported in the browser yet.";
+  }
+  return reason;
+}
+
 function resolutionSortValue(value?: string | null): number {
   if (!value) return Number.MAX_SAFE_INTEGER;
   const numeric = Number.parseFloat(String(value).replace(/[^0-9.]+/g, ""));
@@ -462,7 +701,8 @@ export default function ImportDataPanel({
   open,
   onClose,
   onAddExternalSources,
-  onAddFiles,
+  onAddLocalImports,
+  onOpenLocalDatasetManager,
 }: {
   open: boolean;
   onClose: () => void;
@@ -479,7 +719,10 @@ export default function ImportDataPanel({
       remoteResolution?: RemoteOmeResolution;
     }>
   ) => void;
-  onAddFiles: (files: FileList | null) => void;
+  onAddLocalImports: (
+    candidates: LocalImportCandidate[]
+  ) => Promise<{ addedCount: number; errors: string[] }> | { addedCount: number; errors: string[] };
+  onOpenLocalDatasetManager?: () => void;
 }) {
   const [mode, setMode] = useState<LayerCreationMode>("external");
   const [isDragging, setIsDragging] = useState(false);
@@ -499,10 +742,16 @@ export default function ImportDataPanel({
   const [editingCustomSourceId, setEditingCustomSourceId] = useState<string | null>(null);
   const [editingCustomSourceName, setEditingCustomSourceName] = useState("");
   const [openCustomSourceMenuId, setOpenCustomSourceMenuId] = useState<string | null>(null);
+  const [localImportFeedback, setLocalImportFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const [pendingLocalImports, setPendingLocalImports] = useState<LocalImportCandidate[]>([]);
+  const [isInspectingLocalImport, setIsInspectingLocalImport] = useState(false);
+  const [localInspectionProgress, setLocalInspectionProgress] = useState<LocalInspectionProgress | null>(null);
+  const [localImportPreviews, setLocalImportPreviews] = useState<Record<string, { key: string; status: "loading" | "ready" | "error"; preview?: LocalImportPreview; error?: string }>>({});
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const addSourceNameInputRef = useRef<HTMLInputElement | null>(null);
+  const localInspectionAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const customSources = getCustomExternalSources().map(toExternalSourceItem);
@@ -547,6 +796,13 @@ export default function ImportDataPanel({
       setEditingCustomSourceId(null);
       setEditingCustomSourceName("");
       setOpenCustomSourceMenuId(null);
+      localInspectionAbortRef.current?.abort();
+      localInspectionAbortRef.current = null;
+      setLocalImportFeedback(null);
+      setPendingLocalImports([]);
+      setIsInspectingLocalImport(false);
+      setLocalInspectionProgress(null);
+      setLocalImportPreviews({});
     }
   }, [open]);
 
@@ -573,11 +829,34 @@ export default function ImportDataPanel({
 
     function handlePointerDown() {
       setOpenCustomSourceMenuId(null);
+      setLocalImportFeedback(null);
+      setPendingLocalImports([]);
+      setIsInspectingLocalImport(false);
     }
 
     window.addEventListener("pointerdown", handlePointerDown);
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [openCustomSourceMenuId]);
+
+
+  function isAbortError(error: unknown) {
+    return error instanceof Error && (error.name === "AbortError" || error.message === "Local import cancelled.");
+  }
+
+  function cancelLocalInspection() {
+    localInspectionAbortRef.current?.abort();
+    localInspectionAbortRef.current = null;
+    setIsInspectingLocalImport(false);
+    setLocalInspectionProgress(null);
+    setLocalImportFeedback({ tone: "error", message: "Local import cancelled." });
+  }
+
+  function handleRequestClose() {
+    if (isInspectingLocalImport) {
+      cancelLocalInspection();
+    }
+    onClose();
+  }
 
 
   const groupedExternalSources = useMemo<ExternalSourceGroup[]>(() => {
@@ -651,6 +930,51 @@ export default function ImportDataPanel({
     () => externalSources.filter((item) => selectedExternalIds.includes(item.id)),
     [externalSources, selectedExternalIds]
   );
+  useEffect(() => {
+    let cancelled = false;
+    const volumeCandidates = pendingLocalImports.filter((candidate) => candidate.inspection.kind === "volume");
+    if (!volumeCandidates.length) {
+      setLocalImportPreviews({});
+      return;
+    }
+
+    for (const candidate of volumeCandidates) {
+      const previewKey = `${candidate.id}::${candidate.inspection.info.selectedResolution ?? "default"}`;
+      const current = localImportPreviews[candidate.id];
+      if (current?.key === previewKey && (current.status === "loading" || current.status === "ready")) {
+        continue;
+      }
+      setLocalImportPreviews((prev) => ({
+        ...prev,
+        [candidate.id]: { key: previewKey, status: "loading" },
+      }));
+      void createLocalImportPreview(candidate)
+        .then((preview) => {
+          if (cancelled) return;
+          setLocalImportPreviews((prev) => ({
+            ...prev,
+            [candidate.id]: { key: preview.key, status: "ready", preview },
+          }));
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setLocalImportPreviews((prev) => ({
+            ...prev,
+            [candidate.id]: {
+              key: previewKey,
+              status: "error",
+              error: error instanceof Error ? error.message : "Preview unavailable.",
+            },
+          }));
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingLocalImports]);
+
+
 
   if (!open) return null;
 
@@ -819,7 +1143,16 @@ export default function ImportDataPanel({
     if (mode !== "external") return;
     if (!selectedExternalSources.length) return;
 
-    const sourcesToAdd = selectedExternalSources.flatMap((item) => {
+    const sourcesToAdd: Array<{
+      id: string;
+      name: string;
+      url: string;
+      icon?: "generic" | "custom";
+      remoteFormat?: RemoteDataFormat;
+      remoteContentKind?: RemoteContentKind;
+      renderMode?: RemoteRenderMode;
+      remoteResolution?: RemoteOmeResolution;
+    }> = selectedExternalSources.flatMap((item) => {
       if (item.icon === "custom" && !item.builtIn) {
         const selectable = getSelectableScales(item);
         if (!selectable.length) return [];
@@ -834,7 +1167,7 @@ export default function ImportDataPanel({
           id: item.id,
           name: buildCustomLayerName(item, uiState.renderMode, selectedScale.resolutionLabel),
           url: item.url,
-          icon: item.icon,
+          icon: item.icon === "custom" ? "custom" : "generic",
           remoteFormat: item.remoteFormat ?? "ome-zarr",
           remoteContentKind: item.remoteContentKind ?? "intensity",
           renderMode: uiState.renderMode,
@@ -846,7 +1179,7 @@ export default function ImportDataPanel({
         id: item.id,
         name: item.name,
         url: item.url,
-        icon: item.icon,
+        icon: item.icon === "custom" ? "custom" : "generic",
         remoteFormat: item.remoteFormat,
         remoteContentKind: item.remoteContentKind,
         renderMode: item.renderMode,
@@ -858,9 +1191,194 @@ export default function ImportDataPanel({
     onAddExternalSources(sourcesToAdd);
   }
 
-  function handleDrop(files: FileList | null) {
-    if (!files || files.length === 0) return;
-    onAddFiles(files);
+  function setPendingImportRenderMode(importId: string, renderMode: Exclude<RemoteRenderMode, "auto">) {
+    setPendingLocalImports((prev) => prev.map((candidate) => candidate.id !== importId ? candidate : ({
+      ...candidate,
+      inspection: { ...candidate.inspection, renderMode },
+    })));
+  }
+
+  function setPendingImportResolution(importId: string, resolutionLabel: string) {
+    setPendingLocalImports((prev) => prev.map((candidate) => {
+      if (candidate.id !== importId) return candidate;
+      const scales = candidate.inspection.info.availableScales ?? [];
+      const selected = scales.find((scale) => scale.resolutionLabel === resolutionLabel) ?? null;
+      return {
+        ...candidate,
+        inspection: {
+          ...candidate.inspection,
+          info: {
+            ...candidate.inspection.info,
+            selectedResolution: resolutionLabel,
+            selectedDatasetPath: selected?.datasetPath ?? candidate.inspection.info.selectedDatasetPath ?? null,
+            dims: selected?.dims ?? candidate.inspection.info.dims,
+            rawShape: selected?.rawShape ?? candidate.inspection.info.rawShape,
+            voxelSizeUm: selected?.voxelSizeUm ?? candidate.inspection.info.voxelSizeUm,
+          },
+        },
+      };
+    }));
+  }
+
+  async function collectDroppedEntries(items: DataTransferItemList | null, files: FileList | null, options?: { signal?: AbortSignal; onProgress?: (progress: LocalInspectionProgress) => void }): Promise<LocalInputEntry[]> {
+    const output: LocalInputEntry[] = [];
+    let discovered = 0;
+    const report = (message: string) => options?.onProgress?.({ phase: "reading", message, completed: Math.max(0, discovered), total: Math.max(1, discovered + 1), percent: 0.05 });
+    async function walkEntry(entry: any, prefix: string) {
+      if (options?.signal?.aborted) {
+        const error = new Error("Local import cancelled.");
+        (error as Error & { name?: string }).name = "AbortError";
+        throw error;
+      }
+      if (!entry) return;
+      if (entry.isFile) {
+        const file: File = await new Promise((resolve, reject) => entry.file(resolve, reject));
+        discovered += 1;
+        output.push({ path: prefix ? `${prefix}/${file.name}` : file.name, file });
+        report(`Reading ${file.name}`);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        return;
+      }
+      if (entry.isDirectory) {
+        report(`Reading folder ${entry.name}`);
+        const reader = entry.createReader();
+        const readBatch = (): Promise<any[]> => new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+        while (true) {
+          const batch = await readBatch();
+          if (!batch.length) break;
+          for (const child of batch) {
+            await walkEntry(child, prefix ? `${prefix}/${entry.name}` : entry.name);
+          }
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+    }
+
+    let usedDirectoryApi = false;
+    if (items) {
+      for (const item of Array.from(items)) {
+        const entry = (item as any).webkitGetAsEntry?.();
+        if (entry) {
+          usedDirectoryApi = true;
+          await walkEntry(entry, "");
+        } else {
+          const file = item.getAsFile?.();
+          if (file) {
+            discovered += 1;
+            output.push({ path: file.webkitRelativePath || file.name, file });
+            report(`Reading ${file.name}`);
+          }
+        }
+      }
+    }
+    if (!usedDirectoryApi && files) {
+      for (const file of Array.from(files)) {
+        if (options?.signal?.aborted) {
+          const error = new Error("Local import cancelled.");
+          (error as Error & { name?: string }).name = "AbortError";
+          throw error;
+        }
+        discovered += 1;
+        output.push({ path: file.webkitRelativePath || file.name, file });
+        report(`Reading ${file.name}`);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      }
+    }
+    return output;
+  }
+
+  async function startLocalInspection(getEntries: (controller: AbortController) => Promise<LocalInputEntry[]>) {
+    localInspectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    localInspectionAbortRef.current = controller;
+    setIsInspectingLocalImport(true);
+    setLocalInspectionProgress({ phase: "reading", message: "Preparing local import…", completed: 0, total: 1, percent: 0 });
+    setLocalImportFeedback(null);
+    try {
+      const entries = await getEntries(controller);
+      if (controller.signal.aborted) return;
+      await handleLocalDropInput(entries, controller);
+    } catch (error) {
+      if (isAbortError(error)) return;
+      setPendingLocalImports([]);
+      setLocalImportFeedback({ tone: "error", message: error instanceof Error ? error.message : "Failed to inspect local import." });
+      setIsInspectingLocalImport(false);
+      setLocalInspectionProgress(null);
+      if (localInspectionAbortRef.current === controller) localInspectionAbortRef.current = null;
+    }
+  }
+
+  async function handleLocalDropInput(entries: LocalInputEntry[], existingController?: AbortController) {
+    if (!entries.length) return;
+    const controller = existingController ?? new AbortController();
+    if (!existingController) {
+      localInspectionAbortRef.current?.abort();
+      localInspectionAbortRef.current = controller;
+      setIsInspectingLocalImport(true);
+      setLocalInspectionProgress({ phase: "reading", message: "Preparing local import…", completed: 0, total: Math.max(entries.length, 1), percent: 0 });
+      setLocalImportFeedback(null);
+    }
+    try {
+      const candidates = await inspectLocalInputEntries(entries, {
+        signal: controller.signal,
+        onProgress: (progress) => setLocalInspectionProgress(progress),
+      });
+      if (controller.signal.aborted) return;
+      setPendingLocalImports(candidates.map((candidate) => {
+        const preferredScale = candidate.inspection.info.availableScales?.find((scale) => scale.canLoad) ?? candidate.inspection.info.availableScales?.[0] ?? null;
+        return {
+          ...candidate,
+          inspection: {
+            ...candidate.inspection,
+            renderMode: candidate.inspection.kind === "volume" ? (candidate.inspection.renderMode ?? "slices") : candidate.inspection.renderMode,
+            info: {
+              ...candidate.inspection.info,
+              selectedResolution: candidate.inspection.info.selectedResolution ?? preferredScale?.resolutionLabel ?? null,
+              selectedDatasetPath: candidate.inspection.info.selectedDatasetPath ?? preferredScale?.datasetPath ?? null,
+              dims: preferredScale?.dims ?? candidate.inspection.info.dims,
+              rawShape: preferredScale?.rawShape ?? candidate.inspection.info.rawShape,
+              voxelSizeUm: preferredScale?.voxelSizeUm ?? candidate.inspection.info.voxelSizeUm,
+            },
+          },
+        };
+      }));
+      setLocalImportFeedback({
+        tone: "success",
+        message: `${entries.length} file${entries.length > 1 ? "s" : ""} inspected. Choose what to add to the scene.`,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        return;
+      }
+      setPendingLocalImports([]);
+      setLocalImportFeedback({ tone: "error", message: error instanceof Error ? error.message : "Failed to inspect local import." });
+    } finally {
+      if (localInspectionAbortRef.current === controller) {
+        localInspectionAbortRef.current = null;
+      }
+      setIsInspectingLocalImport(false);
+      setLocalInspectionProgress(null);
+    }
+  }
+
+  async function handleConfirmLocalImports() {
+    if (!pendingLocalImports.length) return;
+    const result = await onAddLocalImports(pendingLocalImports);
+    if (result.addedCount > 0 && result.errors.length === 0) {
+      setLocalImportFeedback({ tone: "success", message: `${result.addedCount} dataset${result.addedCount > 1 ? "s" : ""} imported locally.` });
+      setPendingLocalImports([]);
+      window.setTimeout(() => { onClose(); }, 900);
+      return;
+    }
+    setLocalImportFeedback({ tone: "error", message: result.errors.join(" ") || "No supported local dataset could be imported." });
+  }
+
+
+  function getPreviewState(candidate: LocalImportCandidate) {
+    const key = `${candidate.id}::${candidate.inspection.info.selectedResolution ?? "default"}`;
+    const state = localImportPreviews[candidate.id];
+    if (!state || state.key !== key) return null;
+    return state;
   }
 
   function handleSearchBlur() {
@@ -871,7 +1389,7 @@ export default function ImportDataPanel({
 
   return (
     <div
-      onClick={onClose}
+      onClick={handleRequestClose}
       style={{
         position: "absolute",
         inset: 0,
@@ -903,7 +1421,7 @@ export default function ImportDataPanel({
           padding: 18,
         }}
       >
-        <style>{`@keyframes custom-source-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+        <style>{`@keyframes custom-source-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } @keyframes preview-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }`}</style>
 
         <div
           style={{
@@ -923,7 +1441,7 @@ export default function ImportDataPanel({
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleRequestClose}
             style={{
               width: 36,
               height: 36,
@@ -949,7 +1467,7 @@ export default function ImportDataPanel({
           />
           <TabButton
             active={mode === "custom"}
-            title="Custom data"
+            title="Personnal data"
             subtitle="Upload your own files"
             icon={<DataIcon />}
             onClick={() => setMode("custom")}
@@ -1407,7 +1925,7 @@ export default function ImportDataPanel({
                           }}
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                            {item.icon === "custom" ? <SourceCustomIcon /> : <SourceGenericIcon />}
+                            <SourceIcon icon={item.icon} />
 
                             <div style={{ display: "flex", alignItems: "flex-start", gap: 8, position: "relative" }}>
                               {isCustom ? (
@@ -1464,6 +1982,9 @@ export default function ImportDataPanel({
                                           e.stopPropagation();
                                           handleStartRenameCustomSource(item);
                                           setOpenCustomSourceMenuId(null);
+      setLocalImportFeedback(null);
+      setPendingLocalImports([]);
+      setIsInspectingLocalImport(false);
                                         }}
                                         style={{
                                           width: "100%",
@@ -1482,12 +2003,14 @@ export default function ImportDataPanel({
                                       <button
                                         type="button"
                                         onPointerDown={(e) => e.stopPropagation()}
-                                        onPointerDown={(e) => e.stopPropagation()}
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           handleDeleteCustomSource(item.id);
                                           setOpenCustomSourceMenuId(null);
+      setLocalImportFeedback(null);
+      setPendingLocalImports([]);
+      setIsInspectingLocalImport(false);
                                         }}
                                         style={{
                                           width: "100%",
@@ -1751,7 +2274,7 @@ export default function ImportDataPanel({
                         }}
                       >
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                          {group.icon === "custom" ? <SourceCustomIcon /> : <SourceGenericIcon />}
+                          <SourceIcon icon={group.icon} />
 
                           <div
                             style={{
@@ -1866,6 +2389,7 @@ export default function ImportDataPanel({
           <div
             data-theme-surface="soft"
             style={{
+              position: "relative",
               borderRadius: 16,
               border: "1px solid rgba(255,255,255,0.10)",
               background: "rgba(255,255,255,0.03)",
@@ -1874,60 +2398,293 @@ export default function ImportDataPanel({
               flexDirection: "column",
               minHeight: 0,
               flex: 1,
+              gap: 12,
             }}
           >
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
-              Upload custom data
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>
+                  Upload custom data
+                </div>
+                <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.72, lineHeight: 1.45 }}>
+                  Drop files, folders, or ZIP archives here. Supports NRRD, NIfTI (.nii/.nii.gz), TIFF, OBJ, OME-Zarr/Zarr, and gzip-compressed variants of supported single files. Local imports stay only in this browser and are not included when sharing the viewer.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onOpenLocalDatasetManager?.()}
+                style={{
+                  height: 34,
+                  padding: "0 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "white",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                Manage local data
+              </button>
             </div>
 
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setIsDragging(false);
-                handleDrop(e.dataTransfer.files);
-              }}
-              onClick={() => inputRef.current?.click()}
-              style={{
-                minHeight: 180,
-                borderRadius: 16,
-                border: isDragging
-                  ? "1px solid rgba(130,240,190,0.85)"
-                  : "1px dashed rgba(255,255,255,0.20)",
-                background: isDragging
-                  ? "rgba(90,210,160,0.12)"
-                  : "rgba(255,255,255,0.02)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                textAlign: "center",
-                padding: 24,
-              }}
-            >
-              <div style={{ fontSize: 14, fontWeight: 700 }}>
-                Drag and drop files here
+            {localImportFeedback ? (
+              <div
+                style={{
+                  borderRadius: 10,
+                  border: localImportFeedback.tone === "success" ? "1px solid rgba(120,220,150,0.24)" : "1px solid rgba(255,120,120,0.22)",
+                  background: localImportFeedback.tone === "success" ? "rgba(70,180,100,0.12)" : "rgba(255,80,80,0.08)",
+                  color: localImportFeedback.tone === "success" ? "#d7ffe2" : "#ffd0d0",
+                  padding: "10px 12px",
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
+                }}
+              >
+                {localImportFeedback.message}
               </div>
-              <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.68, marginTop: 8 }}>
-                or click to browse and add one or more files
+            ) : null}
+
+            <div style={{ display: "grid", gridTemplateColumns: pendingLocalImports.length > 0 ? "minmax(230px, 290px) minmax(0, 1fr)" : "1fr", gap: 12, flex: 1, minHeight: 0 }}>
+              <div
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  void startLocalInspection((controller) => collectDroppedEntries(e.dataTransfer.items, e.dataTransfer.files, {
+                    signal: controller.signal,
+                    onProgress: (progress) => setLocalInspectionProgress(progress),
+                  }));
+                }}
+                onClick={() => inputRef.current?.click()}
+                style={{
+                  minHeight: 240,
+                  borderRadius: 18,
+                  border: isDragging ? "1px solid rgba(130,240,190,0.85)" : "1px dashed rgba(255,255,255,0.20)",
+                  background: isDragging ? "rgba(90,210,160,0.12)" : "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02))",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  textAlign: "center",
+                  padding: 24,
+                  gap: 10,
+                }}
+              >
+                <div style={{ width: 46, height: 46, borderRadius: 14, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <DataIcon />
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 800 }}>
+                  {isInspectingLocalImport ? "Inspecting local data…" : "Drop local files or folders"}
+                </div>
+                <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.74, lineHeight: 1.5, maxWidth: 240 }}>
+                  The app inspects your dataset first, then you choose the preview, the import mode, and the best resolution before adding it to the scene.
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 2 }}>
+                  {["NRRD", "NIfTI", "TIFF", "OME-Zarr", "Zarr", "ZIP"].map((label) => (
+                    <span key={label} style={{ height: 26, padding: "0 9px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", display: "inline-flex", alignItems: "center", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", opacity: 0.78 }}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
               </div>
+
+              {pendingLocalImports.length > 0 ? (
+                <div className="layer-panel-scroll" style={{ minHeight: 0, maxHeight: "none", paddingRight: 4, display: "grid", gap: 12, alignContent: "start" }}>
+                  {pendingLocalImports.map((candidate) => {
+                    const scales = candidate.inspection.info.availableScales ?? [];
+                    const selectableScales = scales.filter((scale) => scale.canLoad);
+                    const renderMode = candidate.inspection.renderMode ?? "slices";
+                    const selectedResolution = candidate.inspection.info.selectedResolution ?? selectableScales[0]?.resolutionLabel ?? scales[0]?.resolutionLabel ?? null;
+                    const previewState = getPreviewState(candidate);
+                    const preview = previewState?.preview;
+                    const dims = candidate.inspection.info.dims;
+                    const voxelSize = candidate.inspection.info.voxelSizeUm;
+                    const voxelText = voxelSize && (voxelSize.x || voxelSize.y || voxelSize.z)
+                      ? `${formatVoxelSizeValue(voxelSize.x)} × ${formatVoxelSizeValue(voxelSize.y)} × ${formatVoxelSizeValue(voxelSize.z)} µm`
+                      : "Unknown";
+                    return (
+                      <div key={candidate.id} style={{ borderRadius: 16, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", padding: 14, display: "grid", gap: 12 }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 800, lineHeight: 1.35 }}>{candidate.name}</div>
+                            <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.74, marginTop: 5, lineHeight: 1.45 }}>
+                              {candidate.inspection.format === "ome-zarr" || candidate.inspection.format === "zarr"
+                                ? `Detected ${candidate.inspection.format.toUpperCase()} dataset`
+                                : `Detected ${candidate.inspection.format.toUpperCase()} ${candidate.inspection.kind}`}
+                            </div>
+                          </div>
+                          <div style={{ height: 24, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", display: "inline-flex", alignItems: "center", flexShrink: 0, fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", opacity: 0.72 }}>
+                            LOCAL ONLY
+                          </div>
+                        </div>
+
+                        {candidate.inspection.kind === "volume" ? (
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                            <PreviewAxisTile label="XY" src={preview?.xyDataUrl ?? null} loading={previewState?.status === "loading"} error={previewState?.status === "error" ? previewState.error ?? null : null} />
+                            <PreviewAxisTile label="XZ" src={preview?.xzDataUrl ?? null} loading={previewState?.status === "loading"} error={previewState?.status === "error" ? previewState.error ?? null : null} />
+                            <PreviewAxisTile label="YZ" src={preview?.yzDataUrl ?? null} loading={previewState?.status === "loading"} error={previewState?.status === "error" ? previewState.error ?? null : null} />
+                          </div>
+                        ) : (
+                          <div style={{ borderRadius: 14, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.03)", minHeight: 116, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8 }}>
+                            <div style={{ width: 40, height: 40, borderRadius: 12, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <DataIcon />
+                            </div>
+                            <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>Mesh preview is not shown here yet</div>
+                          </div>
+                        )}
+
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8 }}>
+                          <DatasetStat label="Format" value={candidate.inspection.format.toUpperCase()} />
+                          <DatasetStat label="Size" value={formatBytes(candidate.inspection.info.fileSizeBytes)} />
+                          <DatasetStat label="Dimensions" value={dims ? `${dims.x} × ${dims.y} × ${dims.z}` : "Unknown"} />
+                          <DatasetStat label="Voxel size" value={voxelText} />
+                        </div>
+
+                        {candidate.inspection.kind === "volume" ? (
+                          <div style={{ display: "grid", gap: 10 }}>
+                            <SectionLabel>Display mode</SectionLabel>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              <button type="button" onClick={() => setPendingImportRenderMode(candidate.id, "slices")} style={{ height: 32, padding: "0 12px", borderRadius: 999, border: renderMode === "slices" ? "1px solid rgba(92,149,230,0.88)" : "1px solid rgba(255,255,255,0.14)", background: renderMode === "slices" ? "rgba(92,149,230,0.26)" : "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 800 }}>Slices</button>
+                              <button type="button" onClick={() => setPendingImportRenderMode(candidate.id, "volume")} style={{ height: 32, padding: "0 12px", borderRadius: 999, border: renderMode === "volume" ? "1px solid rgba(92,149,230,0.88)" : "1px solid rgba(255,255,255,0.14)", background: renderMode === "volume" ? "rgba(92,149,230,0.26)" : "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 800 }}>Volume</button>
+                            </div>
+
+                            {scales.length > 0 ? (
+                              <>
+                                <SectionLabel>Resolution</SectionLabel>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  {scales.map((scale) => {
+                                    const active = selectedResolution === scale.resolutionLabel;
+                                    const reason = formatLocalScaleReason(scale.unsupportedReason);
+                                    const recommended = candidate.inspection.info.recommendedResolution === scale.resolutionLabel;
+                                    return (
+                                      <button
+                                        key={`${candidate.id}-${scale.datasetPath}`}
+                                        type="button"
+                                        disabled={!scale.canLoad}
+                                        title={reason ?? undefined}
+                                        onClick={() => scale.canLoad && setPendingImportResolution(candidate.id, scale.resolutionLabel)}
+                                        style={{
+                                          height: 34,
+                                          padding: "0 12px",
+                                          borderRadius: 999,
+                                          border: active ? "1px solid rgba(92,149,230,0.88)" : scale.canLoad ? "1px solid rgba(255,255,255,0.14)" : "1px solid rgba(255,255,255,0.10)",
+                                          background: active ? "rgba(92,149,230,0.26)" : scale.canLoad ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.04)",
+                                          color: scale.canLoad ? "white" : "rgba(255,255,255,0.46)",
+                                          cursor: scale.canLoad ? "pointer" : "default",
+                                          fontSize: 11,
+                                          fontWeight: 800,
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 6,
+                                        }}
+                                      >
+                                        <span>{getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel}</span>
+                                        {recommended ? (
+                                          <span style={{ height: 18, padding: "0 6px", borderRadius: 999, background: "rgba(255,255,255,0.10)", display: "inline-flex", alignItems: "center", fontSize: 9, letterSpacing: "0.04em" }}>
+                                            BEST
+                                          </span>
+                                        ) : null}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                {scales.some((scale) => !scale.canLoad && formatLocalScaleReason(scale.unsupportedReason)) ? (
+                                  <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72, lineHeight: 1.45 }}>
+                                    {formatLocalScaleReason(scales.find((scale) => !scale.canLoad && formatLocalScaleReason(scale.unsupportedReason))?.unsupportedReason)}
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {candidate.inspection.info.warning ? (
+                          <div style={{ borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "9px 10px", fontSize: 11, lineHeight: 1.45, opacity: 0.76 }}>
+                            {candidate.inspection.info.warning}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
 
             <input
               ref={inputRef}
               type="file"
               multiple
-              onChange={(e) => {
-                handleDrop(e.target.files);
+              onChange={async (e) => {
+                void startLocalInspection((controller) => collectDroppedEntries(null, e.target.files, {
+                  signal: controller.signal,
+                  onProgress: (progress) => setLocalInspectionProgress(progress),
+                }));
                 e.currentTarget.value = "";
               }}
               style={{ display: "none" }}
             />
+
+            {isInspectingLocalImport && localInspectionProgress ? (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 16,
+                  borderRadius: 16,
+                  background: "rgba(10,12,16,0.88)",
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  backdropFilter: "blur(8px)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  zIndex: 2,
+                  padding: 20,
+                }}
+              >
+                <div style={{ width: "min(460px, 100%)", display: "grid", gap: 14 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>Importing local data…</div>
+                  <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.78, lineHeight: 1.45 }}>
+                    {localInspectionProgress.message}
+                  </div>
+                  <div style={{ height: 10, borderRadius: 999, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${Math.max(4, Math.min(100, Math.round(localInspectionProgress.percent * 100)))}%`,
+                        borderRadius: 999,
+                        background: "linear-gradient(90deg, rgba(92,149,230,0.9), rgba(120,190,255,0.95))",
+                        transition: "width 120ms ease",
+                      }}
+                    />
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.68 }}>
+                    {Math.min(localInspectionProgress.completed, localInspectionProgress.total)} / {localInspectionProgress.total}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={cancelLocalInspection}
+                      style={{
+                        height: 36,
+                        padding: "0 14px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "rgba(255,255,255,0.06)",
+                        color: "white",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel import
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -1946,7 +2703,9 @@ export default function ImportDataPanel({
             {mode === "external" && selectedExternalSources.length > 0
               ? `${selectedExternalSources.length} source${selectedExternalSources.length > 1 ? "s" : ""} selected`
               : mode === "custom"
-              ? "Upload files to create layers automatically"
+              ? pendingLocalImports.length > 0
+                ? `${pendingLocalImports.length} local import${pendingLocalImports.length > 1 ? "s" : ""} ready`
+                : "Inspect files, folders, or ZIP archives before adding them"
               : "\u00A0"}
           </div>
 
@@ -1966,6 +2725,24 @@ export default function ImportDataPanel({
             >
               Cancel
             </button>
+
+            {mode === "custom" && pendingLocalImports.length > 0 && (
+              <button
+                type="button"
+                onClick={handleConfirmLocalImports}
+                style={{
+                  height: 40,
+                  padding: "0 14px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(160,220,255,0.35)",
+                  background: "rgba(120,190,255,0.18)",
+                  color: "white",
+                  cursor: "pointer",
+                }}
+              >
+                Add imported data
+              </button>
+            )}
 
             {mode === "external" && (
               <button
