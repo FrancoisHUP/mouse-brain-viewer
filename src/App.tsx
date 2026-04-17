@@ -67,8 +67,8 @@ import type {
   SliceLayerParams,
   SlicePlane,
 } from "./layerTypes";
-import { type LocalImportCandidate } from "./localDataHandlers";
-import { deleteLocalDatasetRecord, renameLocalDatasetRecord, storeLocalDatasetFile, storeLocalDatasetTree } from "./localDataStore";
+import { type LocalImportCandidate, type LocalInputEntry } from "./localDataHandlers";
+import { clearAllLocalDatasetRecords, deleteLocalDatasetRecord, renameLocalDatasetRecord, storeLocalDatasetFile, storeLocalDatasetTree } from "./localDataStore";
 import type { ScenePointerHit, SelectedLayerRuntimeInfo } from "./WebGLCanvas";
 import {
   collectAllLayerItems,
@@ -278,6 +278,165 @@ const primaryButtonStyle: CSSProperties = {
   fontWeight: 600,
 };
 
+const APP_VERSION = __APP_VERSION__ || "0.0.0-dev";
+const APP_COMMIT_SHA = __APP_COMMIT_SHA__ || "dev";
+const APP_REPO_URL = __APP_REPO_URL__ || "";
+const APP_COMMIT_SHORT = APP_COMMIT_SHA === "dev" ? "dev" : APP_COMMIT_SHA.slice(0, 7);
+const APP_COMMIT_URL =
+  APP_COMMIT_SHA === "dev" || !APP_REPO_URL
+    ? null
+    : `${APP_REPO_URL}/commit/${APP_COMMIT_SHA}`;
+
+function dataTransferHasFiles(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false;
+  return Array.from(dataTransfer.types ?? []).includes("Files");
+}
+
+async function collectDroppedLocalEntries(
+  items: DataTransferItemList | null,
+  files: FileList | null
+): Promise<LocalInputEntry[]> {
+  const output: LocalInputEntry[] = [];
+
+  async function walkEntry(entry: any, prefix: string) {
+    if (!entry) return;
+    if (entry.isFile) {
+      const file: File = await new Promise((resolve, reject) => entry.file(resolve, reject));
+      output.push({ path: prefix ? `${prefix}/${file.name}` : file.name, file });
+      return;
+    }
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const readBatch = (): Promise<any[]> => new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+      while (true) {
+        const batch = await readBatch();
+        if (!batch.length) break;
+        for (const child of batch) {
+          await walkEntry(child, prefix ? `${prefix}/${entry.name}` : entry.name);
+        }
+      }
+    }
+  }
+
+  let usedDirectoryApi = false;
+  if (items) {
+    for (const item of Array.from(items)) {
+      const entry = (item as any).webkitGetAsEntry?.();
+      if (entry) {
+        usedDirectoryApi = true;
+        await walkEntry(entry, "");
+      } else {
+        const file = item.getAsFile?.();
+        if (file) {
+          output.push({ path: file.webkitRelativePath || file.name, file });
+        }
+      }
+    }
+  }
+
+  if (!usedDirectoryApi && files) {
+    for (const file of Array.from(files)) {
+      output.push({ path: file.webkitRelativePath || file.name, file });
+    }
+  }
+
+  return output;
+}
+
+
+function MenuHamburgerIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h16" />
+    </svg>
+  );
+}
+
+function NewViewerIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="5" width="16" height="14" rx="2.5" />
+      <path d="M12 9v6" />
+      <path d="M9 12h6" />
+    </svg>
+  );
+}
+
+function LibraryMenuIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3.5 7.5A2.5 2.5 0 016 5h4l2 2h6A2.5 2.5 0 0120.5 9.5v8A2.5 2.5 0 0118 20H6a2.5 2.5 0 01-2.5-2.5z" />
+      <path d="M3.5 9h17" />
+    </svg>
+  );
+}
+
+function SaveMenuIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 4h11l3 3v13a1 1 0 01-1 1H6a1 1 0 01-1-1V4z" />
+      <path d="M8 4v6h8V4" />
+      <path d="M9 16h6" />
+    </svg>
+  );
+}
+
+function ImportDataMenuIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="6" rx="7" ry="3" />
+      <path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
+      <path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
+    </svg>
+  );
+}
+
+function ManageDataMenuIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6h10" />
+      <path d="M4 12h16" />
+      <path d="M4 18h12" />
+      <circle cx="17" cy="6" r="2" />
+      <circle cx="8" cy="18" r="2" />
+    </svg>
+  );
+}
+
+function ShareMenuIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="18" cy="5" r="2.5" />
+      <circle cx="6" cy="12" r="2.5" />
+      <circle cx="18" cy="19" r="2.5" />
+      <path d="M8.2 10.8l7.6-4.6" />
+      <path d="M8.2 13.2l7.6 4.6" />
+    </svg>
+  );
+}
+
+function ImportStateMenuIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 21V10" />
+      <path d="M8 17l4 4 4-4" />
+      <path d="M5 10V6a2 2 0 012-2h10a2 2 0 012 2v4" />
+    </svg>
+  );
+}
+
+function ProfileMenuIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20a7 7 0 0114 0" />
+    </svg>
+  );
+}
+
+
 function getThemeRootCss(theme: AppPreferences["theme"]): string {
   if (theme === "light") {
     return `
@@ -383,6 +542,9 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [isLocalDatasetManagerOpen, setIsLocalDatasetManagerOpen] = useState(false);
   const [isUserProfilePanelOpen, setIsUserProfilePanelOpen] = useState(false);
+  const [isStateDialogOpen, setIsStateDialogOpen] = useState(false);
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  const [isAppMenuOpen, setIsAppMenuOpen] = useState(false);
   const [layerTree, setLayerTree] = useState<LayerTreeNode[]>(INITIAL_TREE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     getFirstLayerId(INITIAL_TREE)
@@ -397,6 +559,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
   const [stateShareMessage, setStateShareMessage] = useState<string | null>(null);
+  const [shareUrlDraft, setShareUrlDraft] = useState("");
   const [viewerLibrary, setViewerLibrary] = useState<SavedViewerEntry[]>(() =>
     loadPersistedViewerLibrary()
   );
@@ -419,6 +582,8 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   const [localSceneLoadState, setLocalSceneLoadState] = useState<{ active: boolean; pending: number }>({ active: false, pending: 0 });
   const [dismissLocalSceneLoadNotice, setDismissLocalSceneLoadNotice] = useState(false);
+  const [isGlobalFileDragActive, setIsGlobalFileDragActive] = useState(false);
+  const [droppedLocalEntries, setDroppedLocalEntries] = useState<LocalInputEntry[] | null>(null);
 
   useEffect(() => {
     if (!localSceneLoadState.active) {
@@ -427,6 +592,24 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
     setDismissLocalSceneLoadNotice(false);
   }, [localSceneLoadState.active]);
+
+  useEffect(() => {
+    if (!isAppMenuOpen) return;
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-viewer-app-menu='true']")) return;
+      setIsAppMenuOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setIsAppMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isAppMenuOpen]);
 
   const initializedStartupSlicesRef = useRef(false);
   const hasHydratedHistoryRef = useRef(false);
@@ -437,6 +620,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const lastCommittedStateRef = useRef<ViewerStateV1 | null>(null);
   const lastCommittedHashRef = useRef<string>("");
   const viewerCanvasElementRef = useRef<HTMLCanvasElement | null>(null);
+  const globalFileDragDepthRef = useRef(0);
 
   const [sliceVolumeLayerId, setSliceVolumeLayerId] = useState<string>("");
   const [sliceName, setSliceName] = useState<string>("");
@@ -465,6 +649,67 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   const selectedAnnotation = selectedAnnotationLayer?.annotation ?? null;
 
+  const canShowGlobalDropOverlay =
+    isGlobalFileDragActive &&
+    !isImportPanelOpen &&
+    !isLocalDatasetManagerOpen &&
+    !isUserProfilePanelOpen &&
+    activeTool !== "library" &&
+    activeTool !== "export";
+
+  useEffect(() => {
+    async function handleWindowDrop(event: DragEvent) {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      globalFileDragDepthRef.current = 0;
+      setIsGlobalFileDragActive(false);
+      const entries = await collectDroppedLocalEntries(event.dataTransfer?.items ?? null, event.dataTransfer?.files ?? null);
+      if (!entries.length) return;
+      setDroppedLocalEntries(entries);
+      setIsLocalDatasetManagerOpen(false);
+      setIsUserProfilePanelOpen(false);
+      setActiveTool("mouse");
+      setIsImportPanelOpen(true);
+    }
+
+    function handleWindowDragEnter(event: DragEvent) {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      globalFileDragDepthRef.current += 1;
+      setIsGlobalFileDragActive(true);
+    }
+
+    function handleWindowDragOver(event: DragEvent) {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "copy";
+      }
+      setIsGlobalFileDragActive(true);
+    }
+
+    function handleWindowDragLeave(event: DragEvent) {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      globalFileDragDepthRef.current = Math.max(0, globalFileDragDepthRef.current - 1);
+      if (globalFileDragDepthRef.current === 0) {
+        setIsGlobalFileDragActive(false);
+      }
+    }
+
+    window.addEventListener("dragenter", handleWindowDragEnter);
+    window.addEventListener("dragover", handleWindowDragOver);
+    window.addEventListener("dragleave", handleWindowDragLeave);
+    window.addEventListener("drop", handleWindowDrop);
+    return () => {
+      window.removeEventListener("dragenter", handleWindowDragEnter);
+      window.removeEventListener("dragover", handleWindowDragOver);
+      window.removeEventListener("dragleave", handleWindowDragLeave);
+      window.removeEventListener("drop", handleWindowDrop);
+    };
+  }, []);
+
   useEffect(() => {
     if (!selectedNode || selectedNode.kind !== "layer" || selectedNode.type === "annotation") {
       setSelectedLayerRuntimeInfo((prev) => (prev ? null : prev));
@@ -475,10 +720,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     <div
       data-theme-surface="panel"
       style={{
-        width: isInspectorCollapsed ? 250 : 360,
-        borderRadius: 18,
-        border: "1px solid rgba(255,255,255,0.10)",
-        boxShadow: "0 14px 38px rgba(0,0,0,0.35)",
+        width: "100%",
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,0.08)",
+        boxShadow: "none",
         backdropFilter: "blur(14px)",
         overflow: "hidden",
         transition: "width 220ms ease",
@@ -769,7 +1014,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const canUndo = pastStatesRef.current.length > 0;
   const canRedo = futureStatesRef.current.length > 0;
   const canClearHistory = canUndo || canRedo;
-  const isStateModalOpen = activeTool === "export";
+  const isStateModalOpen = isStateDialogOpen;
   const localOnlyLayerNames = useMemo(() => getLocalOnlyLayerNames(layerTree), [layerTree]);
   const isCurrentViewerShareSerializable = useMemo(() => isSerializableLayerTree(layerTree), [layerTree]);
 
@@ -1293,12 +1538,47 @@ export default function App({ startupSlices = [] }: AppProps) {
     return applyHistoricalViewerState(nextEntry.state);
   }
 
+  function handleCreateNewViewer() {
+    const nextState = createViewerState({
+      activeTool: "mouse",
+      selectedNodeId: null,
+      layerTree: [],
+      sliceVolumeLayerId: "",
+      sliceName: "",
+      sliceParamsDraft: {
+        mode: "axis",
+        plane: "xy",
+        index: 0,
+        opacity: 0.92,
+      },
+      layerPanelCollapsed: false,
+      inspectorCollapsed: false,
+      camera: DEFAULT_CAMERA_STATE,
+    });
+
+    setIsImportPanelOpen(false);
+    setIsLocalDatasetManagerOpen(false);
+    setIsUserProfilePanelOpen(false);
+    setIsStateDialogOpen(false);
+    setIsShareDialogOpen(false);
+    setLibraryError(null);
+    setLibraryMessage(null);
+    setSaveNoticeOpen(false);
+    setSaveNoticeMessage(null);
+    setStateError(null);
+    setStateShareMessage(null);
+    setStateTextDraft("");
+    setIsAppMenuOpen(false);
+    commitCurrentStateNow(nextState);
+  }
+
   function openExportStateModal() {
     setStateError(null);
     setStateShareMessage(null);
     setStateModalMode("export");
     setStateTextDraft(JSON.stringify(currentViewerState, null, 2));
-    setActiveTool("export");
+    setIsStateDialogOpen(true);
+    setIsAppMenuOpen(false);
   }
 
   function openImportStateModal() {
@@ -1306,17 +1586,21 @@ export default function App({ startupSlices = [] }: AppProps) {
     setStateShareMessage(null);
     setStateModalMode("import");
     setStateTextDraft("");
-    setActiveTool("export");
+    setIsStateDialogOpen(true);
+    setIsAppMenuOpen(false);
   }
 
   function closeDialogs() {
     setIsImportPanelOpen(false);
     setIsUserProfilePanelOpen(false);
+    setIsStateDialogOpen(false);
+    setIsShareDialogOpen(false);
     setIsClearHistoryConfirmOpen(false);
     setLibraryError(null);
     setLibraryMessage(null);
+    setIsAppMenuOpen(false);
     setActiveTool((prev) =>
-      prev === "slice" || prev === "export" || prev === "library" ? "mouse" : prev
+      prev === "slice" || prev === "library" ? "mouse" : prev
     );
   }
 
@@ -1346,6 +1630,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       const parsed = parseViewerState(stateTextDraft);
       commitCurrentStateNow(parsed);
       setStateShareMessage(null);
+      setIsStateDialogOpen(false);
       setActiveTool("mouse");
     } catch (error) {
       setStateError(
@@ -1366,54 +1651,53 @@ export default function App({ startupSlices = [] }: AppProps) {
     }));
   }
 
-  async function handleShareViewerState() {
-    if (hasLocalOnlyLayers(layerTree)) {
-      setStateError(
-        "This view includes local files stored only in this browser. The view layout can be shared, but those local layers will not appear for other people. Sign in and upload them online later if you want a fully shareable view."
-      );
-      setStateShareMessage(null);
-      return;
-    }
-
+  function buildShareUrlForCurrentViewer() {
     if (!isSerializableLayerTree(layerTree)) {
-      setStateError(
+      throw new Error(
         "This view contains layers that cannot be turned into a share link."
       );
-      setStateShareMessage(null);
-      return;
     }
 
+    const shareUrl = buildViewerShareUrl(currentViewerState);
+    if (shareUrl.length > 12000) {
+      throw new Error(
+        "This view is too large to share as a URL without a backend. Use the JSON export instead."
+      );
+    }
+    return shareUrl;
+  }
+
+  function openShareDialog() {
     try {
-      const shareUrl = buildViewerShareUrl(currentViewerState);
-
-      if (shareUrl.length > 12000) {
-        throw new Error(
-          "This view is too large to share as a URL without a backend. Use the JSON export instead."
-        );
-      }
-
-      if (navigator.share) {
-        try {
-          await navigator.share({
-            title: "Allen Viewer",
-            url: shareUrl,
-          });
-          setStateError(null);
-          setStateShareMessage("Share link created.");
-          return;
-        } catch (shareError) {
-          if (
-            shareError instanceof DOMException &&
-            shareError.name === "AbortError"
-          ) {
-            return;
-          }
-        }
-      }
-
-      await navigator.clipboard.writeText(shareUrl);
+      const shareUrl = buildShareUrlForCurrentViewer();
+      setShareUrlDraft(shareUrl);
       setStateError(null);
-      setStateShareMessage("Share link copied to clipboard.");
+      setStateShareMessage(null);
+      setIsShareDialogOpen(true);
+      setIsAppMenuOpen(false);
+    } catch (error) {
+      setIsShareDialogOpen(false);
+      setStateShareMessage(null);
+      setStateError(
+        error instanceof Error ? error.message : "Failed to create share link."
+      );
+      setIsAppMenuOpen(false);
+    }
+  }
+
+  async function handleShareViewerState() {
+    try {
+      const shareUrl = shareUrlDraft || buildShareUrlForCurrentViewer();
+      await navigator.clipboard.writeText(shareUrl);
+      setShareUrlDraft(shareUrl);
+      setStateError(null);
+      if (hasLocalOnlyLayers(layerTree)) {
+        setStateShareMessage(
+          "Share link copied to clipboard. Some local browser-only layers will not appear on other devices or browsers."
+        );
+      } else {
+        setStateShareMessage("Share link copied to clipboard.");
+      }
     } catch (error) {
       setStateShareMessage(null);
       setStateError(
@@ -1524,34 +1808,6 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function handleToolChange(tool: ToolId) {
-    if (tool === "data") {
-      setIsImportPanelOpen(true);
-      return;
-    }
-
-    if (tool === "export") {
-      openExportStateModal();
-      return;
-    }
-
-    if (tool === "account") {
-      setIsUserProfilePanelOpen(true);
-      return;
-    }
-
-    if (tool === "save") {
-      handleSaveCurrentViewerToLibrary();
-      return;
-    }
-
-    if (tool === "library") {
-      setLibraryError(null);
-      setLibraryMessage(null);
-      setSaveNoticeOpen(false);
-      setActiveTool((prev) => (prev === "library" ? "mouse" : "library"));
-      return;
-    }
-
     setActiveTool((prev) => (prev === tool && tool === "slice" ? "mouse" : tool));
   }
 
@@ -2306,6 +2562,8 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function handleClearPersistedViewerState() {
     clearPersistedViewerState();
+    clearPersistedViewerLibrary();
+    setViewerLibrary([]);
     setHasPersistedViewerState(false);
     notifyProfileDataChanged();
   }
@@ -2321,12 +2579,17 @@ export default function App({ startupSlices = [] }: AppProps) {
     notifyProfileDataChanged();
   }
 
-  function handleResetLocalProfileData() {
+  async function handleResetLocalProfileData() {
     flushPendingAutoCommit();
     clearPersistedViewerHistory();
     clearPersistedViewerState();
     clearPersistedViewerLibrary();
+    await clearAllLocalDatasetRecords();
+    try {
+      window.localStorage.removeItem(ANNOTATION_RECENT_COLORS_STORAGE_KEY);
+    } catch {}
     setViewerLibrary([]);
+    setAnnotationRecentColors([]);
     pastStatesRef.current = [];
     futureStatesRef.current = [];
     lastCommittedStateRef.current = currentViewerState;
@@ -2335,6 +2598,9 @@ export default function App({ startupSlices = [] }: AppProps) {
     setAppPreferences(loadAppPreferences());
     bumpHistoryRevision();
     notifyProfileDataChanged();
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
   }
 
   useEffect(() => {
@@ -2593,7 +2859,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         cameraSyncKey={cameraSyncKey}
         onCameraStateChange={setCameraState}
         backgroundColor={appPreferences.sceneBackground}
-        infoPanelContent={inspectorPanelContent}
         annotationShape={annotationDraft.shape}
         annotationColor={annotationDraft.color}
         annotationOpacity={annotationDraft.opacity}
@@ -2702,10 +2967,449 @@ export default function App({ startupSlices = [] }: AppProps) {
         </div>
       ) : null}
 
+      {canShowGlobalDropOverlay ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 26,
+            background: "rgba(8,12,16,0.54)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+            padding: 24,
+            boxSizing: "border-box",
+          }}
+        >
+          <div
+            data-theme-surface="panel"
+            style={{
+              width: "min(500px, calc(100vw - 48px))",
+              borderRadius: 24,
+              border: "1px solid rgba(255,255,255,0.16)",
+              background: "rgba(12,14,18,0.92)",
+              boxShadow: "0 24px 60px rgba(0,0,0,0.38)",
+              padding: "28px 30px",
+              display: "grid",
+              gap: 10,
+              textAlign: "center",
+              fontFamily: "sans-serif",
+            }}
+          >
+            <div
+              style={{
+                width: 64,
+                height: 64,
+                margin: "0 auto",
+                borderRadius: 18,
+                border: "1px solid rgba(255,255,255,0.18)",
+                background: "rgba(255,255,255,0.06)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "rgba(255,255,255,0.92)",
+                fontSize: 28,
+                fontWeight: 700,
+              }}
+            >
+              +
+            </div>
+            <div data-theme-text="strong" style={{ fontSize: 22, fontWeight: 800 }}>
+              Drop files to add them
+            </div>
+            <div data-theme-text="muted" style={{ fontSize: 13, opacity: 0.76, lineHeight: 1.5 }}>
+              Release anywhere in the viewer.
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div data-viewer-app-menu="true" style={{ position: "absolute", top: 16, left: 16, zIndex: 26, pointerEvents: "none" }}>
+        <div style={{ position: "relative", pointerEvents: "auto", fontFamily: "sans-serif" }}>
+          <button
+            type="button"
+            onClick={() => setIsAppMenuOpen((prev) => !prev)}
+            style={{
+              height: 46,
+              padding: "0 14px",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(12,14,18,0.82)",
+              color: "white",
+              boxShadow: "0 12px 30px rgba(0,0,0,0.32)",
+              backdropFilter: "blur(12px)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", justifyContent: "center" }}><MenuHamburgerIcon /></span>
+            <span>Viewer</span>
+          </button>
+
+          <div
+            data-theme-surface="panel"
+            style={{
+              marginTop: 10,
+              width: 292,
+              borderRadius: 18,
+              border: "1px solid rgba(255,255,255,0.10)",
+              boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
+              backdropFilter: "blur(14px)",
+              padding: 12,
+              display: "grid",
+              gap: 12,
+              opacity: isAppMenuOpen ? 1 : 0,
+              transform: isAppMenuOpen ? "translateY(0) scale(1)" : "translateY(-8px) scale(0.985)",
+              transformOrigin: "top left",
+              visibility: isAppMenuOpen ? "visible" : "hidden",
+              pointerEvents: isAppMenuOpen ? "auto" : "none",
+              transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
+            }}
+          >
+            <div style={{ display: "grid", gap: 6 }}>
+              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>Viewer</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={handleCreateNewViewer}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <NewViewerIcon />
+                  <span>New empty viewer</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setLibraryError(null); setLibraryMessage(null); setSaveNoticeOpen(false); setActiveTool("library"); setIsAppMenuOpen(false); }}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <LibraryMenuIcon />
+                  <span>Open library</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { handleSaveCurrentViewerToLibrary(); setIsAppMenuOpen(false); }}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <SaveMenuIcon />
+                  <span>Save viewer</span>
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>Data</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => { setIsImportPanelOpen(true); setIsAppMenuOpen(false); }}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <ImportDataMenuIcon />
+                  <span>Import data</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsLocalDatasetManagerOpen(true); setIsAppMenuOpen(false); }}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <ManageDataMenuIcon />
+                  <span>Manage local data</span>
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>Share</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => { openExportStateModal(); setIsAppMenuOpen(false); }}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <ShareMenuIcon />
+                  <span>Export viewer state</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { openImportStateModal(); setIsAppMenuOpen(false); }}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <ImportStateMenuIcon />
+                  <span>Import viewer state</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={openShareDialog}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <ShareMenuIcon />
+                  <span>Copy share link</span>
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>App</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => { setIsUserProfilePanelOpen(true); setIsAppMenuOpen(false); }}
+                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
+                >
+                  <ProfileMenuIcon />
+                  <span>Profile & preferences</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {isShareDialogOpen ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 45,
+            background: "rgba(4,6,10,0.48)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            boxSizing: "border-box",
+          }}
+          onClick={() => setIsShareDialogOpen(false)}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            data-theme-surface="panel"
+            style={{
+              width: "min(720px, 100%)",
+              maxHeight: "min(82vh, 820px)",
+              overflow: "hidden",
+              borderRadius: 18,
+              border: "1px solid rgba(255,255,255,0.10)",
+              boxShadow: "0 18px 48px rgba(0,0,0,0.42)",
+              padding: 18,
+              color: "inherit",
+              position: "relative",
+              display: "grid",
+              gap: 14,
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setIsShareDialogOpen(false)}
+              aria-label="Close share dialog"
+              title="Close"
+              style={{
+                position: "absolute",
+                top: 14,
+                right: 14,
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                color: "inherit",
+                cursor: "pointer",
+                zIndex: 2,
+              }}
+            >
+              ×
+            </button>
+
+            <div data-slice-tool="true" style={{ fontFamily: "sans-serif", color: "inherit", display: "grid", gap: 14 }}>
+              <div style={{ paddingRight: 48 }}>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>Share Viewer Link</div>
+                <div data-theme-text="muted" style={{ fontSize: 12, marginTop: 5, lineHeight: 1.45 }}>
+                  Copy a URL containing the current viewer state. Anyone with the link can open the same shared view.
+                </div>
+              </div>
+
+              {localOnlyLayerNames.length > 0 ? (
+                <div
+                  style={{
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,180,120,0.35)",
+                    background: "rgba(255,180,120,0.10)",
+                    padding: 12,
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>Some layers are local to this browser</div>
+                  <div>
+                    The link will still work, but these local layers will not appear on other devices or browsers.
+                  </div>
+                  <div style={{ marginTop: 8 }}><strong>Unavailable in shared view:</strong></div>
+                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {localOnlyLayerNames.map((layerName) => (
+                      <span
+                        key={layerName}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          minHeight: 24,
+                          padding: "0 8px",
+                          borderRadius: 999,
+                          border: "1px solid rgba(255,200,150,0.30)",
+                          background: "rgba(255,255,255,0.06)",
+                          fontSize: 11,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {layerName}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <textarea
+              className="layer-panel-scroll"
+              value={shareUrlDraft}
+              readOnly
+              spellCheck={false}
+              style={{
+                width: "100%",
+                minHeight: 140,
+                maxHeight: "min(36vh, 320px)",
+                resize: "vertical",
+                overflowY: "auto",
+                borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.12)",
+                background: "rgba(255,255,255,0.05)",
+                color: "inherit",
+                padding: 14,
+                boxSizing: "border-box",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                fontSize: 12,
+                lineHeight: 1.52,
+                outline: "none",
+              }}
+            />
+
+            {stateError ? (
+              <div style={{ fontSize: 12, color: "#ffb4b4", lineHeight: 1.4 }}>{stateError}</div>
+            ) : null}
+
+            {!stateError && stateShareMessage ? (
+              <div style={{ fontSize: 12, color: "rgba(170,230,190,0.95)", lineHeight: 1.4 }}>{stateShareMessage}</div>
+            ) : null}
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div data-theme-text="muted" style={{ fontSize: 12 }}>
+                  The link uses the current website URL with an encoded viewer state in the hash.
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" onClick={() => setIsShareDialogOpen(false)} style={secondaryButtonStyle}>Close</button>
+                  <button type="button" onClick={() => void handleShareViewerState()} style={primaryButtonStyle}>Copy share link</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isStateModalOpen ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 44,
+            background: "rgba(4,6,10,0.48)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            boxSizing: "border-box",
+          }}
+          onClick={() => setIsStateDialogOpen(false)}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            data-theme-surface="panel"
+            style={{
+              width: "min(820px, 100%)",
+              maxHeight: "min(86vh, 960px)",
+              overflow: "hidden",
+              borderRadius: 18,
+              border: "1px solid rgba(255,255,255,0.10)",
+              boxShadow: "0 18px 48px rgba(0,0,0,0.42)",
+              padding: 18,
+              color: "inherit",
+              position: "relative",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setIsStateDialogOpen(false)}
+              aria-label="Close viewer state dialog"
+              title="Close"
+              style={{
+                position: "absolute",
+                top: 14,
+                right: 14,
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                color: "inherit",
+                cursor: "pointer",
+                zIndex: 2,
+              }}
+            >
+              ×
+            </button>
+            <StatePanel
+              mode={stateModalMode}
+              stateTextDraft={stateTextDraft}
+              stateError={stateError}
+              stateShareMessage={stateShareMessage}
+              localOnlyLayerNames={localOnlyLayerNames}
+              isSerializable={isCurrentViewerShareSerializable}
+              onStateTextDraftChange={setStateTextDraft}
+              onOpenExport={openExportStateModal}
+              onOpenImport={openImportStateModal}
+              onCopyExportState={handleCopyExportState}
+              onApplyImportedState={handleApplyImportedState}
+            />
+          </div>
+        </div>
+      ) : null}
+
       <LayerPanel
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
         groupOptions={groupOptions}
+        detailsContent={inspectorPanelContent}
         isCollapsed={isLayerPanelCollapsed}
         onSetCollapsed={setIsLayerPanelCollapsed}
         onToggleVisible={handleToggleVisible}
@@ -2729,12 +3433,18 @@ export default function App({ startupSlices = [] }: AppProps) {
       <ImportDataPanel
         key={profileDataRevision}
         open={isImportPanelOpen}
-        onClose={() => setIsImportPanelOpen(false)}
+        initialLocalEntries={droppedLocalEntries}
+        onConsumeInitialLocalEntries={() => setDroppedLocalEntries(null)}
+        onClose={() => {
+          setIsImportPanelOpen(false);
+          setDroppedLocalEntries(null);
+        }}
         onAddDrawingLayer={handleAddDrawingLayer}
         onAddExternalSources={handleAddExternalSources}
         onAddLocalImports={handleAddLocalImports}
         onOpenLocalDatasetManager={() => {
           setIsImportPanelOpen(false);
+          setDroppedLocalEntries(null);
           setIsLocalDatasetManagerOpen(true);
         }}
       />
@@ -2755,8 +3465,13 @@ export default function App({ startupSlices = [] }: AppProps) {
         onClearViewerState={handleClearPersistedViewerState}
         onClearViewerHistory={handleClearViewerHistoryOnly}
         onResetLocalProfile={handleResetLocalProfileData}
+        onDeleteLocalDataset={handleDeleteLocalDataset}
+        onOpenLocalDatasetManager={() => {
+          setIsUserProfilePanelOpen(false);
+          setIsLocalDatasetManagerOpen(true);
+        }}
         onDataChanged={notifyProfileDataChanged}
-        savedViewerStateExists={hasPersistedViewerState}
+        savedViewerStateExists={hasPersistedViewerState || viewerLibrary.length > 0}
         savedHistoryCount={pastStatesRef.current.length + futureStatesRef.current.length}
         dataRevision={profileDataRevision}
       />
@@ -2845,6 +3560,67 @@ export default function App({ startupSlices = [] }: AppProps) {
         </div>
       ) : null}
 
+      <div
+        style={{
+          position: "fixed",
+          right: 12,
+          bottom: 8,
+          zIndex: 18,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "3px 7px",
+          borderRadius: 8,
+          border:
+            appPreferences.theme === "light"
+              ? "1px solid rgba(24,33,43,0.08)"
+              : "1px solid rgba(255,255,255,0.06)",
+          background:
+            appPreferences.theme === "light"
+              ? "rgba(255,255,255,0.52)"
+              : appPreferences.theme === "gray"
+              ? "rgba(46,52,60,0.48)"
+              : "rgba(12,14,18,0.42)",
+          color:
+            appPreferences.theme === "light"
+              ? "rgba(24,33,43,0.58)"
+              : "rgba(255,255,255,0.5)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+          backdropFilter: "blur(6px)",
+          fontFamily: "sans-serif",
+          fontSize: 10,
+          lineHeight: 1,
+          letterSpacing: 0.2,
+          pointerEvents: "auto",
+          userSelect: "none",
+        }}
+      >
+        <span title={`Viewer version ${APP_VERSION}`}>v{APP_VERSION}</span>
+        <span style={{ opacity: 0.22 }}>•</span>
+        {APP_COMMIT_URL ? (
+          <a
+            href={APP_COMMIT_URL}
+            target="_blank"
+            rel="noreferrer"
+            title={`Open deployed commit ${APP_COMMIT_SHA}`}
+            style={{
+              color:
+                appPreferences.theme === "light"
+                  ? "rgba(24,33,43,0.56)"
+                  : "rgba(255,255,255,0.46)",
+              textDecoration: "none",
+              fontWeight: 500,
+            }}
+          >
+            {APP_COMMIT_SHORT}
+          </a>
+        ) : (
+          <span title="Git commit unavailable in local development" style={{ opacity: 0.5 }}>
+            {APP_COMMIT_SHORT}
+          </span>
+        )}
+      </div>
+
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
@@ -2891,9 +3667,9 @@ export default function App({ startupSlices = [] }: AppProps) {
         onJumpRedo={handleJumpRedo}
         slicePopoverOpen={activeTool === "slice"}
         onRequestCloseSlicePopover={() => setActiveTool("mouse")}
-        statePopoverOpen={isStateModalOpen}
-        onRequestCloseStatePopover={() => setActiveTool("mouse")}
-        accountPopoverOpen={isUserProfilePanelOpen}
+        statePopoverOpen={false}
+        onRequestCloseStatePopover={() => setIsStateDialogOpen(false)}
+        accountPopoverOpen={false}
         annotationShape={annotationDraft.shape}
         annotationColor={annotationDraft.color}
         annotationOpacity={annotationDraft.opacity}
@@ -3012,22 +3788,6 @@ export default function App({ startupSlices = [] }: AppProps) {
               Import an OME-Zarr volume first to create slice layers.
             </div>
           )
-        }
-        statePopoverContent={
-          <StatePanel
-            mode={stateModalMode}
-            stateTextDraft={stateTextDraft}
-            stateError={stateError}
-            stateShareMessage={stateShareMessage}
-            localOnlyLayerNames={localOnlyLayerNames}
-            isSerializable={isCurrentViewerShareSerializable}
-            onStateTextDraftChange={setStateTextDraft}
-            onOpenExport={openExportStateModal}
-            onOpenImport={openImportStateModal}
-            onShareViewerState={handleShareViewerState}
-            onCopyExportState={handleCopyExportState}
-            onApplyImportedState={handleApplyImportedState}
-          />
         }
       />
     </div>

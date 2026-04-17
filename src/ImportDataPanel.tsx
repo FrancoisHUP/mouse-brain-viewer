@@ -703,6 +703,8 @@ export default function ImportDataPanel({
   onAddExternalSources,
   onAddLocalImports,
   onOpenLocalDatasetManager,
+  initialLocalEntries,
+  onConsumeInitialLocalEntries,
 }: {
   open: boolean;
   onClose: () => void;
@@ -723,6 +725,8 @@ export default function ImportDataPanel({
     candidates: LocalImportCandidate[]
   ) => Promise<{ addedCount: number; errors: string[] }> | { addedCount: number; errors: string[] };
   onOpenLocalDatasetManager?: () => void;
+  initialLocalEntries?: LocalInputEntry[] | null;
+  onConsumeInitialLocalEntries?: () => void;
 }) {
   const [mode, setMode] = useState<LayerCreationMode>("external");
   const [isDragging, setIsDragging] = useState(false);
@@ -757,6 +761,13 @@ export default function ImportDataPanel({
     const customSources = getCustomExternalSources().map(toExternalSourceItem);
     setExternalSources([...BUILT_IN_EXTERNAL_SOURCES, ...customSources]);
   }, []);
+
+  useEffect(() => {
+    if (!open || !initialLocalEntries?.length) return;
+    setMode("custom");
+    onConsumeInitialLocalEntries?.();
+    void handleLocalDropInput(initialLocalEntries);
+  }, [open, initialLocalEntries, onConsumeInitialLocalEntries]);
 
   useEffect(() => {
     setCustomSourceUiState((prev) => {

@@ -151,6 +151,12 @@ export async function listLocalDatasetRecords(): Promise<StoredLocalDatasetRecor
   });
 }
 
+export async function clearAllLocalDatasetRecords(): Promise<void> {
+  await withStore("readwrite", async (store) => {
+    await requestToPromise(store.clear());
+  });
+}
+
 export async function renameLocalDatasetRecord(datasetId: string, nextFileName: string): Promise<StoredLocalDatasetRecord> {
   const trimmed = nextFileName.trim();
   if (!trimmed) {

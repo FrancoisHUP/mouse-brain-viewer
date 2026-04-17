@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { listLocalDatasetRecords, type StoredLocalDatasetRecord } from "./localDataStore";
 import {
   clearAllAnonymousUserData,
   clearAllCustomExternalSources,
@@ -31,8 +32,46 @@ type ConfirmDialogState = {
   title: string;
   message: string;
   confirmLabel: string;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
 } | null;
+
+type LocalDatasetSummary = {
+  records: StoredLocalDatasetRecord[];
+  totalBytes: number;
+};
+
+type StorageEstimateSummary = {
+  usage: number | null;
+  quota: number | null;
+};
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+async function getStorageEstimateSummary(): Promise<StorageEstimateSummary> {
+  if (typeof navigator === "undefined" || !navigator.storage || typeof navigator.storage.estimate !== "function") {
+    return { usage: null, quota: null };
+  }
+  try {
+    const estimate = await navigator.storage.estimate();
+    return {
+      usage: typeof estimate.usage === "number" ? estimate.usage : null,
+      quota: typeof estimate.quota === "number" ? estimate.quota : null,
+    };
+  } catch {
+    return { usage: null, quota: null };
+  }
+}
+
 
 function getThemePalette(theme: AppThemeId): ThemePalette {
   switch (theme) {
@@ -263,8 +302,8 @@ function ConfirmDialog({
           </button>
           <button
             type="button"
-            onClick={() => {
-              dialog.onConfirm();
+            onClick={async () => {
+              await dialog.onConfirm();
               onCancel();
             }}
             style={{
@@ -294,6 +333,8 @@ export default function UserProfilePanel({
   onClearViewerState,
   onClearViewerHistory,
   onResetLocalProfile,
+  onDeleteLocalDataset,
+  onOpenLocalDatasetManager,
   onDataChanged,
   savedViewerStateExists = false,
   savedHistoryCount = 0,
@@ -302,9 +343,11 @@ export default function UserProfilePanel({
   open: boolean;
   onClose: () => void;
   onPreferencesChange?: (preferences: AppPreferences) => void;
-  onClearViewerState?: () => void;
-  onClearViewerHistory?: () => void;
-  onResetLocalProfile?: () => void;
+  onClearViewerState?: () => void | Promise<void>;
+  onClearViewerHistory?: () => void | Promise<void>;
+  onResetLocalProfile?: () => void | Promise<void>;
+  onDeleteLocalDataset?: (datasetId: string) => void | Promise<void>;
+  onOpenLocalDatasetManager?: () => void;
   onDataChanged?: () => void;
   savedViewerStateExists?: boolean;
   savedHistoryCount?: number;
@@ -315,15 +358,54 @@ export default function UserProfilePanel({
   const [customSourceCount, setCustomSourceCount] = useState(0);
   const [anonymousUserId, setAnonymousUserId] = useState("");
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
+  const [localDatasetSummary, setLocalDatasetSummary] = useState<LocalDatasetSummary>({ records: [], totalBytes: 0 });
+  const [storageEstimate, setStorageEstimate] = useState<StorageEstimateSummary>({ usage: null, quota: null });
+  const [localDatasetError, setLocalDatasetError] = useState<string | null>(null);
+
+  async function refreshLocalDatasetSummary() {
+    try {
+      const [records, estimate] = await Promise.all([
+        listLocalDatasetRecords(),
+        getStorageEstimateSummary(),
+      ]);
+      setLocalDatasetSummary({
+        records,
+        totalBytes: records.reduce((sum, record) => sum + record.size, 0),
+      });
+      setStorageEstimate(estimate);
+      setLocalDatasetError(null);
+    } catch (error) {
+      setLocalDatasetSummary({ records: [], totalBytes: 0 });
+      setStorageEstimate({ usage: null, quota: null });
+      setLocalDatasetError(error instanceof Error ? error.message : "Failed to load local browser datasets.");
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
     setPreferences(loadAppPreferences());
     setCustomSourceCount(getCustomExternalSources().length);
     setAnonymousUserId(getAnonymousUserId());
+    void refreshLocalDatasetSummary();
   }, [open, dataRevision]);
 
   const palette = useMemo(() => getThemePalette(preferences.theme), [preferences.theme]);
+  const storageUsageRatio = useMemo(() => {
+    if (storageEstimate.quota == null || storageEstimate.quota <= 0) return null;
+    return Math.max(0, Math.min(1, localDatasetSummary.totalBytes / storageEstimate.quota));
+  }, [localDatasetSummary.totalBytes, storageEstimate.quota]);
+  const storageUsagePercent = storageUsageRatio == null ? null : Math.round(storageUsageRatio * 100);
+  const storageWarningMessage = useMemo(() => {
+    if (storageUsageRatio == null) return null;
+    if (storageUsageRatio >= 0.95) {
+      return "Almost no browser storage space is left. Delete some local files soon to avoid import failures.";
+    }
+    if (storageUsageRatio >= 0.8) {
+      return "Browser storage is getting full. You may want to free some local files.";
+    }
+    return null;
+  }, [storageUsageRatio]);
+
 
   if (!open) return null;
 
@@ -543,6 +625,121 @@ export default function UserProfilePanel({
                 <div
                   style={{
                     display: "grid",
+                    gap: 12,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: `1px solid ${palette.border}`,
+                    background: palette.strongBackground,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>Browser local datasets</div>
+                      <div style={{ fontSize: 12, color: palette.mutedText, marginTop: 4 }}>
+                        {localDatasetSummary.records.length} saved file{localDatasetSummary.records.length !== 1 ? "s" : ""} · {formatBytes(localDatasetSummary.totalBytes)} used
+                        {storageEstimate.quota != null ? ` of ${formatBytes(storageEstimate.quota)}` : " in browser storage"}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <ActionButton
+                        label="Open data manager"
+                        palette={palette}
+                        onClick={() => {
+                          onOpenLocalDatasetManager?.();
+                        }}
+                      />
+                      <ActionButton
+                        label="Delete all files"
+                        danger
+                        palette={palette}
+                        onClick={() => {
+                          if (!localDatasetSummary.records.length) return;
+                          requestConfirmation({
+                            title: "Delete local browser files",
+                            message: `Delete all ${localDatasetSummary.records.length} locally stored file${localDatasetSummary.records.length !== 1 ? "s" : ""} from this browser? This action cannot be undone.`,
+                            confirmLabel: "Delete files",
+                            onConfirm: async () => {
+                              for (const record of localDatasetSummary.records) {
+                                await onDeleteLocalDataset?.(record.id);
+                              }
+                              await refreshLocalDatasetSummary();
+                              onDataChanged?.();
+                            },
+                          });
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div
+                      style={{
+                        height: 10,
+                        borderRadius: 999,
+                        background: palette.subtleBackground,
+                        border: `1px solid ${palette.border}`,
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${storageUsagePercent ?? 0}%`,
+                          height: "100%",
+                          borderRadius: 999,
+                          background:
+                            storageUsageRatio != null && storageUsageRatio >= 0.95
+                              ? "linear-gradient(90deg, rgba(255,120,120,0.9), rgba(255,80,80,0.95))"
+                              : storageUsageRatio != null && storageUsageRatio >= 0.8
+                              ? "linear-gradient(90deg, rgba(255,210,120,0.9), rgba(255,170,70,0.95))"
+                              : "linear-gradient(90deg, rgba(120,190,255,0.9), rgba(90,160,255,0.95))",
+                          transition: "width 180ms ease",
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 11, color: palette.mutedText }}>
+                      <span>{formatBytes(localDatasetSummary.totalBytes)} used by local files</span>
+                      <span>
+                        {storageEstimate.quota != null
+                          ? `${storageUsagePercent ?? 0}% of browser quota`
+                          : "Browser quota unavailable"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {localDatasetError ? (
+                    <div style={{ fontSize: 12, color: "#ffb4b4" }}>{localDatasetError}</div>
+                  ) : null}
+
+                  {storageWarningMessage ? (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: storageUsageRatio != null && storageUsageRatio >= 0.95 ? "#ffd4d4" : "#ffe2a8",
+                        border: storageUsageRatio != null && storageUsageRatio >= 0.95
+                          ? "1px solid rgba(255,120,120,0.25)"
+                          : "1px solid rgba(255,190,90,0.22)",
+                        background: storageUsageRatio != null && storageUsageRatio >= 0.95
+                          ? "rgba(255,80,80,0.10)"
+                          : "rgba(255,180,60,0.10)",
+                        borderRadius: 10,
+                        padding: "10px 12px",
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      {storageWarningMessage}
+                    </div>
+                  ) : null}
+
+                  {!localDatasetSummary.records.length ? (
+                    <div style={{ fontSize: 12, color: palette.mutedText }}>
+                      No local browser files saved right now.
+                    </div>
+                  ) : null}
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
                     gridTemplateColumns: "minmax(0,1fr) auto",
                     gap: 12,
                     alignItems: "center",
@@ -555,7 +752,7 @@ export default function UserProfilePanel({
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>Reset local profile</div>
                     <div style={{ fontSize: 12, color: palette.mutedText, marginTop: 4 }}>
-                      Factory reset for this browser: clears custom sources, saved state, history, and preferences. History snapshots saved: {savedHistoryCount}
+                      Factory reset for this browser: clears custom sources, saved states, viewer history, local browser datasets, preferences, and the current viewer state. History snapshots saved: {savedHistoryCount}
                     </div>
                   </div>
                   <ActionButton
@@ -565,7 +762,7 @@ export default function UserProfilePanel({
                     onClick={() => {
                       requestConfirmation({
                         title: "Reset local profile",
-                        message: "Reset all locally saved data and settings for this browser? This clears custom sources, saved state, viewer history, and preferences.",
+                        message: "Reset all locally saved data and settings for this browser? This clears custom sources, saved states, viewer history, local browser datasets, preferences, and the current viewer state, then reloads the page.",
                         confirmLabel: "Reset everything",
                         onConfirm: () => {
                           clearAllAnonymousUserData();

@@ -92,8 +92,8 @@ function ViewerCard({
           background: entry.thumbnailDataUrl
             ? `center / cover no-repeat url(${entry.thumbnailDataUrl})`
             : isOwned
-            ? "linear-gradient(135deg, rgba(120,190,255,0.18), rgba(255,255,255,0.03))"
-            : "linear-gradient(135deg, rgba(170,140,255,0.18), rgba(255,255,255,0.03))",
+              ? "linear-gradient(135deg, rgba(120,190,255,0.18), rgba(255,255,255,0.03))"
+              : "linear-gradient(135deg, rgba(170,140,255,0.18), rgba(255,255,255,0.03))",
         }}
       />
 
@@ -319,7 +319,6 @@ export default function ViewerLibraryPanel({
         style={{
           width: "min(860px, calc(100vw - 32px))",
           maxHeight: "min(88vh, 920px)",
-          overflowY: "auto",
           borderRadius: 20,
           border: "1px solid rgba(255,255,255,0.10)",
           background: "rgba(12,14,18,0.96)",
@@ -327,16 +326,24 @@ export default function ViewerLibraryPanel({
           boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
           color: "white",
           fontFamily: "sans-serif",
-          padding: 18,
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
         <div
           style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 2,
             display: "flex",
             alignItems: "center",
             justifyContent: "flex-end",
             gap: 16,
-            marginBottom: 18,
+            padding: "18px 18px 14px 18px",
+            background: "rgba(12,14,18,0.98)",
+            borderBottom: "1px solid rgba(255,255,255,0.08)",
+            flexShrink: 0,
           }}
         >
           <button
@@ -351,62 +358,95 @@ export default function ViewerLibraryPanel({
               color: "white",
               cursor: "pointer",
               fontSize: 18,
+              flexShrink: 0,
             }}
           >
             ×
           </button>
         </div>
 
-        {errorMessage ? <div style={{ color: "#ffb4b4", fontSize: 12, marginBottom: 12 }}>{errorMessage}</div> : null}
-        {successMessage ? <div style={{ color: "rgba(180,245,210,0.95)", fontSize: 12, marginBottom: 12 }}>{successMessage}</div> : null}
+        <div
+          data-viewer-library-scroll="true"
+          style={{
+            overflowY: "auto",
+            padding: 18,
+            paddingTop: 14,
+            scrollbarWidth: "thin",
+            scrollbarColor: "rgba(255,255,255,0.26) rgba(255,255,255,0.06)",
+          }}
+        >
+          <style>
+            {`
+              [data-viewer-library-scroll='true']::-webkit-scrollbar {
+                width: 10px;
+              }
+              [data-viewer-library-scroll='true']::-webkit-scrollbar-track {
+                background: rgba(255,255,255,0.05);
+                border-radius: 999px;
+              }
+              [data-viewer-library-scroll='true']::-webkit-scrollbar-thumb {
+                background: rgba(255,255,255,0.22);
+                border-radius: 999px;
+                border: 2px solid rgba(12,14,18,0.96);
+              }
+              [data-viewer-library-scroll='true']::-webkit-scrollbar-thumb:hover {
+                background: rgba(255,255,255,0.34);
+              }
+            `}
+          </style>
+          {errorMessage ? <div style={{ color: "#ffb4b4", fontSize: 12, marginBottom: 12 }}>{errorMessage}</div> : null}
+            {successMessage ? (
+              <div style={{ color: "rgba(180,245,210,0.95)", fontSize: 12, marginBottom: 12 }}>{successMessage}</div>
+            ) : null}
 
-        {entries.length ? (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-              gap: 12,
-              alignItems: "stretch",
-            }}
-          >
-            {entries.map((entry) => (
-              <ViewerCard
-                key={entry.id}
-                entry={entry}
-                isRenaming={renamingId === entry.id}
-                renameDraft={renameDraft}
-                renameInputRef={renameInputRef}
-                onRenameDraftChange={setRenameDraft}
-                onRenameCommit={commitRename}
-                onRenameCancel={cancelRename}
-                onOpenViewer={onOpenViewer}
-                onOpenMenu={(entryId, rect) => {
-                  setOpenMenuId(entryId);
-                  setMenuPosition({ top: rect.bottom + 8, left: rect.right - 140 });
+            {entries.length ? (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+                  gap: 12,
+                  alignItems: "stretch",
                 }}
-              />
-            ))}
-          </div>
-        ) : (
-          <div
-            data-theme-surface="soft"
-            style={{
-              minHeight: 120,
-              borderRadius: 14,
-              border: "1px dashed rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.02)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              textAlign: "center",
-              padding: 20,
-              color: "rgba(255,255,255,0.72)",
-              fontSize: 13,
-            }}
-          >
-            No saved viewers in this browser yet.
-          </div>
-        )}
+              >
+                {entries.map((entry) => (
+                  <ViewerCard
+                    key={entry.id}
+                    entry={entry}
+                    isRenaming={renamingId === entry.id}
+                    renameDraft={renameDraft}
+                    renameInputRef={renameInputRef}
+                    onRenameDraftChange={setRenameDraft}
+                    onRenameCommit={commitRename}
+                    onRenameCancel={cancelRename}
+                    onOpenViewer={onOpenViewer}
+                    onOpenMenu={(entryId, rect) => {
+                      setOpenMenuId(entryId);
+                      setMenuPosition({ top: rect.bottom + 8, left: rect.right - 140 });
+                    }}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div
+                data-theme-surface="soft"
+                style={{
+                  minHeight: 120,
+                  borderRadius: 14,
+                  border: "1px dashed rgba(255,255,255,0.12)",
+                  background: "rgba(255,255,255,0.02)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  textAlign: "center",
+                  padding: 20,
+                  color: "rgba(255,255,255,0.72)",
+                  fontSize: 13,
+                }}
+              >
+                No saved viewers in this browser yet.
+              </div>
+            )}
+        </div>
       </div>
 
       {openMenuId && menuPosition

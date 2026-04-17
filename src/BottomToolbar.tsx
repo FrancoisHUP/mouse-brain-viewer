@@ -38,11 +38,6 @@ const TOOLS: ToolDefinition[] = [
   { id: "mouse", label: "Move" },
   { id: "pencil", label: "Draw" },
   { id: "slice", label: "Slice" },
-  { id: "data", label: "Data" },
-  { id: "library", label: "Library" },
-  { id: "save", label: "Save" },
-  { id: "export", label: "Export" },
-  { id: "account", label: "Account" },
 ];
 
 const CAMERA_MODE_OPTIONS: Array<{

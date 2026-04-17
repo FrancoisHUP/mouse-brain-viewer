@@ -12,7 +12,6 @@ type StatePanelProps = {
   onStateTextDraftChange: (value: string) => void;
   onOpenExport: () => void;
   onOpenImport: () => void;
-  onShareViewerState: () => void | Promise<void>;
   onCopyExportState: () => void | Promise<void>;
   onApplyImportedState: () => void;
 };
@@ -48,7 +47,6 @@ export default function StatePanel({
   onStateTextDraftChange,
   onOpenExport,
   onOpenImport,
-  onShareViewerState,
   onCopyExportState,
   onApplyImportedState,
 }: StatePanelProps) {
@@ -56,30 +54,59 @@ export default function StatePanel({
   const showSerializationWarning = mode === "export" && !isSerializable;
 
   return (
-    <div data-slice-tool="true" style={{ fontFamily: "sans-serif", color: "inherit" }}>
+    <div data-slice-tool="true" style={{ fontFamily: "sans-serif", color: "inherit", display: "grid", gap: 14 }}>
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 12,
+          display: "grid",
           gap: 12,
         }}
       >
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>
+        <div style={{ paddingRight: 48 }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
             {mode === "export" ? "Export Viewer State" : "Import Viewer State"}
           </div>
-          <div data-theme-text="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Copy this state to reproduce the current viewer, or paste one to restore it.
+          <div data-theme-text="muted" style={{ fontSize: 12, marginTop: 5, lineHeight: 1.45 }}>
+            {mode === "export"
+              ? "Copy the current state as JSON, or create a share link for this viewer."
+              : "Paste a saved viewer state JSON to restore a previous session."}
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" onClick={onOpenExport} style={secondaryButtonStyle}>
+        <div
+          data-theme-surface="soft"
+          style={{
+            display: "inline-flex",
+            gap: 6,
+            padding: 4,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.08)",
+            width: "fit-content",
+          }}
+        >
+          <button
+            type="button"
+            onClick={onOpenExport}
+            style={{
+              ...secondaryButtonStyle,
+              height: 32,
+              background: mode === "export" ? "rgba(120,190,255,0.18)" : "transparent",
+              border: mode === "export" ? "1px solid rgba(160,220,255,0.35)" : "1px solid transparent",
+              fontWeight: mode === "export" ? 700 : 500,
+            }}
+          >
             Export
           </button>
-          <button type="button" onClick={onOpenImport} style={secondaryButtonStyle}>
+          <button
+            type="button"
+            onClick={onOpenImport}
+            style={{
+              ...secondaryButtonStyle,
+              height: 32,
+              background: mode === "import" ? "rgba(120,190,255,0.18)" : "transparent",
+              border: mode === "import" ? "1px solid rgba(160,220,255,0.35)" : "1px solid transparent",
+              fontWeight: mode === "import" ? 700 : 500,
+            }}
+          >
             Import
           </button>
         </div>
@@ -144,6 +171,7 @@ export default function StatePanel({
       ) : null}
 
       <textarea
+        className="layer-panel-scroll"
         value={stateTextDraft}
         onChange={(event) => onStateTextDraftChange(event.target.value)}
         readOnly={mode === "export"}
@@ -151,17 +179,19 @@ export default function StatePanel({
         spellCheck={false}
         style={{
           width: "100%",
-          minHeight: 260,
+          minHeight: 320,
+          maxHeight: "min(54vh, 560px)",
           resize: "vertical",
-          borderRadius: 12,
+          overflowY: "auto",
+          borderRadius: 14,
           border: "1px solid rgba(255,255,255,0.12)",
           background: "rgba(255,255,255,0.05)",
           color: "inherit",
-          padding: 12,
+          padding: 14,
           boxSizing: "border-box",
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
           fontSize: 12,
-          lineHeight: 1.45,
+          lineHeight: 1.52,
           outline: "none",
         }}
       />
@@ -197,7 +227,7 @@ export default function StatePanel({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          marginTop: 12,
+          marginTop: 2,
           gap: 10,
         }}
       >
@@ -207,14 +237,9 @@ export default function StatePanel({
 
         <div style={{ display: "flex", gap: 8 }}>
           {mode === "export" ? (
-            <>
-              <button type="button" onClick={() => void onShareViewerState()} style={secondaryButtonStyle}>
-                Share Link
-              </button>
-              <button type="button" onClick={() => void onCopyExportState()} style={primaryButtonStyle}>
-                Copy JSON
-              </button>
-            </>
+            <button type="button" onClick={() => void onCopyExportState()} style={primaryButtonStyle}>
+              Copy JSON
+            </button>
           ) : null}
 
           {mode === "import" ? (
