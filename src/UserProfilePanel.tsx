@@ -14,6 +14,12 @@ import {
   type AppThemeId,
   type CursorStyleId,
 } from "./appPreferencesStore";
+import {
+  DEFAULT_SHORTCUT_BINDINGS,
+  type ShortcutBindingMap,
+  type ShortcutCommandId,
+} from "./shortcutStore";
+import ShortcutPanel from "./ShortcutPanel";
 
 type ProfileTabId = "data" | "settings";
 
@@ -44,6 +50,7 @@ type StorageEstimateSummary = {
   usage: number | null;
   quota: number | null;
 };
+
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -230,6 +237,7 @@ function ActionButton({
   );
 }
 
+
 function ConfirmDialog({
   dialog,
   palette,
@@ -336,6 +344,10 @@ export default function UserProfilePanel({
   onDeleteLocalDataset,
   onOpenLocalDatasetManager,
   onDataChanged,
+  shortcutBindings = DEFAULT_SHORTCUT_BINDINGS,
+  onShortcutBindingChange,
+  onResetShortcutBinding,
+  onResetAllShortcuts,
   savedViewerStateExists = false,
   savedHistoryCount = 0,
   dataRevision = 0,
@@ -349,6 +361,10 @@ export default function UserProfilePanel({
   onDeleteLocalDataset?: (datasetId: string) => void | Promise<void>;
   onOpenLocalDatasetManager?: () => void;
   onDataChanged?: () => void;
+  shortcutBindings?: ShortcutBindingMap;
+  onShortcutBindingChange?: (commandId: ShortcutCommandId, combo: string | null) => void;
+  onResetShortcutBinding?: (commandId: ShortcutCommandId) => void;
+  onResetAllShortcuts?: () => void;
   savedViewerStateExists?: boolean;
   savedHistoryCount?: number;
   dataRevision?: number;
@@ -361,6 +377,7 @@ export default function UserProfilePanel({
   const [localDatasetSummary, setLocalDatasetSummary] = useState<LocalDatasetSummary>({ records: [], totalBytes: 0 });
   const [storageEstimate, setStorageEstimate] = useState<StorageEstimateSummary>({ usage: null, quota: null });
   const [localDatasetError, setLocalDatasetError] = useState<string | null>(null);
+  const [isShortcutPanelOpen, setIsShortcutPanelOpen] = useState(false);
 
   async function refreshLocalDatasetSummary() {
     try {
@@ -389,7 +406,49 @@ export default function UserProfilePanel({
     void refreshLocalDatasetSummary();
   }, [open, dataRevision]);
 
+  useEffect(() => {
+    if (!open) {
+      setIsShortcutPanelOpen(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handleEscapeKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (event.defaultPrevented) return;
+
+      if (confirmDialog) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        setConfirmDialog(null);
+        return;
+      }
+
+      if (isShortcutPanelOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        setIsShortcutPanelOpen(false);
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      onClose();
+    }
+
+    window.addEventListener("keydown", handleEscapeKey, true);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeKey, true);
+    };
+  }, [confirmDialog, isShortcutPanelOpen, onClose, open]);
+
   const palette = useMemo(() => getThemePalette(preferences.theme), [preferences.theme]);
+
   const storageUsageRatio = useMemo(() => {
     if (storageEstimate.quota == null || storageEstimate.quota <= 0) return null;
     return Math.max(0, Math.min(1, localDatasetSummary.totalBytes / storageEstimate.quota));
@@ -847,6 +906,24 @@ export default function UserProfilePanel({
               </div>
             </SectionCard>
 
+            <SectionCard
+              title="Keyboard & mouse shortcuts"
+              subtitle="Rebind keyboard and mouse shortcuts"
+              palette={palette}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                <ActionButton label="Open shortcuts" onClick={() => setIsShortcutPanelOpen(true)} palette={palette} />
+              </div>
+            </SectionCard>
+
             <SectionCard title="3D scene background" subtitle="Choose the background color used in the 3D viewer." palette={palette}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <input
@@ -904,6 +981,16 @@ export default function UserProfilePanel({
             </SectionCard>
           </div>
         )}
+
+        <ShortcutPanel
+          open={isShortcutPanelOpen}
+          palette={palette}
+          shortcutBindings={shortcutBindings}
+          onClose={() => setIsShortcutPanelOpen(false)}
+          onShortcutBindingChange={onShortcutBindingChange}
+          onResetShortcutBinding={onResetShortcutBinding}
+          onResetAllShortcuts={onResetAllShortcuts}
+        />
 
         <ConfirmDialog
           dialog={confirmDialog}

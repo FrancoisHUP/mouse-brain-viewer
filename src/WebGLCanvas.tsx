@@ -2572,6 +2572,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       }
       if (activeToolRef.current !== "mouse") return;
       if (camera.mode !== "fly") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       keys.add(e.key.toLowerCase());
     }
 

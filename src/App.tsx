@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
 import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
@@ -8,6 +7,24 @@ import LocalDatasetManagerPanel from "./LocalDatasetManagerPanel";
 import SliceToolPopover from "./SliceToolPopover";
 import UserProfilePanel from "./UserProfilePanel";
 import StatePanel from "./StatePanel";
+import SaveToastStack, { type SaveToast } from "./components/app/SaveToastStack";
+import VersionBadge from "./components/app/VersionBadge";
+import LayerInspectorPanel from "./components/app/LayerInspectorPanel";
+import LocalLoadNotice from "./components/app/LocalLoadNotice";
+import GlobalDropOverlay from "./components/app/GlobalDropOverlay";
+import AppMenuPanel from "./components/app/AppMenuPanel";
+import AboutDialog from "./components/app/AboutDialog";
+import ShareDialog from "./components/app/ShareDialog";
+import StateDialog from "./components/app/StateDialog";
+import ClearHistoryDialog from "./components/app/ClearHistoryDialog";
+import {
+  createId,
+  loadRecentAnnotationColors,
+  saveRecentAnnotationColors,
+  normalizeHexColor,
+  ANNOTATION_RECENT_COLORS_STORAGE_KEY,
+  getThemeRootCss,
+} from "./utils/app/appHelpers";
 import {
   loadAppPreferences,
   type AppPreferences,
@@ -36,6 +53,18 @@ import {
   type ViewerStateV1,
 } from "./viewerState";
 import { buildViewerShareUrl, readViewerStateFromHash } from "./viewerShare";
+import {
+  SHORTCUT_DEFINITIONS,
+  doesShortcutMatchKeyboardEvent,
+  doesShortcutMatchMouseEvent,
+  loadShortcutBindings,
+  resetShortcutBindings,
+  resetSingleShortcutBinding,
+  saveShortcutBindings,
+  updateShortcutBindingUnique,
+  type ShortcutBindingMap,
+  type ShortcutCommandId,
+} from "./shortcutStore";
 import ViewerLibraryPanel from "./ViewerLibraryPanel";
 import {
   buildDefaultSavedViewerName,
@@ -115,10 +144,6 @@ declare global {
   }
 }
 
-function createId() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
 type ExternalSourceDraft = {
   id: string;
   name: string;
@@ -166,34 +191,6 @@ const DEFAULT_ANNOTATION_DRAFT: AnnotationDraftSettings = {
   depth: 0.015,
   eraseMode: "color",
 };
-
-const ANNOTATION_RECENT_COLORS_STORAGE_KEY = "allen-viewer-annotation-recent-colors-v1";
-
-function loadRecentAnnotationColors(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(ANNOTATION_RECENT_COLORS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((value): value is string => typeof value === "string").slice(0, 10);
-  } catch {
-    return [];
-  }
-}
-
-function saveRecentAnnotationColors(colors: string[]) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(ANNOTATION_RECENT_COLORS_STORAGE_KEY, JSON.stringify(colors.slice(0, 10)));
-  } catch {}
-}
-
-function normalizeHexColor(color: string): string {
-  const normalized = color.trim().replace("#", "");
-  const safe = normalized.length === 3 ? normalized.split("").map((c) => c + c).join("") : normalized;
-  return /^[0-9a-fA-F]{6}$/.test(safe) ? `#${safe.toLowerCase()}` : DEFAULT_ANNOTATION_DRAFT.color;
-}
 
 const INITIAL_TREE: LayerTreeNode[] = [];
 
@@ -257,26 +254,6 @@ function getCurrentSharedViewerUrl(): string | null {
   return params.get("vs") ? window.location.href : null;
 }
 
-const secondaryButtonStyle: CSSProperties = {
-  height: 34,
-  padding: "0 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background: "rgba(255,255,255,0.05)",
-  color: "white",
-  cursor: "pointer",
-};
-
-const primaryButtonStyle: CSSProperties = {
-  height: 34,
-  padding: "0 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(160,220,255,0.35)",
-  background: "rgba(120,190,255,0.18)",
-  color: "white",
-  cursor: "pointer",
-  fontWeight: 600,
-};
 
 const APP_VERSION = __APP_VERSION__ || "0.0.0-dev";
 const APP_COMMIT_SHA = __APP_COMMIT_SHA__ || "dev";
@@ -344,198 +321,7 @@ async function collectDroppedLocalEntries(
 }
 
 
-function MenuHamburgerIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <path d="M4 7h16" />
-      <path d="M4 12h16" />
-      <path d="M4 17h16" />
-    </svg>
-  );
-}
 
-function NewViewerIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="4" y="5" width="16" height="14" rx="2.5" />
-      <path d="M12 9v6" />
-      <path d="M9 12h6" />
-    </svg>
-  );
-}
-
-function LibraryMenuIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3.5 7.5A2.5 2.5 0 016 5h4l2 2h6A2.5 2.5 0 0120.5 9.5v8A2.5 2.5 0 0118 20H6a2.5 2.5 0 01-2.5-2.5z" />
-      <path d="M3.5 9h17" />
-    </svg>
-  );
-}
-
-function SaveMenuIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 4h11l3 3v13a1 1 0 01-1 1H6a1 1 0 01-1-1V4z" />
-      <path d="M8 4v6h8V4" />
-      <path d="M9 16h6" />
-    </svg>
-  );
-}
-
-function ImportDataMenuIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <ellipse cx="12" cy="6" rx="7" ry="3" />
-      <path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
-      <path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
-    </svg>
-  );
-}
-
-function ManageDataMenuIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 6h10" />
-      <path d="M4 12h16" />
-      <path d="M4 18h12" />
-      <circle cx="17" cy="6" r="2" />
-      <circle cx="8" cy="18" r="2" />
-    </svg>
-  );
-}
-
-function ShareMenuIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="18" cy="5" r="2.5" />
-      <circle cx="6" cy="12" r="2.5" />
-      <circle cx="18" cy="19" r="2.5" />
-      <path d="M8.2 10.8l7.6-4.6" />
-      <path d="M8.2 13.2l7.6 4.6" />
-    </svg>
-  );
-}
-
-function ImportStateMenuIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 21V10" />
-      <path d="M8 17l4 4 4-4" />
-      <path d="M5 10V6a2 2 0 012-2h10a2 2 0 012 2v4" />
-    </svg>
-  );
-}
-
-function ProfileMenuIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="8" r="3.5" />
-      <path d="M5 20a7 7 0 0114 0" />
-    </svg>
-  );
-}
-
-
-function getThemeRootCss(theme: AppPreferences["theme"]): string {
-  if (theme === "light") {
-    return `
-      [data-app-theme="light"] { color: #18212b; }
-      [data-app-theme="light"] button,
-      [data-app-theme="light"] input,
-      [data-app-theme="light"] select,
-      [data-app-theme="light"] textarea {
-        background: rgba(255,255,255,0.92) !important;
-        color: #18212b !important;
-        border-color: rgba(24,33,43,0.14) !important;
-      }
-      [data-app-theme="light"] button[style],
-      [data-app-theme="light"] input[style],
-      [data-app-theme="light"] select[style],
-      [data-app-theme="light"] textarea[style] {
-        box-shadow: none !important;
-      }
-      [data-app-theme="light"] [data-theme-surface="panel"] {
-        background: rgba(245,248,252,0.96) !important;
-        color: #18212b !important;
-        border-color: rgba(24,33,43,0.12) !important;
-      }
-      [data-app-theme="light"] [data-theme-surface="soft"] {
-        background: rgba(255,255,255,0.78) !important;
-        color: #18212b !important;
-        border-color: rgba(24,33,43,0.10) !important;
-      }
-      [data-app-theme="light"] [data-theme-text="muted"] {
-        color: rgba(24,33,43,0.74) !important;
-      }
-      [data-app-theme="light"] [data-theme-text="strong"] {
-        color: #18212b !important;
-      }
-      [data-app-theme="light"] option {
-        color: #18212b !important;
-        background: #ffffff !important;
-      }
-      [data-app-theme="light"] [data-slice-tool="true"] label,
-      [data-app-theme="light"] [data-slice-tool="true"] div,
-      [data-app-theme="light"] [data-slice-tool="true"] span {
-        color: #18212b !important;
-      }
-    `;
-  }
-
-  if (theme === "gray") {
-    return `
-      [data-app-theme="gray"] { color: #edf1f5; }
-      [data-app-theme="gray"] button,
-      [data-app-theme="gray"] input,
-      [data-app-theme="gray"] select,
-      [data-app-theme="gray"] textarea {
-        background: rgba(64,72,82,0.88) !important;
-        color: #edf1f5 !important;
-        border-color: rgba(255,255,255,0.12) !important;
-      }
-      [data-app-theme="gray"] [data-theme-surface="panel"] {
-        background: rgba(46,52,60,0.96) !important;
-        color: #edf1f5 !important;
-        border-color: rgba(255,255,255,0.10) !important;
-      }
-      [data-app-theme="gray"] [data-theme-surface="soft"] {
-        background: rgba(58,66,76,0.78) !important;
-        color: #edf1f5 !important;
-        border-color: rgba(255,255,255,0.10) !important;
-      }
-      [data-app-theme="gray"] [data-theme-text="muted"] {
-        color: rgba(237,241,245,0.74) !important;
-      }
-      [data-app-theme="gray"] [data-theme-text="strong"] {
-        color: #edf1f5 !important;
-      }
-      [data-app-theme="gray"] option {
-        color: #edf1f5 !important;
-        background: #414a54 !important;
-      }
-    `;
-  }
-
-  return `
-    [data-app-theme="dark"] [data-theme-surface="panel"] {
-      background: rgba(12,14,18,0.96) !important;
-      color: white !important;
-      border-color: rgba(255,255,255,0.10) !important;
-    }
-    [data-app-theme="dark"] [data-theme-surface="soft"] {
-      background: rgba(255,255,255,0.05) !important;
-      color: white !important;
-      border-color: rgba(255,255,255,0.10) !important;
-    }
-    [data-app-theme="dark"] [data-theme-text="muted"] {
-      color: rgba(255,255,255,0.74) !important;
-    }
-    [data-app-theme="dark"] [data-theme-text="strong"] {
-      color: white !important;
-    }
-  `;
-}
 
 export default function App({ startupSlices = [] }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolId>("mouse");
@@ -544,6 +330,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [isUserProfilePanelOpen, setIsUserProfilePanelOpen] = useState(false);
   const [isStateDialogOpen, setIsStateDialogOpen] = useState(false);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  const [isAboutDialogOpen, setIsAboutDialogOpen] = useState(false);
   const [isAppMenuOpen, setIsAppMenuOpen] = useState(false);
   const [layerTree, setLayerTree] = useState<LayerTreeNode[]>(INITIAL_TREE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
@@ -565,8 +352,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   );
   const [libraryMessage, setLibraryMessage] = useState<string | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
-  const [saveNoticeOpen, setSaveNoticeOpen] = useState(false);
-  const [saveNoticeMessage, setSaveNoticeMessage] = useState<string | null>(null);
+  const [saveToasts, setSaveToasts] = useState<SaveToast[]>([]);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [isClearHistoryConfirmOpen, setIsClearHistoryConfirmOpen] = useState(false);
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
@@ -574,6 +360,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   );
   const [profileDataRevision, setProfileDataRevision] = useState(0);
   const [hasPersistedViewerState, setHasPersistedViewerState] = useState(false);
+  const [shortcutBindings, setShortcutBindings] = useState<ShortcutBindingMap>(() => loadShortcutBindings());
 
   const [annotationDraft, setAnnotationDraft] = useState<AnnotationDraftSettings>(DEFAULT_ANNOTATION_DRAFT);
   const [annotationRecentColors, setAnnotationRecentColors] = useState<string[]>(() => loadRecentAnnotationColors());
@@ -600,14 +387,9 @@ export default function App({ startupSlices = [] }: AppProps) {
       if (target?.closest("[data-viewer-app-menu='true']")) return;
       setIsAppMenuOpen(false);
     }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setIsAppMenuOpen(false);
-    }
     document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isAppMenuOpen]);
 
@@ -716,263 +498,17 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
   }, [selectedNode]);
 
-  const inspectorPanelContent: ReactNode = (
-    <div
-      data-theme-surface="panel"
-      style={{
-        width: "100%",
-        borderRadius: 14,
-        border: "1px solid rgba(255,255,255,0.08)",
-        boxShadow: "none",
-        backdropFilter: "blur(14px)",
-        overflow: "hidden",
-        transition: "width 220ms ease",
-        fontFamily: "sans-serif",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          padding: "12px 14px",
-          borderBottom: isInspectorCollapsed ? "none" : "1px solid rgba(255,255,255,0.08)",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700 }}>
-            {selectedNode ? selectedNode.name : "No selection"}
-          </div>
-          <div data-theme-text="muted" style={{ fontSize: 11, marginTop: 3 }}>
-            {selectedNode
-              ? selectedNode.kind === "group"
-                ? "Group"
-                : selectedNode.type === "annotation"
-                ? `Annotation · ${selectedAnnotation?.shape ?? "point"}`
-                : selectedNode.type === "custom-slice"
-                ? "Custom slice"
-                : selectedNode.type === "remote"
-                ? "Remote layer"
-                : selectedNode.type === "primitive"
-                ? "Primitive"
-                : "Layer"
-              : "Select a layer to inspect it."}
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setIsInspectorCollapsed((prev) => !prev)}
-          aria-label={isInspectorCollapsed ? "Expand inspector" : "Collapse inspector"}
-          title={isInspectorCollapsed ? "Expand inspector" : "Collapse inspector"}
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: 12,
-            border: "1px solid rgba(255,255,255,0.10)",
-            background: "rgba(255,255,255,0.04)",
-            color: "inherit",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            transition: "all 180ms ease",
-            flex: "0 0 auto",
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: isInspectorCollapsed ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 220ms ease" }}>
-            <path d="M9 6l6 6-6 6" />
-          </svg>
-        </button>
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateRows: isInspectorCollapsed ? "0fr" : "1fr",
-          transition: "grid-template-rows 220ms ease",
-        }}
-      >
-        <div style={{ overflow: "hidden" }}>
-          <div style={{ padding: "14px", display: "grid", gap: 12 }}>
-            {selectedNode ? (
-              <>
-                <label style={{ display: "grid", gap: 6 }}>
-                  <input
-                    value={selectedNode.name}
-                    onChange={(event) => handleRenameNode(selectedNode.id, event.target.value)}
-                    style={{
-                      height: 34,
-                      padding: "0 10px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.10)",
-                      background: "rgba(255,255,255,0.04)",
-                      color: "inherit",
-                    }}
-                  />
-                </label>
-
-                {selectedAnnotationLayer ? (
-                  <>
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                        Color
-                      </span>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <input
-                          type="color"
-                          value={selectedAnnotation?.color ?? annotationDraft.color}
-                          onChange={(event) => updateSelectedAnnotationLayer({ color: event.target.value })}
-                          style={{ width: 40, height: 34, padding: 0, border: "none", background: "transparent", cursor: "pointer" }}
-                        />
-                        {selectedAnnotation?.shape !== "freehand" ? (
-                          <>
-                            <input
-                              type="range"
-                              min={0}
-                              max={1}
-                              step={0.01}
-                              value={selectedAnnotation?.opacity ?? annotationDraft.opacity}
-                              onChange={(event) => updateSelectedAnnotationLayer({ opacity: Number(event.target.value) })}
-                              style={{ flex: 1 }}
-                            />
-                            <span style={{ fontSize: 11, minWidth: 36, textAlign: "right", opacity: 0.72 }}>
-                              {Math.round((selectedAnnotation?.opacity ?? annotationDraft.opacity) * 100)}%
-                            </span>
-                          </>
-                        ) : (
-                          <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>
-                            This layer keeps all strokes in one color.
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {selectedAnnotation?.shape !== "rectangle" && selectedAnnotation?.shape !== "circle" && selectedAnnotation?.shape !== "freehand" ? (
-                      <label style={{ display: "grid", gap: 6 }}>
-                        <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                          Size
-                        </span>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <input
-                            type="range"
-                            min={0.01}
-                            max={0.3}
-                            step={0.005}
-                            value={selectedAnnotation?.size ?? annotationDraft.size}
-                            onChange={(event) => updateSelectedAnnotationLayer({ size: Number(event.target.value) })}
-                            style={{ flex: 1 }}
-                          />
-                          <span style={{ fontSize: 11, minWidth: 42, textAlign: "right", opacity: 0.72 }}>
-                            {(selectedAnnotation?.size ?? annotationDraft.size).toFixed(3)}
-                          </span>
-                        </div>
-                      </label>
-                    ) : null}
-
-                    <label style={{ display: "grid", gap: 6 }}>
-                      <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                        Metadata
-                      </span>
-                      <textarea
-                        value={selectedAnnotation?.metadata ?? ""}
-                        onChange={(event) => updateSelectedAnnotationLayer({ metadata: event.target.value })}
-                        rows={4}
-                        style={{
-                          resize: "vertical",
-                          minHeight: 82,
-                          padding: 10,
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.10)",
-                          background: "rgba(255,255,255,0.04)",
-                          color: "inherit",
-                        }}
-                      />
-                    </label>
-                  </>
-                ) : selectedNode.kind === "layer" ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <div
-                      data-theme-surface="soft"
-                      style={{
-                        borderRadius: 12,
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        padding: 12,
-                        fontSize: 12,
-                        lineHeight: 1.55,
-                        display: "grid",
-                        gap: 8,
-                      }}
-                    >
-                      <div style={{ fontSize: 13, fontWeight: 700 }}>Source information</div>
-                      <div><strong>Type:</strong> {selectedLayerRuntimeInfo?.sourceType ?? (selectedNode.type === "remote" ? "Remote layer" : selectedNode.type === "custom-slice" ? "Custom slice" : selectedNode.type === "file" ? "Uploaded file" : "Primitive")}</div>
-                      <div><strong>Description:</strong> {selectedNode.description ?? "—"}</div>
-                      {selectedLayerRuntimeInfo?.sourceName ? <div><strong>Source name:</strong> {selectedLayerRuntimeInfo.sourceName}</div> : null}
-                      {selectedLayerRuntimeInfo?.sourcePath ? (
-                        <div style={{ wordBreak: "break-all" }}><strong>Source path:</strong> {selectedLayerRuntimeInfo.sourcePath}</div>
-                      ) : typeof selectedNode.source === "string" ? (
-                        <div style={{ wordBreak: "break-all" }}><strong>Source path:</strong> {selectedNode.source}</div>
-                      ) : null}
-                    </div>
-
-                    {(selectedLayerRuntimeInfo?.requestedResolutionUm != null || selectedLayerRuntimeInfo?.dims || selectedLayerRuntimeInfo?.datasetPath || selectedLayerRuntimeInfo?.rawShape) ? (
-                      <div
-                        data-theme-surface="soft"
-                        style={{
-                          borderRadius: 12,
-                          border: "1px solid rgba(255,255,255,0.08)",
-                          padding: 12,
-                          fontSize: 12,
-                          lineHeight: 1.55,
-                          display: "grid",
-                          gap: 8,
-                        }}
-                      >
-                        <div style={{ fontSize: 13, fontWeight: 700 }}>Loaded dataset</div>
-                        {selectedLayerRuntimeInfo?.requestedResolutionUm != null ? <div><strong>Requested resolution:</strong> {selectedLayerRuntimeInfo.requestedResolutionUm} µm</div> : null}
-                        {selectedLayerRuntimeInfo?.resolvedResolutionUm != null ? <div><strong>Resolved resolution:</strong> {selectedLayerRuntimeInfo.resolvedResolutionUm} µm</div> : null}
-                        {selectedLayerRuntimeInfo?.datasetIndex != null ? <div><strong>Dataset index:</strong> {selectedLayerRuntimeInfo.datasetIndex}</div> : null}
-                        {selectedLayerRuntimeInfo?.datasetPath ? <div style={{ wordBreak: "break-all" }}><strong>OME-Zarr path:</strong> {selectedLayerRuntimeInfo.datasetPath}</div> : null}
-                        {selectedLayerRuntimeInfo?.voxelSizeUm ? <div><strong>Voxel size (z,y,x):</strong> {selectedLayerRuntimeInfo.voxelSizeUm.z ?? "?"}, {selectedLayerRuntimeInfo.voxelSizeUm.y ?? "?"}, {selectedLayerRuntimeInfo.voxelSizeUm.x ?? "?"} µm</div> : null}
-                        {selectedLayerRuntimeInfo?.dims ? <div><strong>Dims (z,y,x):</strong> {selectedLayerRuntimeInfo.dims.z}, {selectedLayerRuntimeInfo.dims.y}, {selectedLayerRuntimeInfo.dims.x}</div> : null}
-                        {selectedLayerRuntimeInfo?.rawShape ? <div><strong>Raw shape:</strong> [{selectedLayerRuntimeInfo.rawShape.join(", ")}]</div> : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div
-                    data-theme-surface="soft"
-                    style={{
-                      borderRadius: 12,
-                      border: "1px solid rgba(255,255,255,0.08)",
-                      padding: 12,
-                      fontSize: 12,
-                      lineHeight: 1.55,
-                    }}
-                  >
-                    Select an annotation layer to edit its style and metadata here.
-                  </div>
-                )}
-              </>
-            ) : (
-              <div
-                data-theme-surface="soft"
-                style={{
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  padding: 12,
-                  fontSize: 12,
-                  lineHeight: 1.55,
-                }}
-              >
-                Select a layer in the panel to inspect it here.
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+  const inspectorPanelContent = (
+    <LayerInspectorPanel
+      selectedNode={selectedNode}
+      selectedAnnotation={selectedAnnotation ?? null}
+      selectedLayerRuntimeInfo={selectedLayerRuntimeInfo}
+      annotationDraft={annotationDraft}
+      isInspectorCollapsed={isInspectorCollapsed}
+      onToggleCollapsed={() => setIsInspectorCollapsed((prev) => !prev)}
+      onRenameNode={handleRenameNode}
+      onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
+    />
   );
 
   const currentViewerState = useMemo(
@@ -1242,6 +778,95 @@ export default function App({ startupSlices = [] }: AppProps) {
   function buildHistoryDebugLabel() {
     return `${pastStatesRef.current.length}:${futureStatesRef.current.length}:${VIEWER_HISTORY_STORAGE_KEY}`;
   }
+  function handleShortcutBindingChange(commandId: ShortcutCommandId, combo: string | null) {
+    setShortcutBindings((prev) => updateShortcutBindingUnique(prev, commandId, combo));
+  }
+
+  function handleResetSingleShortcut(commandId: ShortcutCommandId) {
+    setShortcutBindings((prev) => resetSingleShortcutBinding(commandId, prev));
+  }
+
+  function handleResetAllShortcuts() {
+    setShortcutBindings(resetShortcutBindings());
+  }
+
+  function shouldIgnoreShortcutTarget(target: EventTarget | null): boolean {
+    const element = target as HTMLElement | null;
+    if (!element) return false;
+    if (element.closest("input, textarea, select, [contenteditable='true']")) return true;
+    if (element.closest("[data-shortcut-capture='true']")) return true;
+    return false;
+  }
+
+  function activateAnnotationShortcut(shape: AnnotationShape) {
+    setAnnotationDraft((prev) => ({ ...prev, shape }));
+    setActiveTool("pencil");
+  }
+
+  function executeShortcutCommand(commandId: ShortcutCommandId) {
+    switch (commandId) {
+      case "saveViewer":
+        handleSaveCurrentViewerToLibrary();
+        return;
+      case "newViewer":
+        handleCreateNewViewer();
+        return;
+      case "openLibrary":
+        setLibraryError(null);
+        setLibraryMessage(null);
+            setActiveTool("library");
+        return;
+      case "openShareDialog":
+        openShareDialog();
+        return;
+      case "toolMove":
+        setActiveTool("mouse");
+        return;
+      case "toolDraw":
+        setActiveTool("pencil");
+        return;
+      case "toolSlice":
+        setActiveTool("slice");
+        return;
+      case "cameraFly":
+        handleCameraModeChange("fly");
+        setActiveTool("mouse");
+        return;
+      case "cameraOrbit":
+        handleCameraModeChange("orbit");
+        setActiveTool("mouse");
+        return;
+      case "annotationPoint":
+        activateAnnotationShortcut("point");
+        return;
+      case "annotationLine":
+        activateAnnotationShortcut("line");
+        return;
+      case "annotationRectangle":
+        activateAnnotationShortcut("rectangle");
+        return;
+      case "annotationCircle":
+        activateAnnotationShortcut("circle");
+        return;
+      case "annotationFreehand":
+        activateAnnotationShortcut("freehand");
+        return;
+      case "annotationEraser":
+        activateAnnotationShortcut("eraser");
+        return;
+      case "recenterOrbit":
+        handleRequestResetOrbitCenter();
+        return;
+      case "undo":
+        handleUndo();
+        return;
+      case "redo":
+        handleRedo();
+        return;
+      default:
+        return;
+    }
+  }
 
   useEffect(() => {
     if (selectedNode && isRemoteOmeLayer(selectedNode)) {
@@ -1375,6 +1000,10 @@ export default function App({ startupSlices = [] }: AppProps) {
   }, [viewerLibrary]);
 
   useEffect(() => {
+    saveShortcutBindings(shortcutBindings);
+  }, [shortcutBindings]);
+
+  useEffect(() => {
     if (initializedStartupSlicesRef.current) return;
     if (!startupSlices.length) return;
 
@@ -1436,26 +1065,83 @@ export default function App({ startupSlices = [] }: AppProps) {
   }, [startupSlices]);
 
   useEffect(() => {
+    function handleEscapeKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (event.defaultPrevented) return;
+      const closed = closeTopmostOverlay();
+      if (!closed) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }
+
+    window.addEventListener("keydown", handleEscapeKey);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeKey);
+    };
+  }, [
+    activeTool,
+    isAppMenuOpen,
+    isClearHistoryConfirmOpen,
+    isImportPanelOpen,
+    isLocalDatasetManagerOpen,
+    isShareDialogOpen,
+    isAboutDialogOpen,
+    isStateDialogOpen,
+    isUserProfilePanelOpen,
+  ]);
+
+  useEffect(() => {
+    const blockingOverlayOpen =
+      isUserProfilePanelOpen ||
+      isStateDialogOpen ||
+      isShareDialogOpen ||
+      isAboutDialogOpen ||
+      isImportPanelOpen ||
+      isLocalDatasetManagerOpen ||
+      activeTool === "library";
+
     function handleKeyDown(event: KeyboardEvent) {
-      const isMeta = event.metaKey || event.ctrlKey;
-      if (!isMeta) return;
+      if (blockingOverlayOpen) return;
+      if (shouldIgnoreShortcutTarget(event.target)) return;
 
-      const key = event.key.toLowerCase();
-      if (key === "z" && !event.shiftKey) {
-        event.preventDefault();
-        handleUndo();
-        return;
-      }
+      const match = SHORTCUT_DEFINITIONS.find((definition) =>
+        doesShortcutMatchKeyboardEvent(event, shortcutBindings[definition.id])
+      );
+      if (!match) return;
+      event.preventDefault();
+      executeShortcutCommand(match.id);
+    }
 
-      if ((key === "z" && event.shiftKey) || key === "y") {
-        event.preventDefault();
-        handleRedo();
-      }
+    function handleMouseDown(event: MouseEvent) {
+      if (blockingOverlayOpen) return;
+      if (shouldIgnoreShortcutTarget(event.target)) return;
+
+      const match = SHORTCUT_DEFINITIONS.find((definition) =>
+        doesShortcutMatchMouseEvent(event, shortcutBindings[definition.id])
+      );
+      if (!match) return;
+      event.preventDefault();
+      executeShortcutCommand(match.id);
     }
 
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [historyRevision]);
+    window.addEventListener("mousedown", handleMouseDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("mousedown", handleMouseDown);
+    };
+  }, [
+    shortcutBindings,
+    activeTool,
+    isImportPanelOpen,
+    isLocalDatasetManagerOpen,
+    isShareDialogOpen,
+    isStateDialogOpen,
+    isUserProfilePanelOpen,
+    historyRevision,
+    layerTree,
+  ]);
 
   function handleUndo() {
     flushPendingAutoCommit();
@@ -1561,10 +1247,9 @@ export default function App({ startupSlices = [] }: AppProps) {
     setIsUserProfilePanelOpen(false);
     setIsStateDialogOpen(false);
     setIsShareDialogOpen(false);
+    setIsAboutDialogOpen(false);
     setLibraryError(null);
     setLibraryMessage(null);
-    setSaveNoticeOpen(false);
-    setSaveNoticeMessage(null);
     setStateError(null);
     setStateShareMessage(null);
     setStateTextDraft("");
@@ -1595,6 +1280,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     setIsUserProfilePanelOpen(false);
     setIsStateDialogOpen(false);
     setIsShareDialogOpen(false);
+    setIsAboutDialogOpen(false);
     setIsClearHistoryConfirmOpen(false);
     setLibraryError(null);
     setLibraryMessage(null);
@@ -1602,6 +1288,47 @@ export default function App({ startupSlices = [] }: AppProps) {
     setActiveTool((prev) =>
       prev === "slice" || prev === "library" ? "mouse" : prev
     );
+  }
+
+  function closeTopmostOverlay(): boolean {
+    if (isAppMenuOpen) {
+      setIsAppMenuOpen(false);
+      return true;
+    }
+    if (isClearHistoryConfirmOpen) {
+      setIsClearHistoryConfirmOpen(false);
+      return true;
+    }
+    if (isShareDialogOpen) {
+      setIsShareDialogOpen(false);
+      return true;
+    }
+    if (isAboutDialogOpen) {
+      setIsAboutDialogOpen(false);
+      return true;
+    }
+    if (isStateDialogOpen) {
+      setIsStateDialogOpen(false);
+      return true;
+    }
+    if (isLocalDatasetManagerOpen) {
+      setIsLocalDatasetManagerOpen(false);
+      return true;
+    }
+    if (isImportPanelOpen) {
+      setIsImportPanelOpen(false);
+      setDroppedLocalEntries(null);
+      return true;
+    }
+    if (activeTool === "library") {
+      setActiveTool("mouse");
+      return true;
+    }
+    if (isUserProfilePanelOpen) {
+      setIsUserProfilePanelOpen(false);
+      return true;
+    }
+    return false;
   }
 
   function openClearHistoryConfirm() {
@@ -1706,6 +1433,11 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
   }
 
+  function openAboutDialog() {
+    setIsAboutDialogOpen(true);
+    setIsAppMenuOpen(false);
+  }
+
   function captureViewerThumbnailDataUrl(): string | undefined {
     const sourceCanvas = viewerCanvasElementRef.current;
     if (!sourceCanvas || sourceCanvas.width <= 0 || sourceCanvas.height <= 0) {
@@ -1734,14 +1466,31 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
   }
 
+  function enqueueSaveToast(message: string) {
+    const id = `save-toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setSaveToasts((prev) => [...prev, { id, message, isClosing: false }]);
+
+    window.setTimeout(() => {
+      setSaveToasts((prev) => prev.map((toast) => (toast.id === id ? { ...toast, isClosing: true } : toast)));
+      window.setTimeout(() => {
+        setSaveToasts((prev) => prev.filter((toast) => toast.id !== id));
+      }, 220);
+    }, 3200);
+  }
+
+  function handleDismissSaveToast(toastId: string) {
+    setSaveToasts((prev) => prev.map((toast) => (toast.id === toastId ? { ...toast, isClosing: true } : toast)));
+    window.setTimeout(() => {
+      setSaveToasts((prev) => prev.filter((toast) => toast.id !== toastId));
+    }, 220);
+  }
+
   function handleSaveCurrentViewerToLibrary(name?: string) {
     if (!isSerializableLayerTree(currentViewerState.scene.layerTree)) {
       setLibraryMessage(null);
       setLibraryError(
         "This viewer contains layers that cannot be saved locally."
       );
-      setSaveNoticeOpen(false);
-      setSaveNoticeMessage(null);
       return;
     }
 
@@ -1755,8 +1504,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     setViewerLibrary((prev) => [entry, ...prev]);
     setLibraryError(null);
     setLibraryMessage(null);
-    setSaveNoticeMessage(`Saved "${entry.name}".`);
-    setSaveNoticeOpen(true);
+    enqueueSaveToast(`Saved "${entry.name}".`);
   }
 
   function handleOpenSavedViewer(entry: SavedViewerEntry) {
@@ -1768,7 +1516,6 @@ export default function App({ startupSlices = [] }: AppProps) {
     );
     setLibraryError(null);
     setLibraryMessage(null);
-    setSaveNoticeOpen(false);
     setActiveTool("mouse");
   }
 
@@ -1776,7 +1523,6 @@ export default function App({ startupSlices = [] }: AppProps) {
     setViewerLibrary((prev) => prev.filter((entry) => entry.id !== entryId));
     setLibraryError(null);
     setLibraryMessage("Viewer removed.");
-    setSaveNoticeOpen(false);
   }
 
   function handleRenameSavedViewer(entryId: string, nextName: string) {
@@ -1792,20 +1538,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     );
     setLibraryError(null);
     setLibraryMessage("Viewer renamed.");
-    setSaveNoticeOpen(false);
   }
 
-
-  function handleOpenLibraryFromSaveNotice() {
-    setSaveNoticeOpen(false);
-    setLibraryError(null);
-    setLibraryMessage(null);
-    setActiveTool("library");
-  }
-
-  function handleCloseSaveNotice() {
-    setSaveNoticeOpen(false);
-  }
 
   function handleToolChange(tool: ToolId) {
     setActiveTool((prev) => (prev === tool && tool === "slice" ? "mouse" : tool));
@@ -2889,521 +2623,75 @@ export default function App({ startupSlices = [] }: AppProps) {
           0% { opacity: 0; transform: translateY(8px); }
           100% { opacity: 1; transform: translateY(0); }
         }
+        @keyframes toast-panel-in {
+          0% { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes toast-panel-out {
+          0% { opacity: 1; transform: translateY(0); }
+          100% { opacity: 0; transform: translateY(8px); }
+        }
       `}</style>
+      <SaveToastStack toasts={saveToasts} bottomOffset={localSceneLoadState.active && !dismissLocalSceneLoadNotice ? 208 : 104} onDismiss={handleDismissSaveToast} />
 
-      {localSceneLoadState.active && !dismissLocalSceneLoadNotice ? (
-        <div
-          data-theme-surface="panel"
-          style={{
-            position: "absolute",
-            right: 18,
-            bottom: 104,
-            zIndex: 18,
-            width: "min(320px, calc(100vw - 40px))",
-            borderRadius: 16,
-            border: "1px solid rgba(255,255,255,0.10)",
-            boxShadow: "0 12px 28px rgba(0,0,0,0.30)",
-            padding: "12px 14px",
-            display: "grid",
-            gap: 8,
-            animation: "local-load-panel-in 180ms ease",
-            fontFamily: "sans-serif",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-            <div style={{ minWidth: 0 }}>
-              <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, fontFamily: "sans-serif" }}>Loading local data…</div>
-              <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.74, lineHeight: 1.45, marginTop: 4, fontFamily: "sans-serif" }}>
-                Preparing local data in the background. You can keep using the viewer while it loads.
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setDismissLocalSceneLoadNotice(true)}
-              aria-label="Dismiss loading notification"
-              title="Dismiss"
-              style={{
-                width: 28,
-                height: 28,
-                flex: "0 0 auto",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.10)",
-                background: "rgba(255,255,255,0.04)",
-                color: "inherit",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                lineHeight: 1,
-              }}
-            >
-              ×
-            </button>
-          </div>
-          <div
-            data-theme-surface="soft"
-            style={{
-              height: 7,
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.08)",
-              overflow: "hidden",
-              position: "relative",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: "34%",
-                borderRadius: 999,
-                background: "linear-gradient(90deg, rgba(120,190,255,0.08), rgba(120,190,255,0.92), rgba(120,190,255,0.08))",
-                animation: "local-load-indeterminate 1.15s linear infinite",
-              }}
-            />
-          </div>
-          <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.7 }}>
-            {localSceneLoadState.pending} pending item{localSceneLoadState.pending > 1 ? "s" : ""}
-          </div>
-        </div>
-      ) : null}
+      <LocalLoadNotice
+        active={localSceneLoadState.active && !dismissLocalSceneLoadNotice}
+        pending={localSceneLoadState.pending}
+        onDismiss={() => setDismissLocalSceneLoadNotice(true)}
+      />
 
-      {canShowGlobalDropOverlay ? (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 26,
-            background: "rgba(8,12,16,0.54)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            pointerEvents: "none",
-            padding: 24,
-            boxSizing: "border-box",
-          }}
-        >
-          <div
-            data-theme-surface="panel"
-            style={{
-              width: "min(500px, calc(100vw - 48px))",
-              borderRadius: 24,
-              border: "1px solid rgba(255,255,255,0.16)",
-              background: "rgba(12,14,18,0.92)",
-              boxShadow: "0 24px 60px rgba(0,0,0,0.38)",
-              padding: "28px 30px",
-              display: "grid",
-              gap: 10,
-              textAlign: "center",
-              fontFamily: "sans-serif",
-            }}
-          >
-            <div
-              style={{
-                width: 64,
-                height: 64,
-                margin: "0 auto",
-                borderRadius: 18,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "rgba(255,255,255,0.06)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "rgba(255,255,255,0.92)",
-                fontSize: 28,
-                fontWeight: 700,
-              }}
-            >
-              +
-            </div>
-            <div data-theme-text="strong" style={{ fontSize: 22, fontWeight: 800 }}>
-              Drop files to add them
-            </div>
-            <div data-theme-text="muted" style={{ fontSize: 13, opacity: 0.76, lineHeight: 1.5 }}>
-              Release anywhere in the viewer.
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <GlobalDropOverlay visible={canShowGlobalDropOverlay} />
 
-      <div data-viewer-app-menu="true" style={{ position: "absolute", top: 16, left: 16, zIndex: 26, pointerEvents: "none" }}>
-        <div style={{ position: "relative", pointerEvents: "auto", fontFamily: "sans-serif" }}>
-          <button
-            type="button"
-            onClick={() => setIsAppMenuOpen((prev) => !prev)}
-            style={{
-              height: 46,
-              padding: "0 14px",
-              borderRadius: 16,
-              border: "1px solid rgba(255,255,255,0.10)",
-              background: "rgba(12,14,18,0.82)",
-              color: "white",
-              boxShadow: "0 12px 30px rgba(0,0,0,0.32)",
-              backdropFilter: "blur(12px)",
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              cursor: "pointer",
-              fontWeight: 700,
-            }}
-          >
-            <span style={{ display: "flex", alignItems: "center", justifyContent: "center" }}><MenuHamburgerIcon /></span>
-            <span>Viewer</span>
-          </button>
+      <AppMenuPanel
+        open={isAppMenuOpen}
+        onToggleOpen={() => setIsAppMenuOpen((prev) => !prev)}
+        onCreateNewViewer={handleCreateNewViewer}
+        onOpenLibrary={() => { setLibraryError(null); setLibraryMessage(null); setActiveTool("library"); setIsAppMenuOpen(false); }}
+        onSaveViewer={() => { handleSaveCurrentViewerToLibrary(); setIsAppMenuOpen(false); }}
+        onOpenImportData={() => { setIsImportPanelOpen(true); setIsAppMenuOpen(false); }}
+        onOpenManageLocalData={() => { setIsLocalDatasetManagerOpen(true); setIsAppMenuOpen(false); }}
+        onOpenExportState={() => { openExportStateModal(); setIsAppMenuOpen(false); }}
+        onOpenImportState={() => { openImportStateModal(); setIsAppMenuOpen(false); }}
+        onOpenShareDialog={openShareDialog}
+        onOpenProfile={() => { setIsUserProfilePanelOpen(true); setIsAppMenuOpen(false); }}
+        onOpenAbout={openAboutDialog}
+      />
 
-          <div
-            data-theme-surface="panel"
-            style={{
-              marginTop: 10,
-              width: 292,
-              borderRadius: 18,
-              border: "1px solid rgba(255,255,255,0.10)",
-              boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
-              backdropFilter: "blur(14px)",
-              padding: 12,
-              display: "grid",
-              gap: 12,
-              opacity: isAppMenuOpen ? 1 : 0,
-              transform: isAppMenuOpen ? "translateY(0) scale(1)" : "translateY(-8px) scale(0.985)",
-              transformOrigin: "top left",
-              visibility: isAppMenuOpen ? "visible" : "hidden",
-              pointerEvents: isAppMenuOpen ? "auto" : "none",
-              transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
-            }}
-          >
-            <div style={{ display: "grid", gap: 6 }}>
-              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>Viewer</div>
-              <div style={{ display: "grid", gap: 4 }}>
-                <button
-                  type="button"
-                  onClick={handleCreateNewViewer}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <NewViewerIcon />
-                  <span>New empty viewer</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setLibraryError(null); setLibraryMessage(null); setSaveNoticeOpen(false); setActiveTool("library"); setIsAppMenuOpen(false); }}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <LibraryMenuIcon />
-                  <span>Open library</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { handleSaveCurrentViewerToLibrary(); setIsAppMenuOpen(false); }}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <SaveMenuIcon />
-                  <span>Save viewer</span>
-                </button>
-              </div>
-            </div>
+      <AboutDialog
+        open={isAboutDialogOpen}
+        onClose={() => setIsAboutDialogOpen(false)}
+        version={APP_VERSION}
+        commitShort={APP_COMMIT_SHORT}
+        commitUrl={APP_COMMIT_URL}
+        githubUrl="https://github.com/FrancoisHUP/mouse-brain-viewer"
+        contactEmail="francois.h.marcoux@gmail.com"
+      />
 
-            <div style={{ display: "grid", gap: 6 }}>
-              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>Data</div>
-              <div style={{ display: "grid", gap: 4 }}>
-                <button
-                  type="button"
-                  onClick={() => { setIsImportPanelOpen(true); setIsAppMenuOpen(false); }}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <ImportDataMenuIcon />
-                  <span>Import data</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setIsLocalDatasetManagerOpen(true); setIsAppMenuOpen(false); }}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <ManageDataMenuIcon />
-                  <span>Manage local data</span>
-                </button>
-              </div>
-            </div>
+      <ShareDialog
+        open={isShareDialogOpen}
+        shareUrlDraft={shareUrlDraft}
+        localOnlyLayerNames={localOnlyLayerNames}
+        stateError={stateError}
+        stateShareMessage={stateShareMessage}
+        onClose={() => setIsShareDialogOpen(false)}
+        onCopyShareLink={() => void handleShareViewerState()}
+      />
 
-            <div style={{ display: "grid", gap: 6 }}>
-              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>Share</div>
-              <div style={{ display: "grid", gap: 4 }}>
-                <button
-                  type="button"
-                  onClick={() => { openExportStateModal(); setIsAppMenuOpen(false); }}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <ShareMenuIcon />
-                  <span>Export viewer state</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { openImportStateModal(); setIsAppMenuOpen(false); }}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <ImportStateMenuIcon />
-                  <span>Import viewer state</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={openShareDialog}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <ShareMenuIcon />
-                  <span>Copy share link</span>
-                </button>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: "uppercase" }}>App</div>
-              <div style={{ display: "grid", gap: 4 }}>
-                <button
-                  type="button"
-                  onClick={() => { setIsUserProfilePanelOpen(true); setIsAppMenuOpen(false); }}
-                  style={{ height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, textAlign: "left", transition: "background 160ms ease, border-color 160ms ease" }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = "rgba(255,255,255,0.06)"; event.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.borderColor = "transparent"; }}
-                >
-                  <ProfileMenuIcon />
-                  <span>Profile & preferences</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {isShareDialogOpen ? (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 45,
-            background: "rgba(4,6,10,0.48)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-            boxSizing: "border-box",
-          }}
-          onClick={() => setIsShareDialogOpen(false)}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            data-theme-surface="panel"
-            style={{
-              width: "min(720px, 100%)",
-              maxHeight: "min(82vh, 820px)",
-              overflow: "hidden",
-              borderRadius: 18,
-              border: "1px solid rgba(255,255,255,0.10)",
-              boxShadow: "0 18px 48px rgba(0,0,0,0.42)",
-              padding: 18,
-              color: "inherit",
-              position: "relative",
-              display: "grid",
-              gap: 14,
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setIsShareDialogOpen(false)}
-              aria-label="Close share dialog"
-              title="Close"
-              style={{
-                position: "absolute",
-                top: 14,
-                right: 14,
-                width: 34,
-                height: 34,
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.10)",
-                background: "rgba(255,255,255,0.05)",
-                color: "inherit",
-                cursor: "pointer",
-                zIndex: 2,
-              }}
-            >
-              ×
-            </button>
-
-            <div data-slice-tool="true" style={{ fontFamily: "sans-serif", color: "inherit", display: "grid", gap: 14 }}>
-              <div style={{ paddingRight: 48 }}>
-                <div style={{ fontSize: 18, fontWeight: 700 }}>Share Viewer Link</div>
-                <div data-theme-text="muted" style={{ fontSize: 12, marginTop: 5, lineHeight: 1.45 }}>
-                  Copy a URL containing the current viewer state. Anyone with the link can open the same shared view.
-                </div>
-              </div>
-
-              {localOnlyLayerNames.length > 0 ? (
-                <div
-                  style={{
-                    borderRadius: 12,
-                    border: "1px solid rgba(255,180,120,0.35)",
-                    background: "rgba(255,180,120,0.10)",
-                    padding: 12,
-                    fontSize: 12,
-                    lineHeight: 1.5,
-                  }}
-                >
-                  <div style={{ fontWeight: 700, marginBottom: 6 }}>Some layers are local to this browser</div>
-                  <div>
-                    The link will still work, but these local layers will not appear on other devices or browsers.
-                  </div>
-                  <div style={{ marginTop: 8 }}><strong>Unavailable in shared view:</strong></div>
-                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {localOnlyLayerNames.map((layerName) => (
-                      <span
-                        key={layerName}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          minHeight: 24,
-                          padding: "0 8px",
-                          borderRadius: 999,
-                          border: "1px solid rgba(255,200,150,0.30)",
-                          background: "rgba(255,255,255,0.06)",
-                          fontSize: 11,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {layerName}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              <textarea
-              className="layer-panel-scroll"
-              value={shareUrlDraft}
-              readOnly
-              spellCheck={false}
-              style={{
-                width: "100%",
-                minHeight: 140,
-                maxHeight: "min(36vh, 320px)",
-                resize: "vertical",
-                overflowY: "auto",
-                borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(255,255,255,0.05)",
-                color: "inherit",
-                padding: 14,
-                boxSizing: "border-box",
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                fontSize: 12,
-                lineHeight: 1.52,
-                outline: "none",
-              }}
-            />
-
-            {stateError ? (
-              <div style={{ fontSize: 12, color: "#ffb4b4", lineHeight: 1.4 }}>{stateError}</div>
-            ) : null}
-
-            {!stateError && stateShareMessage ? (
-              <div style={{ fontSize: 12, color: "rgba(170,230,190,0.95)", lineHeight: 1.4 }}>{stateShareMessage}</div>
-            ) : null}
-
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                <div data-theme-text="muted" style={{ fontSize: 12 }}>
-                  The link uses the current website URL with an encoded viewer state in the hash.
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button type="button" onClick={() => setIsShareDialogOpen(false)} style={secondaryButtonStyle}>Close</button>
-                  <button type="button" onClick={() => void handleShareViewerState()} style={primaryButtonStyle}>Copy share link</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {isStateModalOpen ? (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 44,
-            background: "rgba(4,6,10,0.48)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-            boxSizing: "border-box",
-          }}
-          onClick={() => setIsStateDialogOpen(false)}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            data-theme-surface="panel"
-            style={{
-              width: "min(820px, 100%)",
-              maxHeight: "min(86vh, 960px)",
-              overflow: "hidden",
-              borderRadius: 18,
-              border: "1px solid rgba(255,255,255,0.10)",
-              boxShadow: "0 18px 48px rgba(0,0,0,0.42)",
-              padding: 18,
-              color: "inherit",
-              position: "relative",
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setIsStateDialogOpen(false)}
-              aria-label="Close viewer state dialog"
-              title="Close"
-              style={{
-                position: "absolute",
-                top: 14,
-                right: 14,
-                width: 34,
-                height: 34,
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.10)",
-                background: "rgba(255,255,255,0.05)",
-                color: "inherit",
-                cursor: "pointer",
-                zIndex: 2,
-              }}
-            >
-              ×
-            </button>
-            <StatePanel
-              mode={stateModalMode}
-              stateTextDraft={stateTextDraft}
-              stateError={stateError}
-              stateShareMessage={stateShareMessage}
-              localOnlyLayerNames={localOnlyLayerNames}
-              isSerializable={isCurrentViewerShareSerializable}
-              onStateTextDraftChange={setStateTextDraft}
-              onOpenExport={openExportStateModal}
-              onOpenImport={openImportStateModal}
-              onCopyExportState={handleCopyExportState}
-              onApplyImportedState={handleApplyImportedState}
-            />
-          </div>
-        </div>
-      ) : null}
+      <StateDialog open={isStateModalOpen} onClose={() => setIsStateDialogOpen(false)}>
+        <StatePanel
+          mode={stateModalMode}
+          stateTextDraft={stateTextDraft}
+          stateError={stateError}
+          stateShareMessage={stateShareMessage}
+          localOnlyLayerNames={localOnlyLayerNames}
+          isSerializable={isCurrentViewerShareSerializable}
+          onStateTextDraftChange={setStateTextDraft}
+          onOpenExport={openExportStateModal}
+          onOpenImport={openImportStateModal}
+          onCopyExportState={handleCopyExportState}
+          onApplyImportedState={handleApplyImportedState}
+        />
+      </StateDialog>
 
       <LayerPanel
         layerTree={layerTree}
@@ -3471,6 +2759,10 @@ export default function App({ startupSlices = [] }: AppProps) {
           setIsLocalDatasetManagerOpen(true);
         }}
         onDataChanged={notifyProfileDataChanged}
+        shortcutBindings={shortcutBindings}
+        onShortcutBindingChange={handleShortcutBindingChange}
+        onResetShortcutBinding={handleResetSingleShortcut}
+        onResetAllShortcuts={handleResetAllShortcuts}
         savedViewerStateExists={hasPersistedViewerState || viewerLibrary.length > 0}
         savedHistoryCount={pastStatesRef.current.length + futureStatesRef.current.length}
         dataRevision={profileDataRevision}
@@ -3487,139 +2779,19 @@ export default function App({ startupSlices = [] }: AppProps) {
         onRenameViewer={handleRenameSavedViewer}
       />
 
-      {isClearHistoryConfirmOpen ? (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 45,
-            background: "rgba(4,6,10,0.48)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-            boxSizing: "border-box",
-          }}
-          onClick={() => setIsClearHistoryConfirmOpen(false)}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            data-theme-surface="panel"
-            style={{
-              width: "min(420px, 100%)",
-              borderRadius: 18,
-              background: "rgba(12,14,18,0.96)",
-              border: "1px solid rgba(255,255,255,0.10)",
-              boxShadow: "0 18px 48px rgba(0,0,0,0.42)",
-              padding: 18,
-              color: "white",
-            }}
-          >
-            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>
-              Delete history?
-            </div>
-            <div
-              style={{
-                fontSize: 13,
-                lineHeight: 1.55,
-                opacity: 0.78,
-              }}
-            >
-              Do you really want to delete the entire history? This operation cannot be undone.
-            </div>
+      <ClearHistoryDialog
+        open={isClearHistoryConfirmOpen}
+        onClose={() => setIsClearHistoryConfirmOpen(false)}
+        onConfirm={handleConfirmClearHistory}
+      />
 
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 10,
-                marginTop: 18,
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => setIsClearHistoryConfirmOpen(false)}
-                style={secondaryButtonStyle}
-              >
-                No
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmClearHistory}
-                style={{
-                  ...primaryButtonStyle,
-                  border: "1px solid rgba(255,140,140,0.34)",
-                  background: "rgba(200,70,70,0.18)",
-                }}
-              >
-                Yes, delete history
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div
-        style={{
-          position: "fixed",
-          right: 12,
-          bottom: 8,
-          zIndex: 18,
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "3px 7px",
-          borderRadius: 8,
-          border:
-            appPreferences.theme === "light"
-              ? "1px solid rgba(24,33,43,0.08)"
-              : "1px solid rgba(255,255,255,0.06)",
-          background:
-            appPreferences.theme === "light"
-              ? "rgba(255,255,255,0.52)"
-              : appPreferences.theme === "gray"
-              ? "rgba(46,52,60,0.48)"
-              : "rgba(12,14,18,0.42)",
-          color:
-            appPreferences.theme === "light"
-              ? "rgba(24,33,43,0.58)"
-              : "rgba(255,255,255,0.5)",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
-          backdropFilter: "blur(6px)",
-          fontFamily: "sans-serif",
-          fontSize: 10,
-          lineHeight: 1,
-          letterSpacing: 0.2,
-          pointerEvents: "auto",
-          userSelect: "none",
-        }}
-      >
-        <span title={`Viewer version ${APP_VERSION}`}>v{APP_VERSION}</span>
-        <span style={{ opacity: 0.22 }}>•</span>
-        {APP_COMMIT_URL ? (
-          <a
-            href={APP_COMMIT_URL}
-            target="_blank"
-            rel="noreferrer"
-            title={`Open deployed commit ${APP_COMMIT_SHA}`}
-            style={{
-              color:
-                appPreferences.theme === "light"
-                  ? "rgba(24,33,43,0.56)"
-                  : "rgba(255,255,255,0.46)",
-              textDecoration: "none",
-              fontWeight: 500,
-            }}
-          >
-            {APP_COMMIT_SHORT}
-          </a>
-        ) : (
-          <span title="Git commit unavailable in local development" style={{ opacity: 0.5 }}>
-            {APP_COMMIT_SHORT}
-          </span>
-        )}
-      </div>
+      <VersionBadge
+        version={APP_VERSION}
+        commitSha={APP_COMMIT_SHA}
+        commitShort={APP_COMMIT_SHORT}
+        commitUrl={APP_COMMIT_URL}
+        theme={appPreferences.theme}
+      />
 
       <BottomToolbar
         activeTool={activeTool}
@@ -3628,33 +2800,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         onCameraModeChange={handleCameraModeChange}
         onResetOrbitCenter={handleRequestResetOrbitCenter}
         onSaveCurrentViewer={handleSaveCurrentViewerToLibrary}
-        saveNoticeOpen={saveNoticeOpen}
-        onRequestCloseSaveNotice={handleCloseSaveNotice}
-        saveNoticeContent={
-          <div style={{ display: "grid", gap: 10, fontFamily: "sans-serif" }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>Viewer saved</div>
-            <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.74, lineHeight: 1.45 }}>
-              {saveNoticeMessage ?? "The current viewer has been saved in this browser."}
-            </div>
-            <button
-              type="button"
-              onClick={handleOpenLibraryFromSaveNotice}
-              style={{
-                height: 34,
-                padding: "0 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(160,220,255,0.35)",
-                background: "rgba(120,190,255,0.18)",
-                color: "white",
-                cursor: "pointer",
-                fontWeight: 600,
-                justifySelf: "start",
-              }}
-            >
-              Open library
-            </button>
-          </div>
-        }
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={() => handleUndo()}
