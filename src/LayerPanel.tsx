@@ -22,6 +22,8 @@ import type { LayerGroupNode, LayerTreeNode, FlatTreeRow } from "./layerTypes";
 import { flattenTree, isLocalOnlyFileLayer } from "./layerTypes";
 
 const ROOT_DROP_ID = "__root_drop_zone__";
+const DEFAULT_SPLIT_RATIO = 0.5;
+const MIN_PANE_HEIGHT_PX = 170;
 
 type MenuPosition = {
   top: number;
@@ -138,6 +140,16 @@ function AddGroupIcon() {
   );
 }
 
+function ResizeGrip() {
+  return (
+    <svg width="26" height="10" viewBox="0 0 26 10" fill="none" aria-hidden="true">
+      <path d="M4 5h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.7" />
+      <path d="M8 2.5h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.45" />
+      <path d="M8 7.5h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.45" />
+    </svg>
+  );
+}
+
 function RowShell({ row, selected, inheritedSelected, hoveringGroupTarget, dragStyle, dragging, children }: { row: FlatTreeRow; selected: boolean; inheritedSelected: boolean; hoveringGroupTarget: boolean; dragStyle?: CSSProperties; dragging?: boolean; children: React.ReactNode; }) {
   let background = "rgba(255,255,255,0.04)";
   let border = "1px solid rgba(255,255,255,0.06)";
@@ -200,7 +212,7 @@ function SortableTreeRow({ row, focusedNodeId, selectedNodeIds, openMenuId, setO
 
 const menuItemStyle: CSSProperties = { width: "100%", height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px" };
 
-export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _groupOptions, detailsContent = null, isCollapsed, onSetCollapsed, onToggleVisible, onSelectNode, onToggleGroupExpanded, onSetGroupExpanded, onAddGroup, onAddLayer, onRenameNode, onDeleteNode, onDeleteNodes, onCreateGroupFromNodes, onDropNodeIntoGroup, onDropNodeToRoot, onReorderBefore, onDropNodesIntoGroup, onDropNodesToRoot, onReorderNodesBefore }: { layerTree: LayerTreeNode[]; selectedNodeId: string | null; groupOptions: LayerGroupNode[]; detailsContent?: React.ReactNode; isCollapsed: boolean; onSetCollapsed: (collapsed: boolean) => void; onToggleVisible: (nodeId: string) => void; onSelectNode: (nodeId: string) => void; onToggleGroupExpanded: (groupId: string) => void; onSetGroupExpanded: (groupId: string, expanded: boolean) => void; onAddGroup: () => void; onAddLayer: () => void; onRenameNode: (nodeId: string, newName: string) => void; onDeleteNode: (nodeId: string) => void; onDeleteNodes: (nodeIds: string[]) => void; onCreateGroupFromNodes: (nodeIds: string[]) => void; onDropNodeIntoGroup: (nodeId: string, groupId: string) => void; onDropNodeToRoot: (nodeId: string) => void; onReorderBefore: (activeId: string, overId: string) => void; onDropNodesIntoGroup: (nodeIds: string[], groupId: string) => void; onDropNodesToRoot: (nodeIds: string[]) => void; onReorderNodesBefore: (nodeIds: string[], overId: string) => void; }) {
+export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _groupOptions, detailsContent = null, isDetailsCollapsed = false, onToggleDetailsCollapsed, isCollapsed, onSetCollapsed, onToggleVisible, onSelectNode, onToggleGroupExpanded, onSetGroupExpanded, onAddGroup, onAddLayer, onRenameNode, onDeleteNode, onDeleteNodes, onCreateGroupFromNodes, onDropNodeIntoGroup, onDropNodeToRoot, onReorderBefore, onDropNodesIntoGroup, onDropNodesToRoot, onReorderNodesBefore }: { layerTree: LayerTreeNode[]; selectedNodeId: string | null; groupOptions: LayerGroupNode[]; detailsContent?: React.ReactNode; isDetailsCollapsed?: boolean; onToggleDetailsCollapsed?: () => void; isCollapsed: boolean; onSetCollapsed: (collapsed: boolean) => void; onToggleVisible: (nodeId: string) => void; onSelectNode: (nodeId: string) => void; onToggleGroupExpanded: (groupId: string) => void; onSetGroupExpanded: (groupId: string, expanded: boolean) => void; onAddGroup: () => void; onAddLayer: () => void; onRenameNode: (nodeId: string, newName: string) => void; onDeleteNode: (nodeId: string) => void; onDeleteNodes: (nodeIds: string[]) => void; onCreateGroupFromNodes: (nodeIds: string[]) => void; onDropNodeIntoGroup: (nodeId: string, groupId: string) => void; onDropNodeToRoot: (nodeId: string) => void; onReorderBefore: (activeId: string, overId: string) => void; onDropNodesIntoGroup: (nodeIds: string[], groupId: string) => void; onDropNodesToRoot: (nodeIds: string[]) => void; onReorderNodesBefore: (nodeIds: string[], overId: string) => void; }) {
   const rows = useMemo(() => flattenTree(layerTree), [layerTree]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(selectedNodeId ? [selectedNodeId] : []);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(selectedNodeId);
@@ -211,8 +223,12 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [detailsSplitRatio, setDetailsSplitRatio] = useState(DEFAULT_SPLIT_RATIO);
+  const [isResizingDetailsSplit, setIsResizingDetailsSplit] = useState(false);
   const hoverExpandTimerRef = useRef<number | null>(null);
   const internalSelectionUpdateRef = useRef(false);
+  const splitAreaRef = useRef<HTMLDivElement | null>(null);
+  const resizeStateRef = useRef<{ startY: number; startRatio: number; areaHeight: number } | null>(null);
   const sensors = useSensors(useSensor(MouseSensor, { activationConstraint: { distance: 6 } }), useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 6 } }));
   const activeRow = rows.find((row) => row.id === activeId) ?? null;
 
@@ -246,6 +262,32 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
   }, []);
 
   useEffect(() => () => { if (hoverExpandTimerRef.current) window.clearTimeout(hoverExpandTimerRef.current); }, []);
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      const state = resizeStateRef.current;
+      if (!state) return;
+      const minRatio = Math.min(0.8, Math.max(0.15, MIN_PANE_HEIGHT_PX / Math.max(state.areaHeight, 1)));
+      const maxRatio = Math.max(0.2, Math.min(0.85, 1 - minRatio));
+      const deltaY = event.clientY - state.startY;
+      const nextRatio = state.startRatio + deltaY / Math.max(state.areaHeight, 1);
+      setDetailsSplitRatio(Math.max(minRatio, Math.min(maxRatio, nextRatio)));
+    }
+
+    function handlePointerUp() {
+      resizeStateRef.current = null;
+      setIsResizingDetailsSplit(false);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, []);
 
   function startRename(row: FlatTreeRow) { setRenamingId(row.id); setRenameDraft(row.name); }
   function finishRename(nodeId: string) { const trimmed = renameDraft.trim(); if (trimmed) onRenameNode(nodeId, trimmed); setRenamingId(null); setRenameDraft(""); }
@@ -312,14 +354,35 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
     setHoveredGroupId(null);
   }
 
+  function handleSplitPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!detailsContent) return;
+    const areaHeight = splitAreaRef.current?.getBoundingClientRect().height ?? 0;
+    if (areaHeight <= 0) return;
+    resizeStateRef.current = {
+      startY: event.clientY,
+      startRatio: detailsSplitRatio,
+      areaHeight,
+    };
+    setIsResizingDetailsSplit(true);
+    event.preventDefault();
+  }
+
   const selectionCount = selectedNodeIds.length;
+  const effectiveSplitRatio = Math.max(0.15, Math.min(0.85, detailsSplitRatio));
+  const detailsRatio = Math.max(0.15, Math.min(0.85, 1 - effectiveSplitRatio));
+  const panelMaxHeight = "calc(100vh - 96px)";
+  const splitAreaMaxHeight = "calc(100vh - 156px)";
+  const listPaneMaxHeight = detailsContent && !isDetailsCollapsed
+    ? `calc(${splitAreaMaxHeight} * ${effectiveSplitRatio})`
+    : splitAreaMaxHeight;
+  const detailsPaneMaxHeight = `calc(${splitAreaMaxHeight} * ${detailsRatio})`;
 
   return (<>
-    <style>{`.layer-panel-scroll{overflow-y:auto;overflow-x:hidden;max-height:min(68vh,720px);padding-right:4px;scrollbar-width:thin;scrollbar-color:rgba(140,190,255,0.45) rgba(255,255,255,0.06)}.layer-panel-scroll::-webkit-scrollbar{width:10px}.layer-panel-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,0.05);border-radius:999px}.layer-panel-scroll::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(140,190,255,0.52),rgba(90,150,230,0.34));border-radius:999px;border:2px solid rgba(12,14,18,0.82)}.layer-panel-scroll::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,rgba(160,210,255,0.68),rgba(110,170,245,0.48))}.layer-panel-no-select,.layer-panel-no-select *{user-select:none;-webkit-user-select:none}`}</style>
+    <style>{`.layer-panel-scroll{overflow:auto;min-height:0;padding-right:4px;scrollbar-width:thin;scrollbar-color:rgba(140,190,255,0.45) rgba(255,255,255,0.06)}.layer-panel-scroll::-webkit-scrollbar{width:10px}.layer-panel-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,0.05);border-radius:999px}.layer-panel-scroll::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(140,190,255,0.52),rgba(90,150,230,0.34));border-radius:999px;border:2px solid rgba(12,14,18,0.82)}.layer-panel-scroll::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,rgba(160,210,255,0.68),rgba(110,170,245,0.48))}.layer-panel-no-select,.layer-panel-no-select *{user-select:none;-webkit-user-select:none}`}</style>
     <div style={{ position: "absolute", top: 16, right: 16, zIndex: 20, display: "flex", justifyContent: "flex-end", pointerEvents: "none" }}>
       <div style={{ pointerEvents: "auto", width: isCollapsed ? 52 : 360, opacity: isCollapsed ? 0.96 : 1, transition: "width 220ms ease, opacity 220ms ease, transform 220ms ease" }}>
-        {isCollapsed ? <button data-theme-surface="panel" type="button" title="Open layers" onClick={() => onSetCollapsed(false)} style={{ width: 52, height: 52, borderRadius: 16, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(12,14,18,0.82)", color: "white", boxShadow: "0 12px 30px rgba(0,0,0,0.32)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><span data-theme-text="strong" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}><LayerIcon /></span></button> : <div className="layer-panel-no-select" data-theme-surface="panel" style={{ background: "rgba(12,14,18,0.82)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 16, padding: 12, color: "white", fontFamily: "sans-serif", boxShadow: "0 12px 30px rgba(0,0,0,0.32)", backdropFilter: "blur(12px)", transition: "opacity 220ms ease, transform 220ms ease" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        {isCollapsed ? <button data-theme-surface="panel" type="button" title="Open layers" onClick={() => onSetCollapsed(false)} style={{ width: 52, height: 52, borderRadius: 16, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(12,14,18,0.82)", color: "white", boxShadow: "0 12px 30px rgba(0,0,0,0.32)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><span data-theme-text="strong" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}><LayerIcon /></span></button> : <div className="layer-panel-no-select" data-theme-surface="panel" style={{ background: "rgba(12,14,18,0.82)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 16, padding: 12, color: "white", fontFamily: "sans-serif", boxShadow: "0 12px 30px rgba(0,0,0,0.32)", backdropFilter: "blur(12px)", transition: "opacity 220ms ease, transform 220ms ease", maxHeight: panelMaxHeight, display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flex: "0 0 auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div data-theme-text="strong" style={{ display: "flex", alignItems: "center" }}><LayerIcon /></div><div data-theme-text="strong" style={{ fontSize: 14, fontWeight: 700, opacity: 0.95 }}>Layers</div></div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button type="button" onClick={onAddLayer} style={{ height: 32, padding: "0 10px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(120,190,255,0.14)", color: "white", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>+ Layer</button>
@@ -327,25 +390,111 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
               <button type="button" title="Close layers" onClick={() => onSetCollapsed(true)} style={{ width: 32, height: 32, borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Chevron open /></button>
             </div>
           </div>
-          {selectionCount > 1 ? <div data-theme-surface="soft" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", marginBottom: 10, background: "rgba(255,255,255,0.035)" }}><div style={{ width: 22, height: 22, borderRadius: 999, background: "rgba(120,190,255,0.16)", border: "1px solid rgba(160,220,255,0.20)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "white", flexShrink: 0 }}>{selectionCount}</div><div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.25 }}>multi-select active</div><div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}><button type="button" title="Create group from selection" onClick={() => onCreateGroupFromNodes(selectedNodeIds)} style={{ height: 30, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(160,220,255,0.22)", background: "rgba(120,190,255,0.10)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><AddGroupIcon /><span>+ Group</span></button><button type="button" title="Delete selected" onClick={() => onDeleteNodes(selectedNodeIds)} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,120,120,0.22)", background: "rgba(255,80,80,0.10)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><TrashIcon /></button><button type="button" title="Close multi-select" onClick={() => setSelectedNodeIds(selectedNodeId ? [selectedNodeId] : [])} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><CloseIcon /></button></div></div> : null}
-          <div className="layer-panel-scroll">
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={(event) => { const nextActiveId = String(event.active.id); setActiveId(nextActiveId); setOpenMenuId(null); setMenuPosition(null); const movedIds = selectedNodeIds.includes(nextActiveId) ? getOrderedSelection(selectedNodeIds) : [nextActiveId]; setDragNodeIds(movedIds); if (!selectedNodeIds.includes(nextActiveId)) { setSelectedNodeIds([nextActiveId]); setSelectionAnchorId(nextActiveId); internalSelectionUpdateRef.current = true; onSelectNode(nextActiveId); } }} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={() => { clearHoverExpandTimer(); setActiveId(null); setDragNodeIds([]); setHoveredGroupId(null); setOpenMenuId(null); setMenuPosition(null); }}>
-              <SortableContext items={rows.map((row) => row.id)} strategy={verticalListSortingStrategy}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{rows.map((row) => <SortableTreeRow key={row.id} row={row} focusedNodeId={selectedNodeId} selectedNodeIds={selectedNodeIds} openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} setMenuPosition={setMenuPosition} renamingId={renamingId} renameDraft={renameDraft} setRenameDraft={setRenameDraft} startRename={startRename} finishRename={finishRename} cancelRename={cancelRename} hoveredGroupId={hoveredGroupId} onToggleVisible={onToggleVisible} onSelectNode={handleRowSelect} onToggleGroupExpanded={onToggleGroupExpanded} />)}</div>
-              </SortableContext>
-              <RootDropZone active={!!activeId} />
-              <DragOverlay>{activeRow ? <div style={{ width: 320 }}><RowShell row={activeRow} selected={selectedNodeIds.includes(activeRow.id)} inheritedSelected={false} hoveringGroupTarget={false}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", display: "flex", alignItems: "center", justifyContent: "center" }}><GripDots /></div><div style={{ width: 20, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeRow.kind === "group" ? <Chevron open={(activeRow.node as LayerGroupNode).expanded} /> : null}</div><div style={{ width: 30, height: 30, borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: activeRow.visible ? "#d5ecff" : "rgba(255,255,255,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}><EyeIcon open={activeRow.visible} /></div><div style={{ width: 20, display: "flex", justifyContent: "center" }}>{activeRow.kind === "group" ? <FolderIcon /> : <LayerIcon />}</div><div style={{ minWidth: 0, flex: 1, fontWeight: 700 }}>{dragNodeIds.length > 1 ? `${dragNodeIds.length} items` : activeRow.name}</div></div></RowShell></div> : null}</DragOverlay>
-            </DndContext>
-          </div>
 
-          {detailsContent ? (
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-              <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, opacity: 0.95 }}>Selected layer</div>
-              <div style={{ maxHeight: "min(42vh, 420px)", overflow: "auto", paddingRight: 4 }}>
-                {detailsContent}
+          <div ref={splitAreaRef} style={{ display: "flex", flexDirection: "column", gap: 0, flex: "0 1 auto", minHeight: 0, maxHeight: splitAreaMaxHeight }}>
+            <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: "0 1 auto", maxHeight: listPaneMaxHeight, overflow: "hidden" }}>
+              {selectionCount > 1 ? <div data-theme-surface="soft" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", marginBottom: 10, background: "rgba(255,255,255,0.035)", flex: "0 0 auto" }}><div style={{ width: 22, height: 22, borderRadius: 999, background: "rgba(120,190,255,0.16)", border: "1px solid rgba(160,220,255,0.20)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "white", flexShrink: 0 }}>{selectionCount}</div><div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.25 }}>multi-select active</div><div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}><button type="button" title="Create group from selection" onClick={() => onCreateGroupFromNodes(selectedNodeIds)} style={{ height: 30, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(160,220,255,0.22)", background: "rgba(120,190,255,0.10)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><AddGroupIcon /><span>+ Group</span></button><button type="button" title="Delete selected" onClick={() => onDeleteNodes(selectedNodeIds)} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,120,120,0.22)", background: "rgba(255,80,80,0.10)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><TrashIcon /></button><button type="button" title="Close multi-select" onClick={() => setSelectedNodeIds(selectedNodeId ? [selectedNodeId] : [])} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><CloseIcon /></button></div></div> : null}
+              <div className="layer-panel-scroll" style={{ flex: "0 1 auto" }}>
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={(event) => { const nextActiveId = String(event.active.id); setActiveId(nextActiveId); setOpenMenuId(null); setMenuPosition(null); const movedIds = selectedNodeIds.includes(nextActiveId) ? getOrderedSelection(selectedNodeIds) : [nextActiveId]; setDragNodeIds(movedIds); if (!selectedNodeIds.includes(nextActiveId)) { setSelectedNodeIds([nextActiveId]); setSelectionAnchorId(nextActiveId); internalSelectionUpdateRef.current = true; onSelectNode(nextActiveId); } }} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={() => { clearHoverExpandTimer(); setActiveId(null); setDragNodeIds([]); setHoveredGroupId(null); setOpenMenuId(null); setMenuPosition(null); }}>
+                  <SortableContext items={rows.map((row) => row.id)} strategy={verticalListSortingStrategy}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{rows.map((row) => <SortableTreeRow key={row.id} row={row} focusedNodeId={selectedNodeId} selectedNodeIds={selectedNodeIds} openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} setMenuPosition={setMenuPosition} renamingId={renamingId} renameDraft={renameDraft} setRenameDraft={setRenameDraft} startRename={startRename} finishRename={finishRename} cancelRename={cancelRename} hoveredGroupId={hoveredGroupId} onToggleVisible={onToggleVisible} onSelectNode={handleRowSelect} onToggleGroupExpanded={onToggleGroupExpanded} />)}</div>
+                  </SortableContext>
+                  <RootDropZone active={!!activeId} />
+                  <DragOverlay>{activeRow ? <div style={{ width: 320 }}><RowShell row={activeRow} selected={selectedNodeIds.includes(activeRow.id)} inheritedSelected={false} hoveringGroupTarget={false}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", display: "flex", alignItems: "center", justifyContent: "center" }}><GripDots /></div><div style={{ width: 20, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeRow.kind === "group" ? <Chevron open={(activeRow.node as LayerGroupNode).expanded} /> : null}</div><div style={{ width: 30, height: 30, borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: activeRow.visible ? "#d5ecff" : "rgba(255,255,255,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}><EyeIcon open={activeRow.visible} /></div><div style={{ width: 20, display: "flex", justifyContent: "center" }}>{activeRow.kind === "group" ? <FolderIcon /> : <LayerIcon />}</div><div style={{ minWidth: 0, flex: 1, fontWeight: 700 }}>{dragNodeIds.length > 1 ? `${dragNodeIds.length} items` : activeRow.name}</div></div></RowShell></div> : null}</DragOverlay>
+                </DndContext>
               </div>
             </div>
-          ) : null}
+
+            {detailsContent ? (
+              <>
+                {!isDetailsCollapsed ? (
+                <div style={{ flex: "0 0 auto", padding: "6px 0 4px" }}>
+                  <button
+                    type="button"
+                    aria-label="Resize layer panels"
+                    title="Drag to resize panels"
+                    onPointerDown={handleSplitPointerDown}
+                    style={{
+                      width: "100%",
+                      height: 10,
+                      borderRadius: 999,
+                      border: "none",
+                      background: "transparent",
+                      color: "rgba(255,255,255,0.55)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "row-resize",
+                      transition: "opacity 160ms ease",
+                      opacity: isResizingDetailsSplit ? 1 : 0.72,
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 38,
+                        height: 3,
+                        borderRadius: 999,
+                        background: isResizingDetailsSplit ? "rgba(160,220,255,0.95)" : "rgba(255,255,255,0.18)",
+                        boxShadow: isResizingDetailsSplit ? "0 0 0 1px rgba(160,220,255,0.22)" : "none",
+                        transition: "background 160ms ease, box-shadow 160ms ease",
+                      }}
+                    />
+                  </button>
+                </div>
+                ) : null}
+                <div style={{ minHeight: isDetailsCollapsed ? 0 : MIN_PANE_HEIGHT_PX, flex: isDetailsCollapsed ? '0 0 auto' : '0 1 auto', maxHeight: isDetailsCollapsed ? 'none' : detailsPaneMaxHeight, overflow: 'hidden', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: isDetailsCollapsed ? 8 : 12, display: 'flex', flexDirection: 'column', marginTop: isDetailsCollapsed ? 'auto' : 0 }}>
+                  <button
+                    type="button"
+                    onClick={onToggleDetailsCollapsed}
+                    aria-label={isDetailsCollapsed ? "Expand selected layer" : "Collapse selected layer"}
+                    title={isDetailsCollapsed ? "Expand selected layer" : "Collapse selected layer"}
+                    style={{
+                      width: "100%",
+                      marginBottom: isDetailsCollapsed ? 0 : 10,
+                      padding: "0",
+                      border: "none",
+                      background: "transparent",
+                      color: "inherit",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      textAlign: "left",
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, opacity: 0.95 }}>
+                      Selected layer
+                    </div>
+                    <div
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 9,
+                        border: "1px solid rgba(255,255,255,0.10)",
+                        background: "rgba(255,255,255,0.03)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flex: "0 0 auto",
+                      }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: isDetailsCollapsed ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 180ms ease" }}>
+                        <path d="M9 6l6 6-6 6" />
+                      </svg>
+                    </div>
+                  </button>
+                  {!isDetailsCollapsed ? (
+                    <div className='layer-panel-scroll' style={{ flex: 1, minHeight: 0 }}>
+                      {detailsContent}
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+          </div>
         </div>}
       </div>
     </div>

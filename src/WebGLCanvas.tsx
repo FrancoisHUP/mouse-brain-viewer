@@ -358,6 +358,93 @@ function getVolumeStackAlpha(sliceCount: number, highlighted: boolean): number {
   return highlighted ? Math.min(base * 1.15, 0.16) : base;
 }
 
+type ResolvedLayerEntry = {
+  layer: LayerItemNode;
+  opacity: number;
+  worldMatrix: mat4;
+};
+
+function readNodeOpacity(node: LayerTreeNode): number {
+  return clamp(typeof node.opacity === "number" ? node.opacity : 1, 0, 1);
+}
+
+function readNodeVec3(value: number[] | undefined, fallback: [number, number, number]): [number, number, number] {
+  return [
+    Number.isFinite(value?.[0]) ? Number(value![0]) : fallback[0],
+    Number.isFinite(value?.[1]) ? Number(value![1]) : fallback[1],
+    Number.isFinite(value?.[2]) ? Number(value![2]) : fallback[2],
+  ];
+}
+
+function composeNodeLocalMatrix(node: LayerTreeNode): mat4 {
+  const translation = readNodeVec3(node.transform?.translation, [0, 0, 0]);
+  const rotationDeg = readNodeVec3(node.transform?.rotation, [0, 0, 0]);
+  const scale = readNodeVec3(node.transform?.scale, [1, 1, 1]);
+
+  const model = mat4.create();
+  mat4.translate(model, model, translation);
+  mat4.rotateX(model, model, (rotationDeg[0] * Math.PI) / 180);
+  mat4.rotateY(model, model, (rotationDeg[1] * Math.PI) / 180);
+  mat4.rotateZ(model, model, (rotationDeg[2] * Math.PI) / 180);
+  mat4.scale(model, model, scale);
+  return model;
+}
+
+function multiplyModelMatrices(parent: mat4, local: mat4): mat4 {
+  const out = mat4.create();
+  mat4.multiply(out, parent, local);
+  return out;
+}
+
+function collectResolvedVisibleLayers(
+  nodes: LayerTreeNode[],
+  parentVisible = true,
+  parentOpacity = 1,
+  parentWorldMatrix: mat4 = mat4.create()
+): ResolvedLayerEntry[] {
+  const out: ResolvedLayerEntry[] = [];
+
+  for (const node of nodes) {
+    const visible = parentVisible && node.visible;
+    const opacity = parentOpacity * readNodeOpacity(node);
+    const worldMatrix = multiplyModelMatrices(parentWorldMatrix, composeNodeLocalMatrix(node));
+
+    if (!visible || opacity <= 0.0001) {
+      continue;
+    }
+
+    if (node.kind === "group") {
+      out.push(...collectResolvedVisibleLayers(node.children, visible, opacity, worldMatrix));
+      continue;
+    }
+
+    out.push({ layer: node, opacity, worldMatrix });
+  }
+
+  return out;
+}
+
+function transformNormalByMatrix(model: mat4, normal: [number, number, number]): [number, number, number] {
+  const origin = transformPoint(model, [0, 0, 0]);
+  const target = transformPoint(model, [normal[0], normal[1], normal[2]]);
+  const dx = target[0] - origin[0];
+  const dy = target[1] - origin[1];
+  const dz = target[2] - origin[2];
+  const length = Math.hypot(dx, dy, dz) || 1;
+  return [dx / length, dy / length, dz / length];
+}
+
+function transformPointsByMatrix(model: mat4, points: [number, number, number][]): [number, number, number][] {
+  return points.map((point) => {
+    const next = transformPoint(model, point);
+    return [next[0], next[1], next[2]];
+  });
+}
+
+function transformNormalsByMatrix(model: mat4, normals: [number, number, number][]): [number, number, number][] {
+  return normals.map((normal) => transformNormalByMatrix(model, normal));
+}
+
 export default function WebGLCanvas({
   activeTool,
   layerTree,
@@ -458,13 +545,19 @@ export default function WebGLCanvas({
   const shapeDragStartHitRef = useRef<ScenePointerHit | null>(null);
   const shapeDragCurrentHitRef = useRef<ScenePointerHit | null>(null);
   const lastPublishedSceneHitRef = useRef<string>("null");
+  const lastPublishedSelectedLayerRuntimeInfoRef = useRef<string>("__uninitialized__");
+  const lastPublishedLocalLoadStateRef = useRef<string>("__uninitialized__");
 
   const [loadTick, setLoadTick] = useState(0);
   void localSceneLoadingActive;
 
   function publishLocalLoadState() {
     const pending = loadingUrlsRef.current.size + loadingMeshesRef.current.size;
-    onLocalSceneLoadStateChange?.({ active: pending > 0, pending });
+    const next = { active: pending > 0, pending };
+    const nextKey = JSON.stringify(next);
+    if (nextKey === lastPublishedLocalLoadStateRef.current) return;
+    lastPublishedLocalLoadStateRef.current = nextKey;
+    onLocalSceneLoadStateChange?.(next);
   }
 
   useEffect(() => {
@@ -689,6 +782,9 @@ export default function WebGLCanvas({
   }, [layerTree, selectedNodeId, loadTick]);
 
   useEffect(() => {
+    const nextKey = selectedLayerRuntimeInfo ? JSON.stringify(selectedLayerRuntimeInfo) : "null";
+    if (nextKey === lastPublishedSelectedLayerRuntimeInfoRef.current) return;
+    lastPublishedSelectedLayerRuntimeInfoRef.current = nextKey;
     onSelectedLayerRuntimeInfoChange?.(selectedLayerRuntimeInfo);
   }, [onSelectedLayerRuntimeInfoChange, selectedLayerRuntimeInfo]);
 
@@ -1439,7 +1535,7 @@ export default function WebGLCanvas({
 
     function pickSceneAtClientPosition(clientX: number, clientY: number): ScenePointerHit | null {
       const { projection, view } = getViewProjectionMatrices();
-      const layers = collectVisibleLayerItems(layerTreeRef.current, true);
+      const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
       let bestHit: ScenePointerHit | null = null;
 
       function considerHit(layer: LayerItemNode, hit: RayHit | null) {
@@ -1457,7 +1553,8 @@ export default function WebGLCanvas({
       }
 
       for (let i = 0; i < layers.length; i += 1) {
-        const layer = layers[i];
+        const layerEntry = layers[i];
+        const layer = layerEntry.layer;
 
         const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
         if (loadedVolumeEntry) {
@@ -1468,24 +1565,19 @@ export default function WebGLCanvas({
             const totalSlices = getPlaneSliceCount(volume, plane);
             const displayIndices = buildVolumeDisplayIndices(totalSlices);
             for (const displayIndex of displayIndices) {
-              const model = makeSliceModelMatrix(volume, plane, displayIndex, profile);
+              const model = multiplyModelMatrices(layerEntry.worldMatrix, makeSliceModelMatrix(volume, plane, displayIndex, profile));
               considerHit(layer, intersectModelPlane(model, clientX, clientY, projection, view));
             }
           } else if (layer.renderMode === "slices") {
             const { sx, sy, sz } = getVolumeDisplayScale(volume);
 
-            const modelXY = mat4.create();
-            mat4.scale(modelXY, modelXY, [sx, sy, 1]);
+            const modelXY = multiplyModelMatrices(layerEntry.worldMatrix, (() => { const m = mat4.create(); mat4.scale(m, m, [sx, sy, 1]); return m; })());
             considerHit(layer, intersectModelPlane(modelXY, clientX, clientY, projection, view));
 
-            const modelXZ = mat4.create();
-            mat4.rotateX(modelXZ, modelXZ, Math.PI / 2);
-            mat4.scale(modelXZ, modelXZ, [sx, sz, 1]);
+            const modelXZ = multiplyModelMatrices(layerEntry.worldMatrix, (() => { const m = mat4.create(); mat4.rotateX(m, m, Math.PI / 2); mat4.scale(m, m, [sx, sz, 1]); return m; })());
             considerHit(layer, intersectModelPlane(modelXZ, clientX, clientY, projection, view));
 
-            const modelYZ = mat4.create();
-            mat4.rotateY(modelYZ, modelYZ, Math.PI / 2);
-            mat4.scale(modelYZ, modelYZ, [sz, sy, 1]);
+            const modelYZ = multiplyModelMatrices(layerEntry.worldMatrix, (() => { const m = mat4.create(); mat4.rotateY(m, m, Math.PI / 2); mat4.scale(m, m, [sz, sy, 1]); return m; })());
             considerHit(layer, intersectModelPlane(modelYZ, clientX, clientY, projection, view));
           }
 
@@ -1531,7 +1623,7 @@ export default function WebGLCanvas({
           }
 
           if (model) {
-            considerHit(layer, intersectModelPlane(model, clientX, clientY, projection, view));
+            considerHit(layer, intersectModelPlane(multiplyModelMatrices(layerEntry.worldMatrix, model), clientX, clientY, projection, view));
           }
 
           continue;
@@ -1923,7 +2015,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
     function collectPointAnnotationCandidates() {
       const candidates: Array<{ layerId: string; layerName: string; point: [number, number, number]; size: number }> = [];
-      const layers = collectVisibleLayerItems(layerTreeRef.current, true);
+      const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
       for (const layer of layers) {
         if (layer.type !== "annotation") continue;
         if (layer.annotation?.shape !== "point") continue;
@@ -2104,17 +2196,20 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       volumeKey: string,
       volume: LoadedVolume,
       highlighted: boolean,
+      opacity: number,
+      worldMatrix: mat4,
       view: mat4,
       projection: mat4
     ) {
       const plane = chooseStableVolumeRenderPlane(volume);
       const totalSlices = getPlaneSliceCount(volume, plane);
       const displayIndices = buildVolumeDisplayIndices(totalSlices);
-      const alpha = volume.contentKind === "annotation" ? (highlighted ? 0.92 : 0.78) : getVolumeStackAlpha(displayIndices.length, highlighted);
+      const baseAlpha = volume.contentKind === "annotation" ? (highlighted ? 0.92 : 0.78) : getVolumeStackAlpha(displayIndices.length, highlighted);
+      const alpha = clamp(baseAlpha * opacity, 0.02, 1);
 
       const sortedIndices = [...displayIndices].sort((a, b) => {
-        const modelA = makeSliceModelMatrix(volume, plane, a, ALLEN_VOLUME_PROFILE);
-        const modelB = makeSliceModelMatrix(volume, plane, b, ALLEN_VOLUME_PROFILE);
+        const modelA = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, a, ALLEN_VOLUME_PROFILE));
+        const modelB = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, b, ALLEN_VOLUME_PROFILE));
         const mvA = mat4.create();
         const mvB = mat4.create();
         mat4.multiply(mvA, view, modelA);
@@ -2133,7 +2228,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           displayIndex
         );
 
-        const model = makeSliceModelMatrix(volume, plane, displayIndex, ALLEN_VOLUME_PROFILE);
+        const model = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, displayIndex, ALLEN_VOLUME_PROFILE));
         const mv = mat4.create();
         const mvp = mat4.create();
         mat4.multiply(mv, view, model);
@@ -2183,10 +2278,11 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
       const { projection, view } = getViewProjectionMatrices();
 
-      const layers = collectVisibleLayerItems(layerTreeRef.current, true);
+      const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
 
       for (let i = 0; i < layers.length; i += 1) {
-        const layer = layers[i];
+        const layerEntry = layers[i];
+        const layer = layerEntry.layer;
         const isHighlighted = highlightedLayerIds.has(layer.id);
 
         if ((isMeshLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
@@ -2194,7 +2290,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           const mesh = meshCacheRef.current.get(meshKey);
 
           if (mesh) {
-            const model = getAllenMeshModelMatrix(mesh);
+            const model = multiplyModelMatrices(layerEntry.worldMatrix, getAllenMeshModelMatrix(mesh));
             const mv = mat4.create();
             const mvp = mat4.create();
 
@@ -2204,7 +2300,9 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             drawMeshSurface(
               mesh,
               mvp,
-              isHighlighted ? [0.72, 0.96, 1.0, 0.26] : [0.52, 0.72, 0.96, 0.16]
+              isHighlighted
+                ? [0.72, 0.96, 1.0, clamp(0.26 * Math.max(layerEntry.opacity, 0.2), 0.05, 1)]
+                : [0.52, 0.72, 0.96, clamp(0.16 * layerEntry.opacity, 0.03, 1)]
             );
           }
 
@@ -2217,43 +2315,49 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
           if (volume) {
             if (layer.renderMode === "volume") {
-              renderVolumeLayer(volumeKey, volume, isHighlighted, view, projection);
+              renderVolumeLayer(volumeKey, volume, isHighlighted, layerEntry.opacity, layerEntry.worldMatrix, view, projection);
             } else if (layer.renderMode === "slices") {
               const textures = getOrCreateSliceTextures(volumeKey, volume);
-              const alpha = isHighlighted ? 0.98 : 0.92;
+              const alpha = clamp((isHighlighted ? 0.98 : 0.92) * layerEntry.opacity, 0.02, 1);
 
               const { sx, sy, sz } = getVolumeDisplayScale(volume);
 
               {
+                const localModel = mat4.create();
                 const model = mat4.create();
                 const mv = mat4.create();
                 const mvp = mat4.create();
 
-                mat4.scale(model, model, [sx, sy, 1]);
+                mat4.scale(localModel, localModel, [sx, sy, 1]);
+                mat4.multiply(model, layerEntry.worldMatrix, localModel);
                 mat4.multiply(mv, view, model);
                 mat4.multiply(mvp, projection, mv);
                 drawTexturedPlane(textures.xy, mvp, alpha);
               }
 
               {
+                const localModel = mat4.create();
                 const model = mat4.create();
                 const mv = mat4.create();
                 const mvp = mat4.create();
 
-                mat4.rotateX(model, model, Math.PI / 2);
-                mat4.scale(model, model, [sx, sz, 1]);
+                mat4.rotateX(localModel, localModel, Math.PI / 2);
+                mat4.scale(localModel, localModel, [sx, sz, 1]);
+                mat4.multiply(model, layerEntry.worldMatrix, localModel);
                 mat4.multiply(mv, view, model);
                 mat4.multiply(mvp, projection, mv);
                 drawTexturedPlane(textures.xz, mvp, alpha);
               }
 
               {
+                const localModel = mat4.create();
                 const model = mat4.create();
                 const mv = mat4.create();
                 const mvp = mat4.create();
 
-                mat4.rotateY(model, model, Math.PI / 2);
-                mat4.scale(model, model, [sz, sy, 1]);
+                mat4.rotateY(localModel, localModel, Math.PI / 2);
+                mat4.scale(localModel, localModel, [sz, sy, 1]);
+                mat4.multiply(model, layerEntry.worldMatrix, localModel);
                 mat4.multiply(mv, view, model);
                 mat4.multiply(mvp, projection, mv);
                 drawTexturedPlane(textures.yz, mvp, alpha);
@@ -2348,16 +2452,17 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             continue;
           }
 
+          const finalModel = multiplyModelMatrices(layerEntry.worldMatrix, model);
           const mv = mat4.create();
           const mvp = mat4.create();
 
-          mat4.multiply(mv, view, model);
+          mat4.multiply(mv, view, finalModel);
           mat4.multiply(mvp, projection, mv);
 
           drawTexturedPlane(
             sliceTex.texture,
             mvp,
-            isHighlighted ? 1.0 : sliceParams.opacity ?? 0.92
+            clamp((isHighlighted ? 1.0 : sliceParams.opacity ?? 0.92) * layerEntry.opacity, 0.02, 1)
           );
 
           continue;
@@ -2368,14 +2473,16 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           if (annotation?.shape === "point" && annotation.points?.[0]) {
             const point = annotation.points[0];
             const size = Math.max(0.002, annotation.size ?? 0.06);
-            const opacity = clamp(annotation.opacity ?? 0.9, 0.05, 1);
+            const opacity = clamp((annotation.opacity ?? 0.9) * layerEntry.opacity, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
+            const localModel = mat4.create();
             const model = mat4.create();
             const mv = mat4.create();
             const mvp = mat4.create();
 
-            mat4.translate(model, model, point);
-            mat4.scale(model, model, [size, size, size]);
+            mat4.translate(localModel, localModel, point);
+            mat4.scale(localModel, localModel, [size, size, size]);
+            mat4.multiply(model, layerEntry.worldMatrix, localModel);
             mat4.multiply(mv, view, model);
             mat4.multiply(mvp, projection, mv);
 
@@ -2387,10 +2494,11 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           }
 
           if (annotation?.shape === "line" && annotation.points && annotation.points.length >= 2) {
-            const start = annotation.points[0];
-            const end = annotation.points[1];
+            const transformedLinePoints = transformPointsByMatrix(layerEntry.worldMatrix, annotation.points.slice(0, 2) as [number, number, number][]);
+            const start = transformedLinePoints[0];
+            const end = transformedLinePoints[1];
             const radius = Math.max(0.002, annotation.size ?? 0.03);
-            const opacity = clamp(annotation.opacity ?? 0.9, 0.05, 1);
+            const opacity = clamp((annotation.opacity ?? 0.9) * layerEntry.opacity, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
             const lineModel = makeLineModelMatrix(start, end, radius);
             if (lineModel) {
@@ -2420,24 +2528,32 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
           if ((annotation?.shape === "rectangle" || annotation?.shape === "circle") && annotation.points && annotation.points.length >= 2) {
             const radius = Math.max(0.0015, (annotation.size ?? 0.06) * 0.28);
-            const opacity = clamp(annotation.opacity ?? 0.9, 0.05, 1);
+            const opacity = clamp((annotation.opacity ?? 0.9) * layerEntry.opacity, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
             const color: [number, number, number, number] = isHighlighted
               ? [Math.min(r + 0.18, 1), Math.min(g + 0.18, 1), Math.min(b + 0.18, 1), 1]
               : [r, g, b, opacity];
-            drawPolylineCylinders(annotation.points as [number, number, number][], true, radius, color, view, projection);
+            drawPolylineCylinders(transformPointsByMatrix(layerEntry.worldMatrix, annotation.points as [number, number, number][]), true, radius, color, view, projection);
           }
 
           if (annotation?.shape === "freehand") {
             const size = Math.max(0.002, annotation.size ?? 0.06);
             const brushDepth = Math.max(0.0015, annotation.brushDepth ?? Math.max(size * 0.28, 0.015));
-            const opacity = clamp(annotation.opacity ?? 0.9, 0.05, 1);
+            const opacity = clamp((annotation.opacity ?? 0.9) * layerEntry.opacity, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
             const color: [number, number, number, number] = isHighlighted
               ? [Math.min(r + 0.18, 1), Math.min(g + 0.18, 1), Math.min(b + 0.18, 1), 1]
               : [r, g, b, opacity];
             for (const stroke of annotation.freehandStrokes ?? []) {
-              drawFreehandStroke(stroke.points, stroke.normals ?? stroke.points.map(() => [0, 0, 1] as [number, number, number]), size, brushDepth, color, view, projection);
+              drawFreehandStroke(
+                transformPointsByMatrix(layerEntry.worldMatrix, stroke.points),
+                transformNormalsByMatrix(layerEntry.worldMatrix, stroke.normals ?? stroke.points.map(() => [0, 0, 1] as [number, number, number])),
+                size,
+                brushDepth,
+                color,
+                view,
+                projection
+              );
             }
           }
 

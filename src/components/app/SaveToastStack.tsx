@@ -149,7 +149,7 @@ export default function SaveToastStack({
     <div
       style={{
         position: "absolute",
-        right: 18,
+        left: 18,
         bottom: bottomOffset,
         zIndex: 19,
         width: "min(340px, calc(100vw - 40px))",

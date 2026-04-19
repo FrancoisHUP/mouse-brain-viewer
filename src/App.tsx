@@ -88,6 +88,7 @@ import type {
   AnnotationShape,
   LayerItemNode,
   LayerTreeNode,
+  NodeTransform,
   RemoteContentKind,
   RemoteDataFormat,
   RemoteOmeResolution,
@@ -278,6 +279,17 @@ const APP_COMMIT_URL =
 
 const GENERIC_UNEXPECTED_ERROR_MESSAGE =
   "Unexpected error. Please try again or reload the viewer.";
+
+function shouldSuppressRuntimeToast(rawMessage: string | null | undefined): boolean {
+  const lower = (rawMessage ?? "").trim().toLowerCase();
+  if (!lower) return false;
+
+  return (
+    lower.includes("maximum update depth exceeded") ||
+    lower.includes("too many re-renders")
+  );
+}
+
 
 function normalizeUnknownErrorMessage(value: unknown): string | null {
   if (!value) return null;
@@ -673,6 +685,9 @@ export default function App({ startupSlices = [] }: AppProps) {
       isInspectorCollapsed={isInspectorCollapsed}
       onToggleCollapsed={() => setIsInspectorCollapsed((prev) => !prev)}
       onRenameNode={handleRenameNode}
+      onUpdateSelectedNodeOpacity={updateSelectedNodeOpacity}
+      onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
+      onResetSelectedNodeTransform={resetSelectedNodeTransform}
       onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
     />
   );
@@ -1754,6 +1769,11 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function enqueueErrorToast(error: unknown, options?: { source?: string; technicalMessage?: string | null }) {
     const rawMessage = options?.technicalMessage ?? normalizeUnknownErrorMessage(error);
+
+    if (shouldSuppressRuntimeToast(rawMessage)) {
+      return;
+    }
+
     const mapped = mapRuntimeErrorMessage(rawMessage);
     const dedupeKey = [options?.source ?? "runtime", mapped.title, mapped.message, rawMessage ?? ""].join("|");
     enqueueToast(
@@ -2367,6 +2387,70 @@ export default function App({ startupSlices = [] }: AppProps) {
       })
     );
   }
+
+  function normalizeTransformVector(
+    value: number[] | undefined,
+    fallback: [number, number, number]
+  ): [number, number, number] {
+    return [
+      Number.isFinite(value?.[0]) ? Number(value![0]) : fallback[0],
+      Number.isFinite(value?.[1]) ? Number(value![1]) : fallback[1],
+      Number.isFinite(value?.[2]) ? Number(value![2]) : fallback[2],
+    ];
+  }
+
+  function updateSelectedNodeOpacity(opacity: number) {
+    if (!selectedNodeId) return;
+    const safeOpacity = Math.max(0, Math.min(1, opacity));
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedNodeId, (node) => ({
+        ...node,
+        opacity: safeOpacity,
+      }))
+    );
+  }
+
+  function updateSelectedNodeTransform(patch: Partial<NodeTransform>) {
+    if (!selectedNodeId) return;
+
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedNodeId, (node) => {
+        const currentTranslation = normalizeTransformVector(node.transform?.translation, [0, 0, 0]);
+        const currentRotation = normalizeTransformVector(node.transform?.rotation, [0, 0, 0]);
+        const currentScale = normalizeTransformVector(node.transform?.scale, [1, 1, 1]);
+
+        return {
+          ...node,
+          transform: {
+            translation: patch.translation
+              ? normalizeTransformVector(patch.translation, currentTranslation)
+              : currentTranslation,
+            rotation: patch.rotation
+              ? normalizeTransformVector(patch.rotation, currentRotation)
+              : currentRotation,
+            scale: patch.scale
+              ? normalizeTransformVector(patch.scale, currentScale)
+              : currentScale,
+          },
+        };
+      })
+    );
+  }
+
+  function resetSelectedNodeTransform() {
+    if (!selectedNodeId) return;
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedNodeId, (node) => ({
+        ...node,
+        transform: {
+          translation: [0, 0, 0],
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+        },
+      }))
+    );
+  }
+
 
   function setAnnotationDraftShape(shape: AnnotationShape) {
     setAnnotationDraft((prev) => {
@@ -3017,6 +3101,8 @@ export default function App({ startupSlices = [] }: AppProps) {
         selectedNodeId={selectedNodeId}
         groupOptions={groupOptions}
         detailsContent={inspectorPanelContent}
+        isDetailsCollapsed={isInspectorCollapsed}
+        onToggleDetailsCollapsed={() => setIsInspectorCollapsed((prev) => !prev)}
         isCollapsed={isLayerPanelCollapsed}
         onSetCollapsed={setIsLayerPanelCollapsed}
         onToggleVisible={handleToggleVisible}

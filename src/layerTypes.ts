@@ -125,10 +125,30 @@ export type LocalDatasetInfo = {
   treeRootPath?: string | null;
 };
 
+export type NodeTransformVector3 = [number, number, number];
+
+export type NodeTransform = {
+  translation?: NodeTransformVector3;
+  rotation?: NodeTransformVector3;
+  scale?: NodeTransformVector3;
+};
+
+export const DEFAULT_NODE_OPACITY = 1;
+export const DEFAULT_NODE_TRANSLATION: NodeTransformVector3 = [0, 0, 0];
+export const DEFAULT_NODE_ROTATION: NodeTransformVector3 = [0, 0, 0];
+export const DEFAULT_NODE_SCALE: NodeTransformVector3 = [1, 1, 1];
+export const DEFAULT_NODE_TRANSFORM: Required<NodeTransform> = {
+  translation: [...DEFAULT_NODE_TRANSLATION],
+  rotation: [...DEFAULT_NODE_ROTATION],
+  scale: [...DEFAULT_NODE_SCALE],
+};
+
 type BaseNode = {
   id: string;
   name: string;
   visible: boolean;
+  opacity?: number;
+  transform?: NodeTransform;
 };
 
 export type LayerGroupNode = BaseNode & {
