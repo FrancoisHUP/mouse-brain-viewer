@@ -2015,16 +2015,18 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
     function collectPointAnnotationCandidates() {
       const candidates: Array<{ layerId: string; layerName: string; point: [number, number, number]; size: number }> = [];
-      const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
-      for (const layer of layers) {
+      const entries = collectResolvedVisibleLayers(layerTreeRef.current, true);
+      for (const entry of entries) {
+        const layer = entry.layer;
         if (layer.type !== "annotation") continue;
         if (layer.annotation?.shape !== "point") continue;
         const point = layer.annotation.points?.[0];
         if (!point) continue;
+        const transformedPoint = transformPoint(entry.worldMatrix, point);
         candidates.push({
           layerId: layer.id,
           layerName: layer.name,
-          point,
+          point: [transformedPoint[0], transformedPoint[1], transformedPoint[2]],
           size: Math.max(0.01, layer.annotation.size ?? 0.06),
         });
       }

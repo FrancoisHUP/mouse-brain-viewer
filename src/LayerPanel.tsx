@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -140,16 +140,6 @@ function AddGroupIcon() {
   );
 }
 
-function ResizeGrip() {
-  return (
-    <svg width="26" height="10" viewBox="0 0 26 10" fill="none" aria-hidden="true">
-      <path d="M4 5h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.7" />
-      <path d="M8 2.5h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.45" />
-      <path d="M8 7.5h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.45" />
-    </svg>
-  );
-}
-
 function RowShell({ row, selected, inheritedSelected, hoveringGroupTarget, dragStyle, dragging, children }: { row: FlatTreeRow; selected: boolean; inheritedSelected: boolean; hoveringGroupTarget: boolean; dragStyle?: CSSProperties; dragging?: boolean; children: React.ReactNode; }) {
   let background = "rgba(255,255,255,0.04)";
   let border = "1px solid rgba(255,255,255,0.06)";
@@ -225,6 +215,10 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
   const [renameDraft, setRenameDraft] = useState("");
   const [detailsSplitRatio, setDetailsSplitRatio] = useState(DEFAULT_SPLIT_RATIO);
   const [isResizingDetailsSplit, setIsResizingDetailsSplit] = useState(false);
+  const [isDetailsToggleAnimating, setIsDetailsToggleAnimating] = useState(false);
+  const detailsHeaderRef = useRef<HTMLDivElement | null>(null);
+  const detailsBodyMeasureRef = useRef<HTMLDivElement | null>(null);
+  const [detailsBodyHeight, setDetailsBodyHeight] = useState(0);
   const hoverExpandTimerRef = useRef<number | null>(null);
   const internalSelectionUpdateRef = useRef(false);
   const splitAreaRef = useRef<HTMLDivElement | null>(null);
@@ -288,6 +282,34 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
       window.removeEventListener("pointercancel", handlePointerUp);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const next = detailsBodyMeasureRef.current?.scrollHeight ?? 0;
+      setDetailsBodyHeight((prev) => (Math.abs(prev - next) > 1 ? next : prev));
+    };
+
+    measure();
+
+    if (typeof ResizeObserver === "undefined") return;
+    const target = detailsBodyMeasureRef.current;
+    if (!target) return;
+
+    const observer = new ResizeObserver(() => {
+      measure();
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [detailsContent]);
+
+  useEffect(() => {
+    setIsDetailsToggleAnimating(true);
+    const timeoutId = window.setTimeout(() => {
+      setIsDetailsToggleAnimating(false);
+    }, 360);
+    return () => window.clearTimeout(timeoutId);
+  }, [isDetailsCollapsed, detailsBodyHeight]);
+
 
   function startRename(row: FlatTreeRow) { setRenamingId(row.id); setRenameDraft(row.name); }
   function finishRename(nodeId: string) { const trimmed = renameDraft.trim(); if (trimmed) onRenameNode(nodeId, trimmed); setRenamingId(null); setRenameDraft(""); }
@@ -354,7 +376,7 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
     setHoveredGroupId(null);
   }
 
-  function handleSplitPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+  function handleSplitPointerDown(event: React.PointerEvent<HTMLElement>) {
     if (!detailsContent) return;
     const areaHeight = splitAreaRef.current?.getBoundingClientRect().height ?? 0;
     if (areaHeight <= 0) return;
@@ -376,9 +398,14 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
     ? `calc(${splitAreaMaxHeight} * ${effectiveSplitRatio})`
     : splitAreaMaxHeight;
   const detailsPaneMaxHeight = `calc(${splitAreaMaxHeight} * ${detailsRatio})`;
+  const detailsHeaderButtonHeight = 24;
+  const detailsHeaderRowHeight = 38;
+  const detailsAnimatedMaxHeight = isDetailsCollapsed
+    ? `${detailsHeaderRowHeight}px`
+    : detailsPaneMaxHeight;
 
   return (<>
-    <style>{`.layer-panel-scroll{overflow:auto;min-height:0;padding-right:4px;scrollbar-width:thin;scrollbar-color:rgba(140,190,255,0.45) rgba(255,255,255,0.06)}.layer-panel-scroll::-webkit-scrollbar{width:10px}.layer-panel-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,0.05);border-radius:999px}.layer-panel-scroll::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(140,190,255,0.52),rgba(90,150,230,0.34));border-radius:999px;border:2px solid rgba(12,14,18,0.82)}.layer-panel-scroll::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,rgba(160,210,255,0.68),rgba(110,170,245,0.48))}.layer-panel-no-select,.layer-panel-no-select *{user-select:none;-webkit-user-select:none}`}</style>
+    <style>{`.layer-panel-scroll{overflow:auto;min-height:0;padding-right:4px;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:rgba(140,190,255,0.45) rgba(255,255,255,0.06)}.layer-panel-scroll::-webkit-scrollbar{width:10px}.layer-panel-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,0.05);border-radius:999px}.layer-panel-scroll::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(140,190,255,0.52),rgba(90,150,230,0.34));border-radius:999px;border:2px solid rgba(12,14,18,0.82)}.layer-panel-scroll::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,rgba(160,210,255,0.68),rgba(110,170,245,0.48))}.layer-panel-no-select,.layer-panel-no-select *{user-select:none;-webkit-user-select:none}`}</style>
     <div style={{ position: "absolute", top: 16, right: 16, zIndex: 20, display: "flex", justifyContent: "flex-end", pointerEvents: "none" }}>
       <div style={{ pointerEvents: "auto", width: isCollapsed ? 52 : 360, opacity: isCollapsed ? 0.96 : 1, transition: "width 220ms ease, opacity 220ms ease, transform 220ms ease" }}>
         {isCollapsed ? <button data-theme-surface="panel" type="button" title="Open layers" onClick={() => onSetCollapsed(false)} style={{ width: 52, height: 52, borderRadius: 16, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(12,14,18,0.82)", color: "white", boxShadow: "0 12px 30px rgba(0,0,0,0.32)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><span data-theme-text="strong" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}><LayerIcon /></span></button> : <div className="layer-panel-no-select" data-theme-surface="panel" style={{ background: "rgba(12,14,18,0.82)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 16, padding: 12, color: "white", fontFamily: "sans-serif", boxShadow: "0 12px 30px rgba(0,0,0,0.32)", backdropFilter: "blur(12px)", transition: "opacity 220ms ease, transform 220ms ease", maxHeight: panelMaxHeight, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -394,7 +421,7 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
           <div ref={splitAreaRef} style={{ display: "flex", flexDirection: "column", gap: 0, flex: "0 1 auto", minHeight: 0, maxHeight: splitAreaMaxHeight }}>
             <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: "0 1 auto", maxHeight: listPaneMaxHeight, overflow: "hidden" }}>
               {selectionCount > 1 ? <div data-theme-surface="soft" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", marginBottom: 10, background: "rgba(255,255,255,0.035)", flex: "0 0 auto" }}><div style={{ width: 22, height: 22, borderRadius: 999, background: "rgba(120,190,255,0.16)", border: "1px solid rgba(160,220,255,0.20)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "white", flexShrink: 0 }}>{selectionCount}</div><div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.25 }}>multi-select active</div><div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}><button type="button" title="Create group from selection" onClick={() => onCreateGroupFromNodes(selectedNodeIds)} style={{ height: 30, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(160,220,255,0.22)", background: "rgba(120,190,255,0.10)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><AddGroupIcon /><span>+ Group</span></button><button type="button" title="Delete selected" onClick={() => onDeleteNodes(selectedNodeIds)} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,120,120,0.22)", background: "rgba(255,80,80,0.10)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><TrashIcon /></button><button type="button" title="Close multi-select" onClick={() => setSelectedNodeIds(selectedNodeId ? [selectedNodeId] : [])} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><CloseIcon /></button></div></div> : null}
-              <div className="layer-panel-scroll" style={{ flex: "0 1 auto" }}>
+              <div className="layer-panel-scroll" style={{ flex: "0 1 auto", overflowX: "hidden", overflowY: isDetailsToggleAnimating ? "hidden" : "auto" }}>
                 <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={(event) => { const nextActiveId = String(event.active.id); setActiveId(nextActiveId); setOpenMenuId(null); setMenuPosition(null); const movedIds = selectedNodeIds.includes(nextActiveId) ? getOrderedSelection(selectedNodeIds) : [nextActiveId]; setDragNodeIds(movedIds); if (!selectedNodeIds.includes(nextActiveId)) { setSelectedNodeIds([nextActiveId]); setSelectionAnchorId(nextActiveId); internalSelectionUpdateRef.current = true; onSelectNode(nextActiveId); } }} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={() => { clearHoverExpandTimer(); setActiveId(null); setDragNodeIds([]); setHoveredGroupId(null); setOpenMenuId(null); setMenuPosition(null); }}>
                   <SortableContext items={rows.map((row) => row.id)} strategy={verticalListSortingStrategy}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{rows.map((row) => <SortableTreeRow key={row.id} row={row} focusedNodeId={selectedNodeId} selectedNodeIds={selectedNodeIds} openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} setMenuPosition={setMenuPosition} renamingId={renamingId} renameDraft={renameDraft} setRenameDraft={setRenameDraft} startRename={startRename} finishRename={finishRename} cancelRename={cancelRename} hoveredGroupId={hoveredGroupId} onToggleVisible={onToggleVisible} onSelectNode={handleRowSelect} onToggleGroupExpanded={onToggleGroupExpanded} />)}</div>
@@ -407,90 +434,150 @@ export default function LayerPanel({ layerTree, selectedNodeId, groupOptions: _g
 
             {detailsContent ? (
               <>
-                {!isDetailsCollapsed ? (
-                <div style={{ flex: "0 0 auto", padding: "6px 0 4px" }}>
-                  <button
-                    type="button"
-                    aria-label="Resize layer panels"
-                    title="Drag to resize panels"
-                    onPointerDown={handleSplitPointerDown}
+                <div
+                  style={{
+                    flex: isDetailsCollapsed ? "0 0 auto" : "0 1 auto",
+                    minHeight: isDetailsCollapsed ? detailsHeaderRowHeight : MIN_PANE_HEIGHT_PX,
+                    maxHeight: detailsAnimatedMaxHeight,
+                    marginTop: isDetailsCollapsed ? "auto" : 0,
+                    overflow: "hidden",
+                    display: "flex",
+                    flexDirection: "column",
+                    transition: "max-height 320ms cubic-bezier(0.22, 1, 0.36, 1), min-height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+                    willChange: "max-height",
+                  }}
+                >
+                  <div
                     style={{
-                      width: "100%",
-                      height: 10,
-                      borderRadius: 999,
-                      border: "none",
-                      background: "transparent",
-                      color: "rgba(255,255,255,0.55)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "row-resize",
-                      transition: "opacity 160ms ease",
-                      opacity: isResizingDetailsSplit ? 1 : 0.72,
-                    }}
-                  >
-                    <span
-                      aria-hidden="true"
-                      style={{
-                        width: 38,
-                        height: 3,
-                        borderRadius: 999,
-                        background: isResizingDetailsSplit ? "rgba(160,220,255,0.95)" : "rgba(255,255,255,0.18)",
-                        boxShadow: isResizingDetailsSplit ? "0 0 0 1px rgba(160,220,255,0.22)" : "none",
-                        transition: "background 160ms ease, box-shadow 160ms ease",
-                      }}
-                    />
-                  </button>
-                </div>
-                ) : null}
-                <div style={{ minHeight: isDetailsCollapsed ? 0 : MIN_PANE_HEIGHT_PX, flex: isDetailsCollapsed ? '0 0 auto' : '0 1 auto', maxHeight: isDetailsCollapsed ? 'none' : detailsPaneMaxHeight, overflow: 'hidden', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: isDetailsCollapsed ? 8 : 12, display: 'flex', flexDirection: 'column', marginTop: isDetailsCollapsed ? 'auto' : 0 }}>
-                  <button
-                    type="button"
-                    onClick={onToggleDetailsCollapsed}
-                    aria-label={isDetailsCollapsed ? "Expand selected layer" : "Collapse selected layer"}
-                    title={isDetailsCollapsed ? "Expand selected layer" : "Collapse selected layer"}
-                    style={{
-                      width: "100%",
-                      marginBottom: isDetailsCollapsed ? 0 : 10,
-                      padding: "0",
-                      border: "none",
-                      background: "transparent",
-                      color: "inherit",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      textAlign: "left",
+                      height: detailsHeaderButtonHeight,
+                      padding: "8px 0 6px",
+                      boxSizing: "content-box",
                       flex: "0 0 auto",
                     }}
                   >
-                    <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, opacity: 0.95 }}>
-                      Selected layer
-                    </div>
                     <div
+                      ref={detailsHeaderRef}
+                      onPointerDown={!isDetailsCollapsed ? handleSplitPointerDown : undefined}
+                      title={!isDetailsCollapsed ? "Drag to resize panels" : undefined}
                       style={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: 9,
-                        border: "1px solid rgba(255,255,255,0.10)",
-                        background: "rgba(255,255,255,0.03)",
+                        position: "relative",
+                        width: "100%",
+                        height: detailsHeaderButtonHeight,
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        flex: "0 0 auto",
+                        cursor: !isDetailsCollapsed ? "row-resize" : "default",
                       }}
                     >
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: isDetailsCollapsed ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 180ms ease" }}>
-                        <path d="M9 6l6 6-6 6" />
-                      </svg>
+                      <div
+                        aria-hidden="true"
+                        style={{
+                          position: "absolute",
+                          left: 0,
+                          right: 0,
+                          top: "50%",
+                          height: 1,
+                          transform: "translateY(-50%)",
+                          background: isResizingDetailsSplit
+                            ? "rgba(160,220,255,0.32)"
+                            : "rgba(255,255,255,0.10)",
+                          transition: "background 160ms ease",
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setIsDetailsToggleAnimating(true);
+                          onToggleDetailsCollapsed?.();
+                        }}
+                        aria-label={isDetailsCollapsed ? "Expand selected layer" : "Collapse selected layer"}
+                        title={isDetailsCollapsed ? "Expand selected layer" : "Collapse selected layer"}
+                        style={{
+                          position: "relative",
+                          zIndex: 1,
+                          height: 24,
+                          padding: "0 10px",
+                          borderRadius: 999,
+                          border: isResizingDetailsSplit
+                            ? "1px solid rgba(160,220,255,0.30)"
+                            : "1px solid rgba(255,255,255,0.10)",
+                          background: isResizingDetailsSplit
+                            ? "rgba(160,220,255,0.10)"
+                            : "rgba(12,14,18,0.92)",
+                          color: "inherit",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 8,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          lineHeight: 1,
+                          transition: "border-color 160ms ease, background 160ms ease, transform 160ms ease",
+                        }}
+                      >
+                        <span data-theme-text="strong" style={{ opacity: 0.95 }}>
+                          Selected layer
+                        </span>
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          style={{
+                            transform: isDetailsCollapsed ? "rotate(-90deg)" : "rotate(90deg)",
+                            transition: "transform 180ms ease",
+                          }}
+                        >
+                          <path d="M9 6l6 6-6 6" />
+                        </svg>
+                      </button>
                     </div>
-                  </button>
-                  {!isDetailsCollapsed ? (
-                    <div className='layer-panel-scroll' style={{ flex: 1, minHeight: 0 }}>
-                      {detailsContent}
+                  </div>
+
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      opacity: isDetailsCollapsed ? 0 : 1,
+                      transform: isDetailsCollapsed ? "scale(0.992)" : "scale(1)",
+                      transformOrigin: "top center",
+                      transition: "opacity 220ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+                      pointerEvents: isDetailsCollapsed ? "none" : "auto",
+                      overflow: "hidden",
+                      willChange: "opacity, transform",
+                      display: "flex",
+                      flexDirection: "column",
+                    }}
+                  >
+                    <div
+                      className='layer-panel-scroll'
+                      style={{
+                        flex: 1,
+                        minHeight: 0,
+                        overflowX: "hidden",
+                        overflowY: "auto",
+                        paddingBottom: 14,
+                      }}
+                    >
+                      <div
+                        ref={detailsBodyMeasureRef}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          minHeight: "100%",
+                          paddingBottom: 2,
+                        }}
+                      >
+                        {detailsContent}
+                      </div>
                     </div>
-                  ) : null}
+                  </div>
                 </div>
               </>
             ) : null}
