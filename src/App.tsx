@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import WebGLCanvas from "./WebGLCanvas";
 import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
@@ -10,7 +10,6 @@ import StatePanel from "./StatePanel";
 import SaveToastStack, { type SaveToast } from "./components/app/SaveToastStack";
 import VersionBadge from "./components/app/VersionBadge";
 import LayerInspectorPanel from "./components/app/LayerInspectorPanel";
-import LocalLoadNotice from "./components/app/LocalLoadNotice";
 import GlobalDropOverlay from "./components/app/GlobalDropOverlay";
 import AppMenuPanel from "./components/app/AppMenuPanel";
 import AboutDialog from "./components/app/AboutDialog";
@@ -174,11 +173,23 @@ type AppProps = {
   startupSlices?: ViewerStartupSlice[];
 };
 
+type AnnotationShapeSizeMap = Record<AnnotationShape, number>;
+
+const DEFAULT_ANNOTATION_SHAPE_SIZES: AnnotationShapeSizeMap = {
+  point: 0.06,
+  line: 0.06,
+  rectangle: 0.06,
+  circle: 0.06,
+  freehand: 0.06,
+  eraser: 0.06,
+};
+
 type AnnotationDraftSettings = {
   shape: AnnotationShape;
   color: string;
   opacity: number;
   size: number;
+  sizeByShape: AnnotationShapeSizeMap;
   depth: number;
   eraseMode: "all" | "color";
 };
@@ -187,7 +198,8 @@ const DEFAULT_ANNOTATION_DRAFT: AnnotationDraftSettings = {
   shape: "point",
   color: "#ff5c5c",
   opacity: 0.9,
-  size: 0.06,
+  size: DEFAULT_ANNOTATION_SHAPE_SIZES.point,
+  sizeByShape: { ...DEFAULT_ANNOTATION_SHAPE_SIZES },
   depth: 0.015,
   eraseMode: "color",
 };
@@ -263,6 +275,78 @@ const APP_COMMIT_URL =
   APP_COMMIT_SHA === "dev" || !APP_REPO_URL
     ? null
     : `${APP_REPO_URL}/commit/${APP_COMMIT_SHA}`;
+
+const GENERIC_UNEXPECTED_ERROR_MESSAGE =
+  "Unexpected error. Please try again or reload the viewer.";
+
+function normalizeUnknownErrorMessage(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (value instanceof Error) {
+    const trimmed = value.message?.trim();
+    return trimmed || value.name || null;
+  }
+  if (typeof value === "object" && value !== null) {
+    const maybeMessage = (value as { message?: unknown }).message;
+    if (typeof maybeMessage === "string" && maybeMessage.trim()) {
+      return maybeMessage.trim();
+    }
+    const maybeReason = (value as { reason?: unknown }).reason;
+    if (typeof maybeReason === "string" && maybeReason.trim()) {
+      return maybeReason.trim();
+    }
+  }
+  return null;
+}
+
+function mapRuntimeErrorMessage(rawMessage: string | null | undefined): { title: string; message: string } {
+  const message = (rawMessage ?? "").trim();
+  const lower = message.toLowerCase();
+
+  if (!message) {
+    return { title: "Unexpected error", message: GENERIC_UNEXPECTED_ERROR_MESSAGE };
+  }
+
+  if (lower.includes("unsupported") && (lower.includes("file") || lower.includes("format"))) {
+    return {
+      title: "Unsupported file",
+      message: "This file could not be loaded because its format is not supported by the viewer.",
+    };
+  }
+
+  if (lower.includes("decompress gzip") || lower.includes("gzip")) {
+    return {
+      title: "File could not be loaded",
+      message: "The selected compressed file could not be opened. The file may be corrupted or use an unsupported compression layout.",
+    };
+  }
+
+  if (lower.includes("webgl") && (lower.includes("lost") || lower.includes("context") || lower.includes("unsupported"))) {
+    return {
+      title: "WebGL error",
+      message: "The 3D viewer could not continue because WebGL is unavailable or the graphics context was lost.",
+    };
+  }
+
+  if ((lower.includes("mesh") || lower.includes("obj")) && (lower.includes("load") || lower.includes("parse") || lower.includes("failed"))) {
+    return {
+      title: "Mesh could not be loaded",
+      message: "The 3D mesh could not be loaded. Please verify that the source file is valid and supported.",
+    };
+  }
+
+  if ((lower.includes("ome-zarr") || lower.includes("zarr") || lower.includes("volume") || lower.includes("brain")) && (lower.includes("load") || lower.includes("fetch") || lower.includes("failed") || lower.includes("error"))) {
+    return {
+      title: "Brain data could not be loaded",
+      message: "The viewer could not load the brain data source. Please verify the file or remote URL and try again.",
+    };
+  }
+
+  return { title: "Unexpected error", message: GENERIC_UNEXPECTED_ERROR_MESSAGE };
+}
 
 function dataTransferHasFiles(dataTransfer: DataTransfer | null): boolean {
   if (!dataTransfer) return false;
@@ -353,6 +437,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [libraryMessage, setLibraryMessage] = useState<string | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [saveToasts, setSaveToasts] = useState<SaveToast[]>([]);
+  const runtimeErrorFingerprintRef = useRef<Map<string, number>>(new Map());
   const [historyRevision, setHistoryRevision] = useState(0);
   const [isClearHistoryConfirmOpen, setIsClearHistoryConfirmOpen] = useState(false);
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
@@ -403,6 +488,9 @@ export default function App({ startupSlices = [] }: AppProps) {
   const lastCommittedHashRef = useRef<string>("");
   const viewerCanvasElementRef = useRef<HTMLCanvasElement | null>(null);
   const globalFileDragDepthRef = useRef(0);
+  const toastAutoCloseTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const toastRemovalTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const toastDurationsRef = useRef<Map<string, number>>(new Map());
 
   const [sliceVolumeLayerId, setSliceVolumeLayerId] = useState<string>("");
   const [sliceName, setSliceName] = useState<string>("");
@@ -497,6 +585,84 @@ export default function App({ startupSlices = [] }: AppProps) {
       setSelectedLayerRuntimeInfo((prev) => (prev ? null : prev));
     }
   }, [selectedNode]);
+
+  useEffect(() => {
+    function handleWindowError(event: ErrorEvent) {
+      enqueueErrorToast(event.error ?? event.message, {
+        source: "window.error",
+        technicalMessage: event.message || normalizeUnknownErrorMessage(event.error),
+      });
+    }
+
+    function handleUnhandledRejection(event: PromiseRejectionEvent) {
+      enqueueErrorToast(event.reason, {
+        source: "window.unhandledrejection",
+      });
+    }
+
+    const originalConsoleError = console.error.bind(console);
+    console.error = (...args: unknown[]) => {
+      originalConsoleError(...args);
+      const technicalMessage = args
+        .map((value) => normalizeUnknownErrorMessage(value))
+        .filter((value): value is string => !!value)
+        .join(" | ");
+      enqueueErrorToast(args[0] ?? technicalMessage, {
+        source: "console.error",
+        technicalMessage,
+      });
+    };
+
+    window.addEventListener("error", handleWindowError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener("error", handleWindowError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+      console.error = originalConsoleError;
+    };
+  }, []);
+
+  const handleCameraStateChange = useCallback((next: SerializableCameraState) => {
+    setCameraState((prev) => {
+      if (
+        prev.mode === next.mode &&
+        prev.yaw === next.yaw &&
+        prev.pitch === next.pitch &&
+        prev.fovDeg === next.fovDeg &&
+        prev.position[0] === next.position[0] &&
+        prev.position[1] === next.position[1] &&
+        prev.position[2] === next.position[2]
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSelectedLayerRuntimeInfoChange = useCallback(
+    (next: SelectedLayerRuntimeInfo | null) => {
+      setSelectedLayerRuntimeInfo((prev) => {
+        const prevKey = prev ? JSON.stringify(prev) : "null";
+        const nextKey = next ? JSON.stringify(next) : "null";
+        return prevKey === nextKey ? prev : next;
+      });
+    },
+    []
+  );
+
+  const handleCanvasElementChange = useCallback((canvas: HTMLCanvasElement | null) => {
+    viewerCanvasElementRef.current = canvas;
+  }, []);
+
+  const handleLocalSceneLoadStateChange = useCallback(
+    (next: { active: boolean; pending: number }) => {
+      setLocalSceneLoadState((prev) =>
+        prev.active === next.active && prev.pending === next.pending ? prev : next
+      );
+    },
+    []
+  );
 
   const inspectorPanelContent = (
     <LayerInspectorPanel
@@ -630,7 +796,31 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function updateAnnotationDraft(patch: Partial<AnnotationDraftSettings>) {
-    setAnnotationDraft((prev) => ({ ...prev, ...patch }));
+    setAnnotationDraft((prev) => {
+      const nextShape = patch.shape ?? prev.shape;
+      const mergedSizeByShape: AnnotationShapeSizeMap = {
+        ...DEFAULT_ANNOTATION_SHAPE_SIZES,
+        ...(prev.sizeByShape ?? DEFAULT_ANNOTATION_SHAPE_SIZES),
+        ...(patch.sizeByShape ?? {}),
+      };
+
+      if (typeof patch.size === "number" && Number.isFinite(patch.size)) {
+        mergedSizeByShape[nextShape] = patch.size;
+      }
+
+      const nextSize =
+        typeof patch.size === "number" && Number.isFinite(patch.size)
+          ? patch.size
+          : mergedSizeByShape[nextShape] ?? prev.size ?? DEFAULT_ANNOTATION_SHAPE_SIZES[nextShape];
+
+      return {
+        ...prev,
+        ...patch,
+        shape: nextShape,
+        size: nextSize,
+        sizeByShape: mergedSizeByShape,
+      };
+    });
   }
 
   function handleAnnotationDraftColorChange(color: string) {
@@ -799,7 +989,18 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function activateAnnotationShortcut(shape: AnnotationShape) {
-    setAnnotationDraft((prev) => ({ ...prev, shape }));
+    setAnnotationDraft((prev) => {
+      const sizeByShape: AnnotationShapeSizeMap = {
+        ...DEFAULT_ANNOTATION_SHAPE_SIZES,
+        ...(prev.sizeByShape ?? DEFAULT_ANNOTATION_SHAPE_SIZES),
+      };
+      return {
+        ...prev,
+        shape,
+        size: sizeByShape[shape] ?? prev.size ?? DEFAULT_ANNOTATION_SHAPE_SIZES[shape],
+        sizeByShape,
+      };
+    });
     setActiveTool("pencil");
   }
 
@@ -1002,6 +1203,21 @@ export default function App({ startupSlices = [] }: AppProps) {
   useEffect(() => {
     saveShortcutBindings(shortcutBindings);
   }, [shortcutBindings]);
+
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of toastAutoCloseTimeoutsRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      for (const timeoutId of toastRemovalTimeoutsRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      toastAutoCloseTimeoutsRef.current.clear();
+      toastRemovalTimeoutsRef.current.clear();
+      toastDurationsRef.current.clear();
+    };
+  }, []);
+
 
   useEffect(() => {
     if (initializedStartupSlicesRef.current) return;
@@ -1466,23 +1682,112 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
   }
 
-  function enqueueSaveToast(message: string) {
-    const id = `save-toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setSaveToasts((prev) => [...prev, { id, message, isClosing: false }]);
+  function clearToastTimers(toastId: string) {
+    const autoCloseTimer = toastAutoCloseTimeoutsRef.current.get(toastId);
+    if (typeof autoCloseTimer === "number") {
+      window.clearTimeout(autoCloseTimer);
+      toastAutoCloseTimeoutsRef.current.delete(toastId);
+    }
 
-    window.setTimeout(() => {
-      setSaveToasts((prev) => prev.map((toast) => (toast.id === id ? { ...toast, isClosing: true } : toast)));
-      window.setTimeout(() => {
-        setSaveToasts((prev) => prev.filter((toast) => toast.id !== id));
-      }, 220);
-    }, 3200);
+    const removalTimer = toastRemovalTimeoutsRef.current.get(toastId);
+    if (typeof removalTimer === "number") {
+      window.clearTimeout(removalTimer);
+      toastRemovalTimeoutsRef.current.delete(toastId);
+    }
+  }
+
+  function finalizeToastDismiss(toastId: string) {
+    clearToastTimers(toastId);
+    setSaveToasts((prev) => prev.filter((toast) => toast.id !== toastId));
+    toastDurationsRef.current.delete(toastId);
+  }
+
+  function scheduleToastRemoval(toastId: string, delayMs: number = 220) {
+    const removalTimer = window.setTimeout(() => {
+      finalizeToastDismiss(toastId);
+    }, delayMs);
+    toastRemovalTimeoutsRef.current.set(toastId, removalTimer);
+  }
+
+  function dismissToastLater(toastId: string, delayMs: number = 3200) {
+    clearToastTimers(toastId);
+    const autoCloseTimer = window.setTimeout(() => {
+      setSaveToasts((prev) =>
+        prev.map((toast) => (toast.id === toastId ? { ...toast, isHovered: false, isClosing: true } : toast))
+      );
+      scheduleToastRemoval(toastId, 220);
+    }, delayMs);
+    toastAutoCloseTimeoutsRef.current.set(toastId, autoCloseTimer);
+  }
+
+  function enqueueToast(toast: Omit<SaveToast, "id" | "isClosing">, options?: { durationMs?: number; dedupeKey?: string; dedupeWindowMs?: number }) {
+    const durationMs = options?.durationMs ?? (toast.tone === "error" ? 5600 : 3200);
+    const dedupeWindowMs = options?.dedupeWindowMs ?? 4000;
+    const dedupeKey = options?.dedupeKey?.trim();
+    const now = Date.now();
+
+    if (dedupeKey) {
+      const previousTimestamp = runtimeErrorFingerprintRef.current.get(dedupeKey);
+      if (typeof previousTimestamp === "number" && now - previousTimestamp < dedupeWindowMs) {
+        return;
+      }
+      runtimeErrorFingerprintRef.current.set(dedupeKey, now);
+
+      if (runtimeErrorFingerprintRef.current.size > 80) {
+        for (const [key, value] of runtimeErrorFingerprintRef.current.entries()) {
+          if (now - value > dedupeWindowMs * 4) {
+            runtimeErrorFingerprintRef.current.delete(key);
+          }
+        }
+      }
+    }
+
+    const id = `toast-${now}-${Math.random().toString(36).slice(2, 8)}`;
+    toastDurationsRef.current.set(id, durationMs);
+    setSaveToasts((prev) => [...prev, { id, isClosing: false, isHovered: false, ...toast }]);
+    dismissToastLater(id, durationMs);
+  }
+
+  function enqueueSaveToast(message: string) {
+    enqueueToast({ tone: "success", title: "Viewer saved", message });
+  }
+
+  function enqueueErrorToast(error: unknown, options?: { source?: string; technicalMessage?: string | null }) {
+    const rawMessage = options?.technicalMessage ?? normalizeUnknownErrorMessage(error);
+    const mapped = mapRuntimeErrorMessage(rawMessage);
+    const dedupeKey = [options?.source ?? "runtime", mapped.title, mapped.message, rawMessage ?? ""].join("|");
+    enqueueToast(
+      {
+        tone: "error",
+        title: mapped.title,
+        message: mapped.message,
+        detail: rawMessage && mapped.message !== rawMessage ? rawMessage : undefined,
+      },
+      { durationMs: 5600, dedupeKey }
+    );
   }
 
   function handleDismissSaveToast(toastId: string) {
-    setSaveToasts((prev) => prev.map((toast) => (toast.id === toastId ? { ...toast, isClosing: true } : toast)));
-    window.setTimeout(() => {
-      setSaveToasts((prev) => prev.filter((toast) => toast.id !== toastId));
-    }, 220);
+    clearToastTimers(toastId);
+    setSaveToasts((prev) => prev.map((toast) => (toast.id === toastId ? { ...toast, isHovered: false, isClosing: true } : toast)));
+    scheduleToastRemoval(toastId, 220);
+  }
+
+  function handleToastHoverChange(toastId: string, isHovered: boolean) {
+    setSaveToasts((prev) =>
+      prev.map((toast) => {
+        if (toast.id !== toastId || toast.isClosing) return toast;
+        return toast.isHovered === isHovered ? toast : { ...toast, isHovered };
+      })
+    );
+
+    if (isHovered) {
+      clearToastTimers(toastId);
+      return;
+    }
+
+    const durationMs = toastDurationsRef.current.get(toastId) ?? 3200;
+    dismissToastLater(toastId, durationMs);
   }
 
   function handleSaveCurrentViewerToLibrary(name?: string) {
@@ -2064,7 +2369,18 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function setAnnotationDraftShape(shape: AnnotationShape) {
-    setAnnotationDraft((prev) => ({ ...prev, shape }));
+    setAnnotationDraft((prev) => {
+      const sizeByShape: AnnotationShapeSizeMap = {
+        ...DEFAULT_ANNOTATION_SHAPE_SIZES,
+        ...(prev.sizeByShape ?? DEFAULT_ANNOTATION_SHAPE_SIZES),
+      };
+      return {
+        ...prev,
+        shape,
+        size: sizeByShape[shape] ?? prev.size ?? DEFAULT_ANNOTATION_SHAPE_SIZES[shape],
+        sizeByShape,
+      };
+    });
     setActiveTool("pencil");
   }
 
@@ -2591,7 +2907,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         selectedNodeId={selectedNodeId}
         cameraState={cameraState}
         cameraSyncKey={cameraSyncKey}
-        onCameraStateChange={setCameraState}
+        onCameraStateChange={handleCameraStateChange}
         backgroundColor={appPreferences.sceneBackground}
         annotationShape={annotationDraft.shape}
         annotationColor={annotationDraft.color}
@@ -2599,16 +2915,15 @@ export default function App({ startupSlices = [] }: AppProps) {
         annotationSize={annotationDraft.size}
         annotationDepth={annotationDraft.depth}
         annotationEraseMode={annotationDraft.eraseMode}
+        onAnnotationSizeChange={handleAnnotationDraftSizeChange}
         onCreatePointAnnotation={handleCreatePointAnnotationAtHit}
         onCreateLineAnnotation={handleCreateLineAnnotation}
         onCreateShapeAnnotation={handleCreateShapeAnnotation}
         onCommitFreehandStroke={handleCommitFreehandStroke}
         onEraseFreehand={handleEraseFreehandStroke}
-        onSelectedLayerRuntimeInfoChange={setSelectedLayerRuntimeInfo}
-        onCanvasElementChange={(canvas) => {
-          viewerCanvasElementRef.current = canvas;
-        }}
-        onLocalSceneLoadStateChange={setLocalSceneLoadState}
+        onSelectedLayerRuntimeInfoChange={handleSelectedLayerRuntimeInfoChange}
+        onCanvasElementChange={handleCanvasElementChange}
+        onLocalSceneLoadStateChange={handleLocalSceneLoadStateChange}
         localSceneLoadingActive={localSceneLoadState.active}
         orbitResetRequestKey={orbitResetRequestKey}
       />
@@ -2632,12 +2947,16 @@ export default function App({ startupSlices = [] }: AppProps) {
           100% { opacity: 0; transform: translateY(8px); }
         }
       `}</style>
-      <SaveToastStack toasts={saveToasts} bottomOffset={localSceneLoadState.active && !dismissLocalSceneLoadNotice ? 208 : 104} onDismiss={handleDismissSaveToast} />
-
-      <LocalLoadNotice
-        active={localSceneLoadState.active && !dismissLocalSceneLoadNotice}
-        pending={localSceneLoadState.pending}
-        onDismiss={() => setDismissLocalSceneLoadNotice(true)}
+      <SaveToastStack
+        toasts={saveToasts}
+        bottomOffset={104}
+        onDismiss={handleDismissSaveToast}
+        onHoverChange={handleToastHoverChange}
+        loadingNotice={{
+          active: localSceneLoadState.active && !dismissLocalSceneLoadNotice,
+          pending: localSceneLoadState.pending,
+          onDismiss: () => setDismissLocalSceneLoadNotice(true),
+        }}
       />
 
       <GlobalDropOverlay visible={canShowGlobalDropOverlay} />

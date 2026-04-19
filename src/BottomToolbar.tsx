@@ -328,12 +328,21 @@ function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange, onRes
 }
 
 function needsSizeControl(shape: AnnotationShape) {
-  return shape === "point" || shape === "line" || shape === "freehand" || shape === "eraser";
+  return (
+    shape === "point" ||
+    shape === "line" ||
+    shape === "rectangle" ||
+    shape === "circle" ||
+    shape === "freehand" ||
+    shape === "eraser"
+  );
 }
 
 function buildSizeLabel(shape: AnnotationShape) {
   if (shape === "point") return "Point size";
   if (shape === "line") return "Line thickness";
+  if (shape === "rectangle") return "Border thickness";
+  if (shape === "circle") return "Border thickness";
   if (shape === "eraser") return "Eraser size";
   return "Brush size";
 }

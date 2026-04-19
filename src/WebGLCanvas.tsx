@@ -373,6 +373,7 @@ export default function WebGLCanvas({
   annotationSize = 0.06,
   annotationDepth = 0.015,
   annotationEraseMode = "color",
+  onAnnotationSizeChange,
   onScenePointerTargetChange,
   onCreatePointAnnotation,
   onCreateLineAnnotation,
@@ -399,6 +400,7 @@ export default function WebGLCanvas({
   annotationSize?: number;
   annotationDepth?: number;
   annotationEraseMode?: "all" | "color";
+  onAnnotationSizeChange?: (size: number) => void;
   onScenePointerTargetChange?: (hit: ScenePointerHit | null) => void;
   onCreatePointAnnotation?: (hit: ScenePointerHit) => void;
   onCreateLineAnnotation?: (params: { start: ScenePointerHit; end: ScenePointerHit }) => void;
@@ -440,6 +442,7 @@ export default function WebGLCanvas({
   const annotationSizeRef = useRef<number>(annotationSize);
   const annotationDepthRef = useRef<number>(annotationDepth);
   const annotationEraseModeRef = useRef<"all" | "color">(annotationEraseMode);
+  const onAnnotationSizeChangeRef = useRef<typeof onAnnotationSizeChange>(onAnnotationSizeChange);
   const onCreatePointAnnotationRef = useRef<typeof onCreatePointAnnotation>(onCreatePointAnnotation);
   const onCreateLineAnnotationRef = useRef<typeof onCreateLineAnnotation>(onCreateLineAnnotation);
   const onCreateShapeAnnotationRef = useRef<typeof onCreateShapeAnnotation>(onCreateShapeAnnotation);
@@ -504,6 +507,10 @@ export default function WebGLCanvas({
   useEffect(() => {
     annotationEraseModeRef.current = annotationEraseMode;
   }, [annotationEraseMode]);
+
+  useEffect(() => {
+    onAnnotationSizeChangeRef.current = onAnnotationSizeChange;
+  }, [onAnnotationSizeChange]);
 
   useEffect(() => {
     onCreatePointAnnotationRef.current = onCreatePointAnnotation;
@@ -2610,8 +2617,21 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       }
 
       if (activeToolRef.current === "pencil") {
+        if (camera.mode === "orbit" && (e.button === 1 || e.button === 2)) {
+          e.preventDefault();
+          dragging = true;
+          dragMode = "pan";
+          lastMouseX = e.clientX;
+          lastMouseY = e.clientY;
+          return;
+        }
+
         const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
         publishHoveredSceneHit(hit);
+
+        if (e.button !== 0) {
+          return;
+        }
 
         if (annotationShapeRef.current === "point" && hit) {
           e.preventDefault();
@@ -2731,6 +2751,17 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
     function onMouseMove(e: MouseEvent) {
       if (activeToolRef.current === "pencil") {
+        const dx = e.clientX - lastMouseX;
+        const dy = e.clientY - lastMouseY;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+
+        if (dragging && camera.mode === "orbit" && dragMode === "pan") {
+          panOrbitTarget(dx, dy);
+          publishCameraIfNeeded(camera);
+          return;
+        }
+
         const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
         publishHoveredSceneHit(hit);
         if (shapeDragStartHitRef.current && (annotationShapeRef.current === "rectangle" || annotationShapeRef.current === "circle")) {
@@ -2738,10 +2769,10 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         }
         if (freehandDrawing && hit) {
           const last = freehandPoints[freehandPoints.length - 1];
-          const dx = hit.position[0] - last[0];
-          const dy = hit.position[1] - last[1];
-          const dz = hit.position[2] - last[2];
-          const distSq = dx * dx + dy * dy + dz * dz;
+          const ddx = hit.position[0] - last[0];
+          const ddy = hit.position[1] - last[1];
+          const ddz = hit.position[2] - last[2];
+          const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
           const minStep = Math.max(0.0016, annotationSizeRef.current * 0.18);
           if (distSq >= minStep * minStep) {
             freehandPoints = [...freehandPoints, hit.position];
@@ -2750,10 +2781,10 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         }
         if (eraseDrawing && hit) {
           const last = erasePath[erasePath.length - 1];
-          const dx = hit.position[0] - last[0];
-          const dy = hit.position[1] - last[1];
-          const dz = hit.position[2] - last[2];
-          const distSq = dx * dx + dy * dy + dz * dz;
+          const ddx = hit.position[0] - last[0];
+          const ddy = hit.position[1] - last[1];
+          const ddz = hit.position[2] - last[2];
+          const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
           const minStep = Math.max(0.0016, annotationSizeRef.current * 0.25);
           if (distSq >= minStep * minStep) {
             erasePath = [...erasePath, hit.position];
@@ -2795,7 +2826,16 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
     }
 
     function onWheel(e: WheelEvent) {
-      if (activeToolRef.current !== "mouse") return;
+      if (activeToolRef.current === "pencil" && e.shiftKey) {
+        e.preventDefault();
+        const step = 0.005;
+        const nextSize = clamp(annotationSizeRef.current + (e.deltaY < 0 ? step : -step), 0.01, 0.3);
+        annotationSizeRef.current = nextSize;
+        onAnnotationSizeChangeRef.current?.(nextSize);
+        return;
+      }
+
+      if (activeToolRef.current !== "mouse" && activeToolRef.current !== "pencil") return;
       e.preventDefault();
 
       if (camera.mode === "fly") {
@@ -2816,9 +2856,15 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
     function onAuxClick(event: MouseEvent) {
       if (event.button === 1) event.preventDefault();
     }
+    function onContextMenu(event: MouseEvent) {
+      if (activeToolRef.current === "pencil" || activeToolRef.current === "mouse") {
+        event.preventDefault();
+      }
+    }
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("auxclick", onAuxClick);
+    canvas.addEventListener("contextmenu", onContextMenu);
     window.addEventListener("resize", resizeCanvas);
 
     resizeCanvas();
@@ -2834,6 +2880,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       window.removeEventListener("mousemove", onMouseMove);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("auxclick", onAuxClick);
+      canvas.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("resize", resizeCanvas);
 
       for (const entry of sliceTextureCache.values()) {
