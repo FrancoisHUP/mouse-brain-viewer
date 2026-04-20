@@ -66,10 +66,20 @@ type AxisSliceTextureEntry = {
   height: number;
 };
 
+type SliceDragState = {
+  layerId: string;
+  plane: SlicePlane;
+  startIndex: number;
+  startClientX: number;
+  startClientY: number;
+  maxIndex: number;
+};
+
 export type ScenePointerHit = {
   layerId: string;
   layerName: string;
   kind: "plane";
+  plane?: SlicePlane;
   distance: number;
   position: [number, number, number];
   normal: [number, number, number];
@@ -197,6 +207,17 @@ function isLocalMeshLayer(layer: LayerItemNode): boolean {
     !!layer.localOnly
   );
 }
+
+function isCanonicalSliceBrowsableLayer(
+  layer: LayerItemNode | null | undefined
+): layer is LayerItemNode {
+  return (
+    !!layer &&
+    (layer.type === "remote" || layer.type === "file") &&
+    layer.renderMode === "slices"
+  );
+}
+
 
 function getLocalVolumeCacheKey(datasetId: string): string {
   return `local-volume::${datasetId}`;
@@ -329,6 +350,60 @@ function getPlaneSliceCount(volume: LoadedVolume, plane: SlicePlane): number {
   if (plane === "xy") return volume.dims.z;
   if (plane === "xz") return volume.dims.y;
   return volume.dims.x;
+}
+
+function clampAxisSliceDisplayIndex(
+  volume: LoadedVolume,
+  plane: SlicePlane,
+  value: number | null | undefined
+): number {
+  const total = getPlaneSliceCount(volume, plane);
+  const fallback = Math.round(Math.max(total - 1, 0) * 0.5);
+  const safe = Number.isFinite(value) ? Number(value) : fallback;
+  return clamp(Math.round(safe), 0, Math.max(0, total - 1));
+}
+
+function getLayerAxisSliceDisplayIndex(
+  layer: LayerItemNode,
+  volume: LoadedVolume,
+  plane: SlicePlane
+): number {
+  return clampAxisSliceDisplayIndex(volume, plane, layer.axisSliceState?.[plane]);
+}
+
+function getLayerAxisSliceSourceIndex(
+  layer: LayerItemNode,
+  volume: LoadedVolume,
+  plane: SlicePlane
+): number {
+  const displayIndex = getLayerAxisSliceDisplayIndex(layer, volume, plane);
+  const viewState = getLayerAxisSliceViewTransform(layer, plane);
+  const maxIndex = Math.max(0, getPlaneSliceCount(volume, plane) - 1);
+  return viewState.flipZ ? maxIndex - displayIndex : displayIndex;
+}
+
+function getLayerAxisSliceViewTransform(
+  layer: LayerItemNode,
+  plane: SlicePlane
+): { flipX: boolean; flipY: boolean; flipZ: boolean; visible: boolean; rotationDeg: number; scale: number } {
+  const viewState = layer.axisSliceViewState?.[plane] as
+    | {
+        flipX?: boolean;
+        flipY?: boolean;
+        flipZ?: boolean;
+        visible?: boolean;
+        rotationDeg?: number;
+        scale?: number;
+      }
+    | undefined;
+  return {
+    flipX: !!viewState?.flipX,
+    flipY: !!viewState?.flipY,
+    flipZ: !!viewState?.flipZ,
+    visible: viewState?.visible !== false,
+    rotationDeg: Number.isFinite(viewState?.rotationDeg) ? Number(viewState?.rotationDeg) : 0,
+    scale: Number.isFinite(viewState?.scale) ? Number(viewState?.scale) : 1,
+  };
 }
 
 function chooseStableVolumeRenderPlane(_volume: LoadedVolume): SlicePlane {
@@ -468,10 +543,11 @@ export default function WebGLCanvas({
   onCommitFreehandStroke,
   onEraseFreehand,
   onSelectedLayerRuntimeInfoChange,
+  onAxisSliceStateChange,
   onCanvasElementChange,
   onLocalSceneLoadStateChange,
   localSceneLoadingActive = false,
-  orbitResetRequestKey = 0,
+  focusSelectedLayerRequestKey = 0,
 }: {
   activeTool: ToolId;
   layerTree: LayerTreeNode[];
@@ -495,10 +571,14 @@ export default function WebGLCanvas({
   onCommitFreehandStroke?: (stroke: { points: [number, number, number][]; normals: [number, number, number][]; attachedLayerId?: string; attachedLayerName?: string; }) => void;
   onEraseFreehand?: (payload: { path: [number, number, number][]; radius: number }) => void;
   onSelectedLayerRuntimeInfoChange?: (info: SelectedLayerRuntimeInfo | null) => void;
+  onAxisSliceStateChange?: (
+    layerId: string,
+    patch: Partial<NonNullable<LayerItemNode["axisSliceState"]>>
+  ) => void;
   onCanvasElementChange?: (canvas: HTMLCanvasElement | null) => void;
   onLocalSceneLoadStateChange?: (state: { active: boolean; pending: number }) => void;
   localSceneLoadingActive?: boolean;
-  orbitResetRequestKey?: number;
+  focusSelectedLayerRequestKey?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -521,6 +601,10 @@ export default function WebGLCanvas({
   ))));
   const orbitTargetRef = useRef(vec3.fromValues(0, 0, 0));
   const orbitTargetGoalRef = useRef(vec3.fromValues(0, 0, 0));
+  const flyFocusTargetPositionRef = useRef(vec3.clone(cameraRef.current.position));
+  const flyFocusActiveRef = useRef(false);
+  const pendingFocusSelectedLayerRequestRef = useRef(0);
+  const handledFocusSelectedLayerRequestRef = useRef(0);
 
   const activeToolRef = useRef<ToolId>(activeTool);
   const annotationShapeRef = useRef<AnnotationShape>(annotationShape);
@@ -531,6 +615,7 @@ export default function WebGLCanvas({
   const annotationEraseModeRef = useRef<"all" | "color">(annotationEraseMode);
   const onAnnotationSizeChangeRef = useRef<typeof onAnnotationSizeChange>(onAnnotationSizeChange);
   const onCreatePointAnnotationRef = useRef<typeof onCreatePointAnnotation>(onCreatePointAnnotation);
+  const onAxisSliceStateChangeRef = useRef<typeof onAxisSliceStateChange>(onAxisSliceStateChange);
   const onCreateLineAnnotationRef = useRef<typeof onCreateLineAnnotation>(onCreateLineAnnotation);
   const onCreateShapeAnnotationRef = useRef<typeof onCreateShapeAnnotation>(onCreateShapeAnnotation);
   const onCommitFreehandStrokeRef = useRef<typeof onCommitFreehandStroke>(onCommitFreehandStroke);
@@ -610,6 +695,10 @@ export default function WebGLCanvas({
   }, [onCreatePointAnnotation]);
 
   useEffect(() => {
+    onAxisSliceStateChangeRef.current = onAxisSliceStateChange;
+  }, [onAxisSliceStateChange]);
+
+  useEffect(() => {
     onCreateLineAnnotationRef.current = onCreateLineAnnotation;
   }, [onCreateLineAnnotation]);
 
@@ -645,14 +734,14 @@ export default function WebGLCanvas({
     camera.yaw = cameraState.yaw;
     camera.pitch = cameraState.pitch;
     camera.fovDeg = cameraState.fovDeg;
+    vec3.copy(flyFocusTargetPositionRef.current, camera.position);
+    flyFocusActiveRef.current = false;
     targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(camera.position, orbitTargetRef.current));
   }, [cameraSyncKey]);
 
   useEffect(() => {
-    orbitTargetGoalRef.current[0] = 0;
-    orbitTargetGoalRef.current[1] = 0;
-    orbitTargetGoalRef.current[2] = 0;
-  }, [orbitResetRequestKey]);
+    pendingFocusSelectedLayerRequestRef.current = focusSelectedLayerRequestKey;
+  }, [focusSelectedLayerRequestKey]);
 
   function publishCameraIfNeeded(camera: CameraState) {
     const next: SerializableCameraState = {
@@ -1286,6 +1375,7 @@ export default function WebGLCanvas({
       sliceTextureCache.set(cacheKey, set);
       return set;
     }
+    void getOrCreateSliceTextures;
 
     function axisSliceToObliqueSpec(
       volume: LoadedVolume,
@@ -1387,12 +1477,13 @@ export default function WebGLCanvas({
       cacheKey: string,
       volume: LoadedVolume,
       plane: SlicePlane,
-      index: number
+      index: number,
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
     ): AxisSliceTextureEntry {
       const cached = volumeSliceTextureCache.get(cacheKey);
       if (cached) return cached;
 
-      const slice = extractOrientedSlice2D(volume, plane, index, ALLEN_VOLUME_PROFILE);
+      const slice = extractOrientedSlice2D(volume, plane, index, profile);
       const texture = createSliceTexture(slice.width, slice.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(slice.pixels) : sliceToRgbaBytes(slice.pixels));
       const entry = {
         texture,
@@ -1415,6 +1506,25 @@ export default function WebGLCanvas({
         axisSliceToObliqueSpec(volume, plane, displayIndex, profile),
         profile
       );
+    }
+
+    function makeInteractiveSliceModelMatrix(
+      layer: LayerItemNode,
+      volume: LoadedVolume,
+      plane: SlicePlane,
+      displayIndex: number,
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+    ): mat4 {
+      const model = makeSliceModelMatrix(volume, plane, displayIndex, profile);
+      const viewState = getLayerAxisSliceViewTransform(layer, plane);
+      const safeScale = Math.max(0.25, Math.min(3, viewState.scale || 1));
+      mat4.rotateZ(model, model, (viewState.rotationDeg * Math.PI) / 180);
+      mat4.scale(model, model, [
+        safeScale * (viewState.flipX ? -1 : 1),
+        safeScale * (viewState.flipY ? -1 : 1),
+        1,
+      ]);
+      return model;
     }
 
     function maxAbsPlaneExtentForObliqueWorld(
@@ -1526,7 +1636,7 @@ export default function WebGLCanvas({
     function publishHoveredSceneHit(hit: ScenePointerHit | null) {
       hoveredSceneHitRef.current = hit;
       const key = hit
-        ? `${hit.layerId}|${hit.position.map((value) => value.toFixed(5)).join(",")}|${hit.distance.toFixed(5)}`
+        ? `${hit.layerId}|${hit.plane ?? "none"}|${hit.position.map((value) => value.toFixed(5)).join(",")}|${hit.distance.toFixed(5)}`
         : "null";
       if (key === lastPublishedSceneHitRef.current) return;
       lastPublishedSceneHitRef.current = key;
@@ -1536,15 +1646,24 @@ export default function WebGLCanvas({
     function pickSceneAtClientPosition(clientX: number, clientY: number): ScenePointerHit | null {
       const { projection, view } = getViewProjectionMatrices();
       const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
+      const selectedSliceLayer =
+        activeToolRef.current === "slice" && selectedNodeId
+          ? findNodeById(layerTreeRef.current, selectedNodeId)
+          : null;
+      const selectedSliceLayerId =
+        selectedSliceLayer && selectedSliceLayer.kind === "layer" && isCanonicalSliceBrowsableLayer(selectedSliceLayer)
+          ? selectedSliceLayer.id
+          : null;
       let bestHit: ScenePointerHit | null = null;
 
-      function considerHit(layer: LayerItemNode, hit: RayHit | null) {
+      function considerHit(layer: LayerItemNode, hit: RayHit | null, plane?: SlicePlane) {
         if (!hit) return;
         if (!bestHit || hit.distance < bestHit.distance) {
           bestHit = {
             layerId: layer.id,
             layerName: layer.name,
             kind: "plane",
+            plane,
             distance: hit.distance,
             position: [hit.position[0], hit.position[1], hit.position[2]],
             normal: [hit.normal[0], hit.normal[1], hit.normal[2]],
@@ -1558,6 +1677,15 @@ export default function WebGLCanvas({
 
         const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
         if (loadedVolumeEntry) {
+          if (
+            activeToolRef.current === "slice" &&
+            selectedSliceLayerId &&
+            layer.renderMode === "slices" &&
+            layer.id !== selectedSliceLayerId
+          ) {
+            continue;
+          }
+
           const { volume, profile } = loadedVolumeEntry;
 
           if (layer.renderMode === "volume") {
@@ -1569,16 +1697,16 @@ export default function WebGLCanvas({
               considerHit(layer, intersectModelPlane(model, clientX, clientY, projection, view));
             }
           } else if (layer.renderMode === "slices") {
-            const { sx, sy, sz } = getVolumeDisplayScale(volume);
-
-            const modelXY = multiplyModelMatrices(layerEntry.worldMatrix, (() => { const m = mat4.create(); mat4.scale(m, m, [sx, sy, 1]); return m; })());
-            considerHit(layer, intersectModelPlane(modelXY, clientX, clientY, projection, view));
-
-            const modelXZ = multiplyModelMatrices(layerEntry.worldMatrix, (() => { const m = mat4.create(); mat4.rotateX(m, m, Math.PI / 2); mat4.scale(m, m, [sx, sz, 1]); return m; })());
-            considerHit(layer, intersectModelPlane(modelXZ, clientX, clientY, projection, view));
-
-            const modelYZ = multiplyModelMatrices(layerEntry.worldMatrix, (() => { const m = mat4.create(); mat4.rotateY(m, m, Math.PI / 2); mat4.scale(m, m, [sz, sy, 1]); return m; })());
-            considerHit(layer, intersectModelPlane(modelYZ, clientX, clientY, projection, view));
+            for (const plane of ["xy", "xz", "yz"] as SlicePlane[]) {
+              const viewState = getLayerAxisSliceViewTransform(layer, plane);
+              if (!viewState.visible) continue;
+              const displayIndex = getLayerAxisSliceDisplayIndex(layer, volume, plane);
+              const model = multiplyModelMatrices(
+                layerEntry.worldMatrix,
+                makeInteractiveSliceModelMatrix(layer, volume, plane, displayIndex, profile)
+              );
+              considerHit(layer, intersectModelPlane(model, clientX, clientY, projection, view), plane);
+            }
           }
 
           continue;
@@ -1647,6 +1775,7 @@ export default function WebGLCanvas({
     const keys = new Set<string>();
     let dragging = false;
     let dragMode: "rotate" | "pan" | null = null;
+    let sliceDrag: SliceDragState | null = null;
     let freehandDrawing = false;
     let eraseDrawing = false;
     let freehandPoints: [number, number, number][] = [];
@@ -1776,6 +1905,77 @@ export default function WebGLCanvas({
 
       if (moved) {
         publishCameraIfNeeded(camera);
+      }
+    }
+
+    function focusCameraOnSelectedLayerIfRequested() {
+      const pendingRequest = pendingFocusSelectedLayerRequestRef.current;
+      if (pendingRequest === handledFocusSelectedLayerRequestRef.current) return;
+      handledFocusSelectedLayerRequestRef.current = pendingRequest;
+
+      if (!selectedNodeId) return;
+      const selectedNode = findNodeById(layerTreeRef.current, selectedNodeId);
+      if (!selectedNode || selectedNode.kind !== "layer") return;
+
+      const resolvedLayers = collectResolvedVisibleLayers(layerTreeRef.current);
+      const layerEntry = resolvedLayers.find((entry) => entry.layer.id === selectedNode.id);
+      if (!layerEntry) return;
+
+      let center = vec3.fromValues(0, 0, 0);
+      let focusDistance = 2.4;
+
+      if (isOmeZarrLayer(selectedNode) && typeof selectedNode.source === "string") {
+        const cachedVolume = volumeCacheRef.current.get(
+          getVolumeCacheKey(
+            selectedNode.source,
+            getRemoteLayerResolutionUm(selectedNode),
+            getRemoteLayerContentKind(selectedNode)
+          )
+        );
+        if (cachedVolume) {
+          const scale = getVolumeDisplayScale(cachedVolume);
+          focusDistance = Math.max(scale.sx, scale.sy, scale.sz) * 1.4;
+        }
+        const point = transformPoint(layerEntry.worldMatrix, [0, 0, 0]);
+        center = vec3.fromValues(point[0], point[1], point[2]);
+      } else if (isLocalVolumeLayer(selectedNode) && typeof selectedNode.source === "string") {
+        const cachedVolume = volumeCacheRef.current.get(getLocalVolumeCacheKey(selectedNode.source));
+        if (cachedVolume) {
+          const scale = getVolumeDisplayScale(cachedVolume);
+          focusDistance = Math.max(scale.sx, scale.sy, scale.sz) * 1.4;
+        }
+        const point = transformPoint(layerEntry.worldMatrix, [0, 0, 0]);
+        center = vec3.fromValues(point[0], point[1], point[2]);
+      } else if (isMeshLayer(selectedNode) && typeof selectedNode.source === "string") {
+        const cachedMesh = meshCacheRef.current.get(getMeshCacheKey(selectedNode.source));
+        const finalModel = cachedMesh
+          ? multiplyModelMatrices(layerEntry.worldMatrix, getAllenMeshModelMatrix(cachedMesh))
+          : layerEntry.worldMatrix;
+        const point = transformPoint(finalModel, [0, 0, 0]);
+        center = vec3.fromValues(point[0], point[1], point[2]);
+        focusDistance = 2.8;
+      } else if (isLocalMeshLayer(selectedNode) && typeof selectedNode.source === "string") {
+        const point = transformPoint(layerEntry.worldMatrix, [0, 0, 0]);
+        center = vec3.fromValues(point[0], point[1], point[2]);
+        focusDistance = 2.8;
+      } else {
+        const point = transformPoint(layerEntry.worldMatrix, [0, 0, 0]);
+        center = vec3.fromValues(point[0], point[1], point[2]);
+        focusDistance = 2.1;
+      }
+
+      focusDistance = Math.max(0.75, focusDistance);
+      vec3.copy(orbitTargetGoalRef.current, center);
+      targetOrbitDistanceRef.current = focusDistance;
+
+      if (camera.mode === "orbit") {
+        // Leave the current orbit target in place and let the render loop ease toward the new target and distance.
+      } else {
+        const forward = getForward();
+        flyFocusTargetPositionRef.current[0] = center[0] - forward[0] * focusDistance;
+        flyFocusTargetPositionRef.current[1] = center[1] - forward[1] * focusDistance;
+        flyFocusTargetPositionRef.current[2] = center[2] - forward[2] * focusDistance;
+        flyFocusActiveRef.current = true;
       }
     }
 
@@ -2194,6 +2394,23 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
 
+    function drawPlaneOutline(mvp: mat4, color: [number, number, number, number], lineWidth: number = 1.5) {
+      resetVertexAttribArrays();
+
+      gl.useProgram(colorProgram);
+      gl.uniformMatrix4fv(uColorMVP, false, mvp);
+      gl.uniform4f(uColor, color[0], color[1], color[2], color[3]);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
+      gl.enableVertexAttribArray(aColorPosition);
+      gl.vertexAttribPointer(aColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.lineWidth(lineWidth);
+      gl.drawArrays(gl.LINE_LOOP, 0, 4);
+    }
+
     function renderVolumeLayer(
       volumeKey: string,
       volume: LoadedVolume,
@@ -2201,7 +2418,8 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       opacity: number,
       worldMatrix: mat4,
       view: mat4,
-      projection: mat4
+      projection: mat4,
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
     ) {
       const plane = chooseStableVolumeRenderPlane(volume);
       const totalSlices = getPlaneSliceCount(volume, plane);
@@ -2210,8 +2428,8 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       const alpha = clamp(baseAlpha * opacity, 0.02, 1);
 
       const sortedIndices = [...displayIndices].sort((a, b) => {
-        const modelA = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, a, ALLEN_VOLUME_PROFILE));
-        const modelB = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, b, ALLEN_VOLUME_PROFILE));
+        const modelA = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, a, profile));
+        const modelB = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, b, profile));
         const mvA = mat4.create();
         const mvB = mat4.create();
         mat4.multiply(mvA, view, modelA);
@@ -2227,10 +2445,11 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           sliceKey,
           volume,
           plane,
-          displayIndex
+          displayIndex,
+          profile
         );
 
-        const model = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, displayIndex, ALLEN_VOLUME_PROFILE));
+        const model = multiplyModelMatrices(worldMatrix, makeSliceModelMatrix(volume, plane, displayIndex, profile));
         const mv = mat4.create();
         const mvp = mat4.create();
         mat4.multiply(mv, view, model);
@@ -2251,6 +2470,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       lastTime = now;
 
       resizeCanvas();
+      focusCameraOnSelectedLayerIfRequested();
 
       if (activeToolRef.current === "mouse") {
         updateCamera(dt);
@@ -2269,6 +2489,18 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         const targetMoved = vec3.distance(beforeTarget, orbitTargetRef.current) > 1e-5;
         if (Math.abs(nextDistance - currentDistance) > 1e-4 || targetMoved) {
           setCameraFromOrbitAngles(nextDistance, camera.yaw, camera.pitch);
+          publishCameraIfNeeded(camera);
+        }
+      } else if (flyFocusActiveRef.current) {
+        const flyAlpha = 1 - Math.exp(-10 * dt);
+        const before = vec3.clone(camera.position);
+        vec3.lerp(camera.position, camera.position, flyFocusTargetPositionRef.current, flyAlpha);
+        const remaining = vec3.distance(camera.position, flyFocusTargetPositionRef.current);
+        if (remaining <= 1e-3) {
+          vec3.copy(camera.position, flyFocusTargetPositionRef.current);
+          flyFocusActiveRef.current = false;
+        }
+        if (vec3.distance(before, camera.position) > 1e-5) {
           publishCameraIfNeeded(camera);
         }
       }
@@ -2317,52 +2549,67 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
           if (volume) {
             if (layer.renderMode === "volume") {
-              renderVolumeLayer(volumeKey, volume, isHighlighted, layerEntry.opacity, layerEntry.worldMatrix, view, projection);
+              renderVolumeLayer(volumeKey, volume, isHighlighted, layerEntry.opacity, layerEntry.worldMatrix, view, projection, loadedVolumeEntry.profile);
             } else if (layer.renderMode === "slices") {
-              const textures = getOrCreateSliceTextures(volumeKey, volume);
-              const alpha = clamp((isHighlighted ? 0.98 : 0.92) * layerEntry.opacity, 0.02, 1);
+              const activePlane =
+                activeToolRef.current === "slice" && selectedNodeId === layer.id
+                  ? layer.axisSliceState?.activePlane ?? "xy"
+                  : null;
+              const hoveredPlane =
+                activeToolRef.current === "slice" &&
+                hoveredSceneHitRef.current?.layerId === layer.id
+                  ? hoveredSceneHitRef.current.plane ?? null
+                  : null;
 
-              const { sx, sy, sz } = getVolumeDisplayScale(volume);
+              for (const plane of ["xy", "xz", "yz"] as SlicePlane[]) {
+                const viewState = getLayerAxisSliceViewTransform(layer, plane);
+                if (!viewState.visible) {
+                  continue;
+                }
+                const displayIndex = getLayerAxisSliceDisplayIndex(layer, volume, plane);
+                const sourceIndex = getLayerAxisSliceSourceIndex(layer, volume, plane);
+                const sliceKey = `${volumeKey}|interactive|${plane}|${sourceIndex}`;
+                const sliceEntry = getOrCreateVolumeAxisSliceTexture(
+                  sliceKey,
+                  volume,
+                  plane,
+                  sourceIndex,
+                  loadedVolumeEntry.profile
+                );
+                const isActivePlane = activePlane === plane;
+                const isHoveredPlane = hoveredPlane === plane;
+                const alpha = clamp(
+                  (isHighlighted
+                    ? 0.98
+                    : isActivePlane
+                      ? 1.0
+                      : isHoveredPlane
+                        ? 0.92
+                        : 0.78) * layerEntry.opacity,
+                  0.02,
+                  1
+                );
 
-              {
-                const localModel = mat4.create();
-                const model = mat4.create();
+                const model = multiplyModelMatrices(
+                  layerEntry.worldMatrix,
+                  makeInteractiveSliceModelMatrix(layer, volume, plane, displayIndex, loadedVolumeEntry.profile)
+                );
                 const mv = mat4.create();
                 const mvp = mat4.create();
 
-                mat4.scale(localModel, localModel, [sx, sy, 1]);
-                mat4.multiply(model, layerEntry.worldMatrix, localModel);
                 mat4.multiply(mv, view, model);
                 mat4.multiply(mvp, projection, mv);
-                drawTexturedPlane(textures.xy, mvp, alpha);
-              }
+                drawTexturedPlane(sliceEntry.texture, mvp, alpha);
 
-              {
-                const localModel = mat4.create();
-                const model = mat4.create();
-                const mv = mat4.create();
-                const mvp = mat4.create();
-
-                mat4.rotateX(localModel, localModel, Math.PI / 2);
-                mat4.scale(localModel, localModel, [sx, sz, 1]);
-                mat4.multiply(model, layerEntry.worldMatrix, localModel);
-                mat4.multiply(mv, view, model);
-                mat4.multiply(mvp, projection, mv);
-                drawTexturedPlane(textures.xz, mvp, alpha);
-              }
-
-              {
-                const localModel = mat4.create();
-                const model = mat4.create();
-                const mv = mat4.create();
-                const mvp = mat4.create();
-
-                mat4.rotateY(localModel, localModel, Math.PI / 2);
-                mat4.scale(localModel, localModel, [sz, sy, 1]);
-                mat4.multiply(model, layerEntry.worldMatrix, localModel);
-                mat4.multiply(mv, view, model);
-                mat4.multiply(mvp, projection, mv);
-                drawTexturedPlane(textures.yz, mvp, alpha);
+                if (isActivePlane || isHoveredPlane) {
+                  drawPlaneOutline(
+                    mvp,
+                    isActivePlane
+                      ? [0.48, 0.82, 1.0, 0.95]
+                      : [1.0, 1.0, 1.0, 0.72],
+                    isActivePlane ? 2.2 : 1.6
+                  );
+                }
               }
             }
           }
@@ -2734,6 +2981,39 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         return;
       }
 
+      if (activeToolRef.current === "slice") {
+        const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
+        publishHoveredSceneHit(hit);
+
+        if (e.button !== 0 || !hit?.plane) {
+          return;
+        }
+
+        const targetNode = findNodeById(layerTreeRef.current, hit.layerId);
+        const loadedVolumeEntry =
+          targetNode && targetNode.kind === "layer"
+            ? getLoadedVolumeForLayer(targetNode)
+            : null;
+
+        if (!targetNode || targetNode.kind !== "layer" || !loadedVolumeEntry || targetNode.renderMode !== "slices") {
+          return;
+        }
+
+        const startIndex = getLayerAxisSliceDisplayIndex(targetNode, loadedVolumeEntry.volume, hit.plane);
+        sliceDrag = {
+          layerId: targetNode.id,
+          plane: hit.plane,
+          startIndex,
+          startClientX: e.clientX,
+          startClientY: e.clientY,
+          maxIndex: Math.max(0, getPlaneSliceCount(loadedVolumeEntry.volume, hit.plane) - 1),
+        };
+        onAxisSliceStateChangeRef.current?.(targetNode.id, {
+          activePlane: hit.plane,
+        });
+        return;
+      }
+
       if (activeToolRef.current === "pencil") {
         if (camera.mode === "orbit" && (e.button === 1 || e.button === 2)) {
           e.preventDefault();
@@ -2803,6 +3083,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
     function onMouseUp(e: MouseEvent) {
       dragging = false;
       dragMode = null;
+      sliceDrag = null;
 
       if (freehandDrawing && freehandPoints.length > 0) {
         onCommitFreehandStrokeRef.current?.({
@@ -2863,11 +3144,30 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
     function onMouseLeave() {
       dragging = false;
       dragMode = null;
+      sliceDrag = null;
       shapeDragCurrentHitRef.current = null;
       publishHoveredSceneHit(null);
     }
 
     function onMouseMove(e: MouseEvent) {
+      if (activeToolRef.current === "slice") {
+        const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
+        publishHoveredSceneHit(hit);
+
+        if (sliceDrag) {
+          const deltaX = e.clientX - sliceDrag.startClientX;
+          const deltaY = e.clientY - sliceDrag.startClientY;
+          const dominantDelta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY;
+          const deltaIndex = Math.round(dominantDelta / 6);
+          const nextIndex = clamp(sliceDrag.startIndex + deltaIndex, 0, sliceDrag.maxIndex);
+          onAxisSliceStateChangeRef.current?.(sliceDrag.layerId, {
+            [sliceDrag.plane]: nextIndex,
+            activePlane: sliceDrag.plane,
+          });
+        }
+        return;
+      }
+
       if (activeToolRef.current === "pencil") {
         const dx = e.clientX - lastMouseX;
         const dy = e.clientY - lastMouseY;
@@ -2944,6 +3244,32 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
     }
 
     function onWheel(e: WheelEvent) {
+      if (activeToolRef.current === "slice") {
+        const hoveredHit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
+        publishHoveredSceneHit(hoveredHit);
+        if (hoveredHit?.plane) {
+          const targetNode = findNodeById(layerTreeRef.current, hoveredHit.layerId);
+          const loadedVolumeEntry =
+            targetNode && targetNode.kind === "layer"
+              ? getLoadedVolumeForLayer(targetNode)
+              : null;
+          if (targetNode && targetNode.kind === "layer" && loadedVolumeEntry && targetNode.renderMode === "slices") {
+            e.preventDefault();
+            const currentIndex = getLayerAxisSliceDisplayIndex(targetNode, loadedVolumeEntry.volume, hoveredHit.plane);
+            const nextIndex = clamp(
+              currentIndex + (e.deltaY < 0 ? 1 : -1),
+              0,
+              Math.max(0, getPlaneSliceCount(loadedVolumeEntry.volume, hoveredHit.plane) - 1)
+            );
+            onAxisSliceStateChangeRef.current?.(targetNode.id, {
+              [hoveredHit.plane]: nextIndex,
+              activePlane: hoveredHit.plane,
+            });
+            return;
+          }
+        }
+      }
+
       if (activeToolRef.current === "pencil" && e.shiftKey) {
         e.preventDefault();
         const step = 0.005;

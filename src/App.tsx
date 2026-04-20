@@ -4,7 +4,6 @@ import BottomToolbar, { type HistoryMenuItem, type ToolId } from "./BottomToolba
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import LocalDatasetManagerPanel from "./LocalDatasetManagerPanel";
-import SliceToolPopover from "./SliceToolPopover";
 import UserProfilePanel from "./UserProfilePanel";
 import StatePanel from "./StatePanel";
 import SaveToastStack, { type SaveToast } from "./components/app/SaveToastStack";
@@ -175,6 +174,41 @@ type AppProps = {
 };
 
 type AnnotationShapeSizeMap = Record<AnnotationShape, number>;
+
+function getCanonicalSlicePlaneMaxIndex(
+  dims: { x: number; y: number; z: number } | null | undefined,
+  plane: SlicePlane
+): number {
+  if (!dims) return 0;
+  if (plane === "xy") return Math.max(0, dims.z - 1);
+  if (plane === "xz") return Math.max(0, dims.y - 1);
+  return Math.max(0, dims.x - 1);
+}
+
+function getCanonicalSlicePlaneLabel(plane: SlicePlane): string {
+  if (plane === "xy") return "Axial (XY)";
+  if (plane === "xz") return "Coronal (XZ)";
+  return "Sagittal (YZ)";
+}
+
+function getCanonicalSlicePlaneCompactLabel(plane: SlicePlane): string {
+  if (plane === "xy") return "XY";
+  if (plane === "xz") return "XZ";
+  return "YZ";
+}
+
+
+function isCanonicalSliceBrowsableLayer(
+  node: LayerTreeNode | null | undefined
+): node is LayerItemNode {
+  return (
+    !!node &&
+    node.kind === "layer" &&
+    (node.type === "remote" || node.type === "file") &&
+    node.renderMode === "slices"
+  );
+}
+
 
 const DEFAULT_ANNOTATION_SHAPE_SIZES: AnnotationShapeSizeMap = {
   point: 0.06,
@@ -437,7 +471,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     DEFAULT_CAMERA_STATE
   );
   const [cameraSyncKey, setCameraSyncKey] = useState(0);
-  const [orbitResetRequestKey, setOrbitResetRequestKey] = useState(0);
+  const [focusSelectedLayerRequestKey, setFocusSelectedLayerRequestKey] = useState(0);
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
   const [stateError, setStateError] = useState<string | null>(null);
@@ -468,6 +502,8 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [dismissLocalSceneLoadNotice, setDismissLocalSceneLoadNotice] = useState(false);
   const [isGlobalFileDragActive, setIsGlobalFileDragActive] = useState(false);
   const [droppedLocalEntries, setDroppedLocalEntries] = useState<LocalInputEntry[] | null>(null);
+  const [scenePointerTarget, setScenePointerTarget] = useState<ScenePointerHit | null>(null);
+  const [sliceToolPlane, setSliceToolPlane] = useState<SlicePlane | null>(null);
 
   useEffect(() => {
     if (!localSceneLoadState.active) {
@@ -516,6 +552,10 @@ export default function App({ startupSlices = [] }: AppProps) {
   const groupOptions = useMemo(() => collectGroups(layerTree), [layerTree]);
   const allLayers = useMemo(() => collectAllLayerItems(layerTree), [layerTree]);
   const omeLayers = useMemo(() => allLayers.filter(isRemoteOmeLayer), [allLayers]);
+  const sliceBrowsableLayers = useMemo(
+    () => allLayers.filter(isCanonicalSliceBrowsableLayer),
+    [allLayers]
+  );
 
   const selectedNode = useMemo(
     () => (selectedNodeId ? findNodeById(layerTree, selectedNodeId) : null),
@@ -529,6 +569,10 @@ export default function App({ startupSlices = [] }: AppProps) {
       ? selectedNode
       : null;
 
+  const selectedCanonicalSliceLayer = isCanonicalSliceBrowsableLayer(selectedNode)
+    ? selectedNode
+    : null;
+
   const selectedAnnotation = selectedAnnotationLayer?.annotation ?? null;
 
   const canShowGlobalDropOverlay =
@@ -538,6 +582,43 @@ export default function App({ startupSlices = [] }: AppProps) {
     !isUserProfilePanelOpen &&
     activeTool !== "library" &&
     activeTool !== "export";
+
+  useEffect(() => {
+    if (activeTool !== "slice" || !selectedCanonicalSliceLayer) return;
+    if (selectedCanonicalSliceLayer.axisSliceState?.activePlane) return;
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedCanonicalSliceLayer.id, (node) => ({
+        ...node,
+        axisSliceState: {
+          ...node.axisSliceState,
+          activePlane: "xy",
+        },
+      }))
+    );
+  }, [activeTool, selectedCanonicalSliceLayer]);
+
+  useEffect(() => {
+    if (activeTool !== "slice") return;
+    if (
+      scenePointerTarget?.plane &&
+      selectedCanonicalSliceLayer &&
+      scenePointerTarget.layerId === selectedCanonicalSliceLayer.id
+    ) {
+      setSliceToolPlane(scenePointerTarget.plane);
+    }
+  }, [activeTool, scenePointerTarget, selectedCanonicalSliceLayer]);
+
+  useEffect(() => {
+    if (activeTool !== "slice") {
+      setSliceToolPlane(null);
+      return;
+    }
+    if (!selectedCanonicalSliceLayer) {
+      setSliceToolPlane(null);
+      return;
+    }
+    setSliceToolPlane((prev) => prev ?? selectedCanonicalSliceLayer.axisSliceState?.activePlane ?? "xy");
+  }, [activeTool, selectedCanonicalSliceLayer]);
 
   useEffect(() => {
     async function handleWindowDrop(event: DragEvent) {
@@ -676,20 +757,200 @@ export default function App({ startupSlices = [] }: AppProps) {
     []
   );
 
+
+
+  function handleCenterCanonicalSlices() {
+    const targetId = selectedCanonicalSliceLayer?.id;
+    const dims = selectedLayerRuntimeInfo?.dims ?? null;
+    if (!targetId || !dims) return;
+    setLayerTree((prev) =>
+      updateNodeById(prev, targetId, (node) => ({
+        ...node,
+        axisSliceState: {
+          ...node.axisSliceState,
+          xy: Math.round(Math.max(0, dims.z - 1) * 0.5),
+          xz: Math.round(Math.max(0, dims.y - 1) * 0.5),
+          yz: Math.round(Math.max(0, dims.x - 1) * 0.5),
+          activePlane: node.axisSliceState?.activePlane ?? "xy",
+        },
+      }))
+    );
+  }
+
+  function getCanonicalSliceViewState(plane: SlicePlane) {
+    const viewState = selectedCanonicalSliceLayer?.axisSliceViewState?.[plane] as
+      | {
+          flipX?: boolean;
+          flipY?: boolean;
+          flipZ?: boolean;
+          visible?: boolean;
+          rotationDeg?: number;
+          scale?: number;
+        }
+      | undefined;
+    return {
+      flipX: !!viewState?.flipX,
+      flipY: !!viewState?.flipY,
+      flipZ: !!viewState?.flipZ,
+      visible: viewState?.visible !== false,
+      rotationDeg: Number.isFinite(viewState?.rotationDeg) ? Number(viewState?.rotationDeg) : 0,
+      scale: Number.isFinite(viewState?.scale) ? Number(viewState?.scale) : 1,
+    };
+  }
+
+  function getCanonicalSliceToolPlane(): SlicePlane | null {
+    if (!selectedCanonicalSliceLayer) return null;
+    return (
+      sliceToolPlane ??
+      selectedCanonicalSliceLayer.axisSliceState?.activePlane ??
+      "xy"
+    );
+  }
+
+  function handleUpdateCanonicalSliceViewState(
+    plane: SlicePlane,
+    updater: (current: { flipX: boolean; flipY: boolean; flipZ: boolean; visible: boolean; rotationDeg: number; scale: number }) => {
+      flipX?: boolean;
+      flipY?: boolean;
+      flipZ?: boolean;
+      visible?: boolean;
+      rotationDeg?: number;
+      scale?: number;
+    }
+  ) {
+    const targetId = selectedCanonicalSliceLayer?.id;
+    if (!targetId) return;
+    setLayerTree((prev) =>
+      updateNodeById(prev, targetId, (node) => {
+        const current = node.kind === "layer" && node.axisSliceViewState?.[plane]
+          ? node.axisSliceViewState?.[plane]
+          : undefined;
+        const normalized = {
+          flipX: !!current?.flipX,
+          flipY: !!current?.flipY,
+          flipZ: !!current?.flipZ,
+          visible: (current as { visible?: boolean } | undefined)?.visible !== false,
+          rotationDeg: Number.isFinite(current?.rotationDeg) ? Number(current?.rotationDeg) : 0,
+          scale: Number.isFinite(current?.scale) ? Number(current?.scale) : 1,
+        };
+        const next = updater(normalized);
+        return {
+          ...node,
+          axisSliceState: {
+            ...node.axisSliceState,
+            activePlane: plane,
+          },
+          axisSliceViewState: {
+            ...node.axisSliceViewState,
+            [plane]: {
+              ...normalized,
+              ...next,
+            },
+          },
+        };
+      })
+    );
+    setSliceToolPlane(plane);
+  }
+
+  function handleRotateCanonicalSlice(deltaDeg: number) {
+    const plane = getCanonicalSliceToolPlane();
+    if (!plane) return;
+    handleUpdateCanonicalSliceViewState(plane, (current) => ({
+      rotationDeg: ((current.rotationDeg + deltaDeg) % 360 + 360) % 360,
+    }));
+  }
+
+  function handleToggleCanonicalSliceFlip(axis: "x" | "y" | "z") {
+    const plane = getCanonicalSliceToolPlane();
+    if (!plane) return;
+    handleUpdateCanonicalSliceViewState(plane, (current) => {
+      if (axis === "x") return { flipX: !current.flipX };
+      if (axis === "y") return { flipY: !current.flipY };
+      return { flipZ: !current.flipZ };
+    });
+  }
+
+  function handleToggleCanonicalSliceVisibility(plane: SlicePlane) {
+    handleUpdateCanonicalSliceViewState(plane, (current) => ({
+      visible: !current.visible,
+    }));
+    setSliceToolPlane(plane);
+  }
+
+  function handleScaleCanonicalSlice(delta: number) {
+    const plane = getCanonicalSliceToolPlane();
+    if (!plane) return;
+    handleUpdateCanonicalSliceViewState(plane, (current) => ({
+      scale: Math.max(0.05, Math.min(6, Math.round((current.scale + delta) * 1000) / 1000)),
+    }));
+  }
+
+  function handleSetCanonicalSliceRotation(rotationDeg: number) {
+    const plane = getCanonicalSliceToolPlane();
+    if (!plane) return;
+    handleUpdateCanonicalSliceViewState(plane, () => ({
+      rotationDeg,
+    }));
+  }
+
+  function handleSetCanonicalSliceScale(scale: number) {
+    const plane = getCanonicalSliceToolPlane();
+    if (!plane) return;
+    handleUpdateCanonicalSliceViewState(plane, () => ({
+      scale: Math.max(0.05, Math.min(6, Math.round(scale * 1000) / 1000)),
+    }));
+  }
+
+  function handleResetCanonicalSliceView() {
+    const plane = getCanonicalSliceToolPlane();
+    if (!plane) return;
+    handleUpdateCanonicalSliceViewState(plane, () => ({
+      flipX: false,
+      flipY: false,
+      flipZ: false,
+      visible: true,
+      rotationDeg: 0,
+      scale: 1,
+    }));
+  }
+
+  function getScenePointerPlaneLabel(hit: ScenePointerHit | null): string {
+    if (!hit?.plane) return "No plane under pointer";
+    return getCanonicalSlicePlaneLabel(hit.plane);
+  }
+
+
+
+
+
+  const sliceToolTargetPlane = getCanonicalSliceToolPlane();
+  const sliceToolViewState = sliceToolTargetPlane
+    ? getCanonicalSliceViewState(sliceToolTargetPlane)
+    : {
+        flipX: false,
+        flipY: false,
+        flipZ: false,
+        rotationDeg: 0,
+        scale: 1,
+      };
+
   const inspectorPanelContent = (
-    <LayerInspectorPanel
-      selectedNode={selectedNode}
-      selectedAnnotation={selectedAnnotation ?? null}
-      selectedLayerRuntimeInfo={selectedLayerRuntimeInfo}
-      annotationDraft={annotationDraft}
-      isInspectorCollapsed={isInspectorCollapsed}
-      onToggleCollapsed={() => setIsInspectorCollapsed((prev) => !prev)}
-      onRenameNode={handleRenameNode}
-      onUpdateSelectedNodeOpacity={updateSelectedNodeOpacity}
-      onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
-      onResetSelectedNodeTransform={resetSelectedNodeTransform}
-      onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
-    />
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <LayerInspectorPanel
+        selectedNode={selectedNode}
+        selectedAnnotation={selectedAnnotation ?? null}
+        selectedLayerRuntimeInfo={selectedLayerRuntimeInfo}
+        annotationDraft={annotationDraft}
+        isInspectorCollapsed={isInspectorCollapsed}
+        onToggleCollapsed={() => setIsInspectorCollapsed((prev) => !prev)}
+        onRenameNode={handleRenameNode}
+        onUpdateSelectedNodeOpacity={updateSelectedNodeOpacity}
+        onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
+        onResetSelectedNodeTransform={resetSelectedNodeTransform}
+        onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
+      />
+   </div>
   );
 
   const currentViewerState = useMemo(
@@ -1085,7 +1346,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   useEffect(() => {
-    if (selectedNode && isRemoteOmeLayer(selectedNode)) {
+    if (isCanonicalSliceBrowsableLayer(selectedNode)) {
       if (sliceVolumeLayerId !== selectedNode.id) {
         setSliceVolumeLayerId(selectedNode.id);
       }
@@ -1095,22 +1356,21 @@ export default function App({ startupSlices = [] }: AppProps) {
     const currentSliceVolumeNode = sliceVolumeLayerId
       ? findNodeById(layerTree, sliceVolumeLayerId)
       : null;
-    const currentSliceVolumeIsValid =
-      !!currentSliceVolumeNode && isRemoteOmeLayer(currentSliceVolumeNode);
+    const currentSliceVolumeIsValid = isCanonicalSliceBrowsableLayer(currentSliceVolumeNode);
 
     if (currentSliceVolumeIsValid) {
       return;
     }
 
-    if (omeLayers.length > 0) {
-      setSliceVolumeLayerId(omeLayers[0].id);
+    if (sliceBrowsableLayers.length > 0) {
+      setSliceVolumeLayerId(sliceBrowsableLayers[0].id);
       return;
     }
 
     if (sliceVolumeLayerId !== "") {
       setSliceVolumeLayerId("");
     }
-  }, [selectedNode, sliceVolumeLayerId, omeLayers, layerTree]);
+  }, [selectedNode, sliceVolumeLayerId, sliceBrowsableLayers, layerTree]);
 
   useEffect(() => {
     if (hasHydratedHistoryRef.current) return;
@@ -1868,6 +2128,22 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function handleToolChange(tool: ToolId) {
     setActiveTool((prev) => (prev === tool && tool === "slice" ? "mouse" : tool));
+    if (tool !== "slice") {
+      setScenePointerTarget(null);
+    }
+
+    if (tool === "slice") {
+      const preferredLayer =
+        selectedCanonicalSliceLayer ??
+        (sliceVolumeLayerId ? findNodeById(layerTree, sliceVolumeLayerId) : null) ??
+        sliceBrowsableLayers[0] ??
+        null;
+
+      if (isCanonicalSliceBrowsableLayer(preferredLayer)) {
+        setSelectedNodeId(preferredLayer.id);
+        setSliceVolumeLayerId(preferredLayer.id);
+      }
+    }
   }
 
   function handleToggleVisible(nodeId: string) {
@@ -2649,50 +2925,6 @@ export default function App({ startupSlices = [] }: AppProps) {
     });
   }
 
-  function handleCreateSliceFromUi() {
-    if (!sliceVolumeLayerId) return;
-
-    let normalizedParams: SliceLayerParams;
-
-    if (sliceParamsDraft.mode === "oblique") {
-      const nx = Number(sliceParamsDraft.normal.x);
-      const ny = Number(sliceParamsDraft.normal.y);
-      const nz = Number(sliceParamsDraft.normal.z);
-
-      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      if (!Number.isFinite(len) || len < 1e-8) return;
-
-      normalizedParams = {
-        mode: "oblique",
-        normal: {
-          x: nx / len,
-          y: ny / len,
-          z: nz / len,
-        },
-        offset: Number.isFinite(sliceParamsDraft.offset ?? 0)
-          ? sliceParamsDraft.offset ?? 0
-          : 0,
-        width: Math.max(8, Math.round(sliceParamsDraft.width ?? 256)),
-        height: Math.max(8, Math.round(sliceParamsDraft.height ?? 256)),
-        opacity: Math.max(0, Math.min(1, sliceParamsDraft.opacity ?? 0.92)),
-      };
-    } else {
-      normalizedParams = {
-        mode: "axis",
-        plane: sliceParamsDraft.plane,
-        index: Math.round(sliceParamsDraft.index),
-        opacity: Math.max(0, Math.min(1, sliceParamsDraft.opacity ?? 0.92)),
-      };
-    }
-
-    handleAddCustomSlice({
-      volumeLayerId: sliceVolumeLayerId,
-      sliceParams: normalizedParams,
-      name: sliceName.trim() || undefined,
-    });
-
-    setSliceName("");
-  }
 
   function handleClearPersistedViewerState() {
     clearPersistedViewerState();
@@ -2959,9 +3191,25 @@ export default function App({ startupSlices = [] }: AppProps) {
     };
   }, [currentViewerState, historyRevision]);
 
-  function handleRequestResetOrbitCenter() {
+  function handleUpdateAxisSliceState(
+    layerId: string,
+    patch: Partial<NonNullable<LayerItemNode["axisSliceState"]>>
+  ) {
+    setLayerTree((prev) =>
+      updateNodeById(prev, layerId, (node) => ({
+        ...node,
+        axisSliceState: {
+          ...node.axisSliceState,
+          ...patch,
+        },
+      }))
+    );
+  }
+
+  function handleRequestFocusSelectedLayer() {
+    if (!selectedNode || selectedNode.kind !== "layer") return;
     setActiveTool("mouse");
-    setOrbitResetRequestKey((prev) => prev + 1);
+    setFocusSelectedLayerRequestKey((prev) => prev + 1);
   }
 
   return (
@@ -3006,12 +3254,13 @@ export default function App({ startupSlices = [] }: AppProps) {
         onCommitFreehandStroke={handleCommitFreehandStroke}
         onEraseFreehand={handleEraseFreehandStroke}
         onSelectedLayerRuntimeInfoChange={handleSelectedLayerRuntimeInfoChange}
+        onScenePointerTargetChange={setScenePointerTarget}
+        onAxisSliceStateChange={handleUpdateAxisSliceState}
         onCanvasElementChange={handleCanvasElementChange}
         onLocalSceneLoadStateChange={handleLocalSceneLoadStateChange}
         localSceneLoadingActive={localSceneLoadState.active}
-        orbitResetRequestKey={orbitResetRequestKey}
+        focusSelectedLayerRequestKey={focusSelectedLayerRequestKey}
       />
-
 
       <style>{`
         @keyframes local-load-indeterminate {
@@ -3099,6 +3348,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       <LayerPanel
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
+        activeTool={activeTool}
         groupOptions={groupOptions}
         detailsContent={inspectorPanelContent}
         isDetailsCollapsed={isInspectorCollapsed}
@@ -3203,7 +3453,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onToolChange={handleToolChange}
         cameraMode={cameraState.mode}
         onCameraModeChange={handleCameraModeChange}
-        onResetOrbitCenter={handleRequestResetOrbitCenter}
+        onFocusSelectedLayer={handleRequestFocusSelectedLayer}
         onSaveCurrentViewer={handleSaveCurrentViewerToLibrary}
         canUndo={canUndo}
         canRedo={canRedo}
@@ -3215,8 +3465,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         redoItems={redoItems}
         onJumpUndo={handleJumpUndo}
         onJumpRedo={handleJumpRedo}
-        slicePopoverOpen={activeTool === "slice"}
-        onRequestCloseSlicePopover={() => setActiveTool("mouse")}
         statePopoverOpen={false}
         onRequestCloseStatePopover={() => setIsStateDialogOpen(false)}
         accountPopoverOpen={false}
@@ -3235,110 +3483,30 @@ export default function App({ startupSlices = [] }: AppProps) {
         onAnnotationDepthChange={handleAnnotationDraftDepthChange}
         onAnnotationEraseModeChange={(mode) => setAnnotationDraft((prev) => ({ ...prev, eraseMode: mode }))}
         onAnnotationPickColorFromScreen={handlePickAnnotationColorFromScreen}
-        slicePopoverContent={
-          omeLayers.length > 0 ? (
-            <div data-slice-tool="true" style={{ fontFamily: "sans-serif" }}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "92px 1fr",
-                  gap: 8,
-                  alignItems: "center",
-                  marginBottom: 12,
-                }}
-              >
-                <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.8 }}>Volume</div>
-                <select
-                  value={sliceVolumeLayerId}
-                  onChange={(e) => setSliceVolumeLayerId(e.target.value)}
-                  style={{
-                    height: 32,
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(255,255,255,0.06)",
-                    color: "white",
-                    padding: "0 8px",
-                  }}
-                >
-                  {omeLayers.map((layer) => (
-                    <option key={layer.id} value={layer.id} style={{ color: "inherit" }}>
-                      {layer.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ marginBottom: 12 }}>
-                <SliceToolPopover value={sliceParamsDraft} onChange={setSliceParamsDraft} />
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "92px 1fr",
-                  gap: 8,
-                  alignItems: "center",
-                  marginBottom: 12,
-                }}
-              >
-                <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.8 }}>Name</div>
-                <input
-                  value={sliceName}
-                  onChange={(e) => setSliceName(e.target.value)}
-                  placeholder="Optional custom name"
-                  style={{
-                    height: 32,
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(255,255,255,0.06)",
-                    color: "white",
-                    padding: "0 10px",
-                    outline: "none",
-                  }}
-                />
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  alignItems: "center",
-                  marginTop: 12,
-                  gap: 10,
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={handleCreateSliceFromUi}
-                  style={{
-                    height: 34,
-                    padding: "0 12px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.10)",
-                    background: "rgba(120,190,255,0.18)",
-                    color: "white",
-                    cursor: "pointer",
-                    fontWeight: 600,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  Add Slice Layer
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div
-              style={{
-                fontFamily: "sans-serif",
-                fontSize: 13,
-                opacity: 0.8,
-                lineHeight: 1.5,
-              }}
-            >
-              Import an OME-Zarr volume first to create slice layers.
-            </div>
-          )
+        sliceSelectedLayerName={selectedCanonicalSliceLayer?.name ?? null}
+        sliceTargetPlane={sliceToolTargetPlane}
+        sliceHoveredPlane={
+          scenePointerTarget?.plane &&
+          selectedCanonicalSliceLayer &&
+          scenePointerTarget.layerId === selectedCanonicalSliceLayer.id
+            ? scenePointerTarget.plane
+            : null
         }
+        sliceCanResetToCenter={!!selectedCanonicalSliceLayer && !!selectedLayerRuntimeInfo?.dims}
+        sliceRotationDeg={sliceToolViewState.rotationDeg}
+        sliceScale={sliceToolViewState.scale}
+        sliceFlipX={sliceToolViewState.flipX}
+        sliceFlipY={sliceToolViewState.flipY}
+        sliceFlipZ={sliceToolViewState.flipZ}
+        sliceVisibilityXY={getCanonicalSliceViewState("xy").visible}
+        sliceVisibilityXZ={getCanonicalSliceViewState("xz").visible}
+        sliceVisibilityYZ={getCanonicalSliceViewState("yz").visible}
+        onSliceToggleVisibility={handleToggleCanonicalSliceVisibility}
+        onSliceResetView={handleResetCanonicalSliceView}
+        onSliceToggleFlip={handleToggleCanonicalSliceFlip}
+        onSliceResetToCenter={handleCenterCanonicalSlices}
+        onSliceRotate={handleRotateCanonicalSlice}
+        onSliceScale={handleScaleCanonicalSlice}
       />
     </div>
   );

@@ -26,6 +26,16 @@ export type SliceLayerParams =
   | AxisSliceLayerParams
   | ObliqueSliceLayerParams;
 
+export type AxisSliceViewTransform = {
+  flipX?: boolean;
+  flipY?: boolean;
+  flipZ?: boolean;
+  rotationDeg?: number;
+  scale?: number;
+};
+
+export type AxisSliceViewState = Partial<Record<SlicePlane, AxisSliceViewTransform>>;
+
 export type CustomSliceSource = {
   volumeLayerId: string;
 };
@@ -173,6 +183,10 @@ export type LayerItemNode = BaseNode & {
 
   // For custom slices
   sliceParams?: SliceLayerParams;
+
+  // For interactive canonical slice browsing on slice-rendered volume layers
+  axisSliceState?: AxisSliceNavigationState;
+  axisSliceViewState?: AxisSliceViewState;
 
   // For browser-hosted local uploads
   localOnly?: boolean;

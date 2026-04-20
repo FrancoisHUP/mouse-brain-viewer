@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { CameraControlMode } from "./viewerState";
-import type { AnnotationShape } from "./layerTypes";
+import type { AnnotationShape, SlicePlane } from "./layerTypes";
 
 declare global {
   interface Window {
@@ -37,7 +37,7 @@ type ToolDefinition = {
 const TOOLS: ToolDefinition[] = [
   { id: "mouse", label: "Move" },
   { id: "pencil", label: "Draw" },
-  { id: "slice", label: "Slice" },
+  { id: "slice", label: "Browse slices" },
 ];
 
 const CAMERA_MODE_OPTIONS: Array<{
@@ -98,12 +98,17 @@ function Icon({ id }: { id: ToolId }) {
       );
     case "slice":
       return (
-        <svg {...common}>
-          <circle cx="6.5" cy="7.5" r="2.2" />
-          <circle cx="6.5" cy="16.5" r="2.2" />
-          <path d="M8.2 8.9L19 4" />
-          <path d="M8.2 15.1L19 20" />
-          <path d="M11.5 12L19 12" />
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M12 4.5l6 3.5-6 3.5-6-3.5 6-3.5z" />
+          <path d="M6 8v8l6 3.5 6-3.5V8" />
+          <path d="M12 11.5v8" />
         </svg>
       );
     case "data":
@@ -235,6 +240,51 @@ function HistoryIcon({ direction }: { direction: "undo" | "redo" }) {
   );
 }
 
+function RecenterIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="1.6" />
+      <path d="M12 2.75v3.75" />
+      <path d="M9.9 5.1L12 7.2 14.1 5.1" />
+      <path d="M21.25 12h-3.75" />
+      <path d="M18.9 9.9L16.8 12 18.9 14.1" />
+      <path d="M12 21.25v-3.75" />
+      <path d="M9.9 18.9L12 16.8 14.1 18.9" />
+      <path d="M2.75 12h3.75" />
+      <path d="M5.1 9.9L7.2 12 5.1 14.1" />
+    </svg>
+  );
+}
+
+function ResetTransformIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 11a8 8 0 10-2.34 5.66" />
+      <path d="M20 4v7h-7" />
+    </svg>
+  );
+}
+
 function ToolButton({ id, label, active, onClick }: { id: ToolId; label: string; active: boolean; onClick: () => void; }) {
   return (
     <button
@@ -261,7 +311,7 @@ function ToolButton({ id, label, active, onClick }: { id: ToolId; label: string;
   );
 }
 
-function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange, onResetOrbitCenter }: { active: boolean; cameraMode: CameraControlMode; onClick: () => void; onCameraModeChange: (mode: CameraControlMode) => void; onResetOrbitCenter?: () => void; }) {
+function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange, onFocusSelectedLayer }: { active: boolean; cameraMode: CameraControlMode; onClick: () => void; onCameraModeChange: (mode: CameraControlMode) => void; onFocusSelectedLayer?: () => void; }) {
   const [isHovered, setIsHovered] = useState(false);
   const showMenu = isHovered;
   return (
@@ -307,7 +357,7 @@ function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange, onRes
           <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "2px 0" }} />
           <button
             type="button"
-            onClick={() => { onClick(); onResetOrbitCenter?.(); }}
+            onClick={() => { onClick(); onFocusSelectedLayer?.(); }}
             style={{
               textAlign: "left",
               borderRadius: 12,
@@ -316,11 +366,486 @@ function MoveToolButton({ active, cameraMode, onClick, onCameraModeChange, onRes
               color: "white",
               padding: "10px 12px",
               cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
             }}
           >
-            <div style={{ fontSize: 13, fontWeight: 700 }}>Recenter orbit</div>
-            <div style={{ fontSize: 11, opacity: 0.68, marginTop: 4 }}>Smooth move back to the scene center.</div>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              style={{ flexShrink: 0, opacity: 0.92 }}
+            >
+              <path d="M9 4H5v4" />
+              <path d="M15 4h4v4" />
+              <path d="M20 15v4h-4" />
+              <path d="M4 15v4h4" />
+              <rect x="9" y="9" width="6" height="6" rx="1.2" />
+            </svg>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Focus selected layer</div>
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function getCanonicalSlicePlaneLabel(plane: SlicePlane): string {
+  if (plane === "xy") return "Axial (XY)";
+  if (plane === "xz") return "Coronal (XZ)";
+  return "Sagittal (YZ)";
+}
+
+function getCanonicalSlicePlaneCompactLabel(plane: SlicePlane): string {
+  if (plane === "xy") return "XY";
+  if (plane === "xz") return "XZ";
+  return "YZ";
+}
+
+function SliceToolPanel({
+  selectedLayerName,
+  targetPlane,
+  hoveredPlane,
+  hasSelectedLayer,
+  canResetToCenter,
+  canAdjustView,
+  rotationDeg,
+  scale,
+  flipX,
+  flipY,
+  flipZ,
+  visibilityXY,
+  visibilityXZ,
+  visibilityYZ,
+  onToggleVisibility,
+  onResetSliceView,
+  onToggleFlip,
+  onResetToCenter,
+  onRotate,
+  onScale,
+}: {
+  selectedLayerName: string | null;
+  targetPlane: SlicePlane | null;
+  hoveredPlane: SlicePlane | null;
+  hasSelectedLayer: boolean;
+  canResetToCenter: boolean;
+  canAdjustView: boolean;
+  rotationDeg: number;
+  scale: number;
+  flipX: boolean;
+  flipY: boolean;
+  flipZ: boolean;
+  visibilityXY: boolean;
+  visibilityXZ: boolean;
+  visibilityYZ: boolean;
+  onToggleVisibility: (plane: SlicePlane) => void;
+  onResetSliceView: () => void;
+  onToggleFlip: (axis: "x" | "y" | "z") => void;
+  onResetToCenter: () => void;
+  onRotate: (deltaDeg: number) => void;
+  onScale: (delta: number) => void;
+}) {
+  return (
+    <div
+      style={{
+        minWidth: 320,
+        maxWidth: 620,
+        borderRadius: 14,
+        color: "white",
+        fontFamily: "sans-serif",
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div
+          aria-hidden="true"
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            background: hoveredPlane ? "rgba(120,200,255,0.95)" : "rgba(255,255,255,0.30)",
+            boxShadow: hoveredPlane ? "0 0 0 4px rgba(120,200,255,0.16)" : "none",
+            flexShrink: 0,
+          }}
+        />
+        <div
+          data-theme-text="strong"
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            lineHeight: 1.35,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            width: "100%",
+          }}
+        >
+          <span>
+            {hasSelectedLayer && targetPlane
+              ? `${getCanonicalSlicePlaneLabel(targetPlane)} · ${selectedLayerName ?? ""}`
+              : hoveredPlane
+                ? getCanonicalSlicePlaneLabel(hoveredPlane)
+                : "No plane under pointer"}
+          </span>
+          <button
+            type="button"
+            onClick={onResetToCenter}
+            disabled={!canResetToCenter}
+            title="Reset to center"
+            aria-label="Reset to center"
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(255,255,255,0.05)",
+              color: "inherit",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: canResetToCenter ? "pointer" : "default",
+              opacity: canResetToCenter ? 1 : 0.5,
+              flexShrink: 0,
+            }}
+          >
+            <RecenterIcon />
+          </button>
+        </div>
+      </div>
+
+      <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.76, lineHeight: 1.4 }}>
+        {hasSelectedLayer
+          ? hoveredPlane
+            ? "Drag to move this plane, use the mouse wheel to browse slices, then adjust the view here."
+            : "Select a layer and hover a plane to target it."
+          : "Select a slice-rendered layer in the layer panel to browse and adjust its canonical planes."}
+      </div>
+
+      {hasSelectedLayer && targetPlane ? (
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <span
+              data-theme-text="strong"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                minHeight: 28,
+                padding: "0 10px",
+                borderRadius: 999,
+                border: "1px solid rgba(120,200,255,0.28)",
+                background: "rgba(120,200,255,0.10)",
+                fontSize: 11,
+                fontWeight: 700,
+              }}
+            >
+              {getCanonicalSlicePlaneCompactLabel(targetPlane)}
+            </span>
+            <span
+              data-theme-text="default"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                minHeight: 28,
+                padding: "0 10px",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                fontSize: 11,
+                fontWeight: 600,
+              }}
+            >
+              Rotation {rotationDeg.toFixed(1)}°
+            </span>
+            <span
+              data-theme-text="default"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                minHeight: 28,
+                padding: "0 10px",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                fontSize: 11,
+                fontWeight: 600,
+              }}
+            >
+              Scale {scale.toFixed(2)}×
+            </span>
+            <button
+              type="button"
+              onClick={onResetSliceView}
+              disabled={!canAdjustView}
+              title="Reset slice view"
+              aria-label="Reset slice view"
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                color: "inherit",
+                cursor: canAdjustView ? "pointer" : "default",
+                opacity: canAdjustView ? 1 : 0.5,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <ResetTransformIcon />
+            </button>
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.76, minWidth: 58 }}>
+              Flip
+            </span>
+            {([
+              ["x", "X", flipX],
+              ["y", "Y", flipY],
+              ["z", "Z", flipZ],
+            ] as const).map(([axis, label, isActive]) => (
+              <button
+                key={axis}
+                type="button"
+                onClick={() => onToggleFlip(axis)}
+                disabled={!canAdjustView}
+                title={axis === "z" ? "Reverse the slice browsing direction for this plane" : `Flip ${label}`}
+                aria-label={axis === "z" ? "Flip Z" : `Flip ${label}`}
+                style={{
+                  minWidth: 30,
+                  height: 30,
+                  padding: "0 10px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: isActive ? "rgba(80,160,255,0.18)" : "rgba(255,255,255,0.05)",
+                  color: "inherit",
+                  cursor: canAdjustView ? "pointer" : "default",
+                  opacity: canAdjustView ? 1 : 0.5,
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.76, minWidth: 58 }}>
+              Visibility
+            </span>
+            {([
+              ["xy", "XY", visibilityXY],
+              ["xz", "XZ", visibilityXZ],
+              ["yz", "YZ", visibilityYZ],
+            ] as const).map(([planeId, label, isVisible]) => (
+              <button
+                key={planeId}
+                type="button"
+                onClick={() => onToggleVisibility(planeId)}
+                style={{
+                  minWidth: 42,
+                  height: 30,
+                  padding: "0 10px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: isVisible ? "rgba(80,160,255,0.18)" : "rgba(255,255,255,0.05)",
+                  color: "inherit",
+                  cursor: "pointer",
+                  opacity: 1,
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+                title={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
+                aria-label={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+              <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.76, minWidth: 58 }}>
+                Rotation
+              </span>
+              {[-90, -10, -1, 1, 10, 90].map((step) => (
+                <button
+                  key={step}
+                  type="button"
+                  onClick={() => onRotate(step)}
+                  disabled={!canAdjustView}
+                  style={{
+                    height: 30,
+                    padding: "0 10px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(255,255,255,0.05)",
+                    color: "inherit",
+                    cursor: canAdjustView ? "pointer" : "default",
+                    opacity: canAdjustView ? 1 : 0.5,
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                >
+                  {step > 0 ? `+${step}°` : `${step}°`}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+              <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.76, minWidth: 58 }}>
+                Scale
+              </span>
+              {[-0.10, -0.01, 0.01, 0.10].map((step) => (
+                <button
+                  key={step}
+                  type="button"
+                  onClick={() => onScale(step)}
+                  disabled={!canAdjustView}
+                  style={{
+                    height: 30,
+                    padding: "0 10px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(255,255,255,0.05)",
+                    color: "inherit",
+                    cursor: canAdjustView ? "pointer" : "default",
+                    opacity: canAdjustView ? 1 : 0.5,
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                >
+                  {step > 0 ? `+${step.toFixed(2)}` : step.toFixed(2)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SliceToolButton({
+  active,
+  onClick,
+  selectedLayerName,
+  targetPlane,
+  hoveredPlane,
+  hasSelectedLayer,
+  canResetToCenter,
+  canAdjustView,
+  rotationDeg,
+  scale,
+  flipX,
+  flipY,
+  flipZ,
+  visibilityXY,
+  visibilityXZ,
+  visibilityYZ,
+  onToggleVisibility,
+  onResetSliceView,
+  onToggleFlip,
+  onResetToCenter,
+  onRotate,
+  onScale,
+}: {
+  active: boolean;
+  onClick: () => void;
+  selectedLayerName: string | null;
+  targetPlane: SlicePlane | null;
+  hoveredPlane: SlicePlane | null;
+  hasSelectedLayer: boolean;
+  canResetToCenter: boolean;
+  canAdjustView: boolean;
+  rotationDeg: number;
+  scale: number;
+  flipX: boolean;
+  flipY: boolean;
+  flipZ: boolean;
+  visibilityXY: boolean;
+  visibilityXZ: boolean;
+  visibilityYZ: boolean;
+  onToggleVisibility: (plane: SlicePlane) => void;
+  onResetSliceView: () => void;
+  onToggleFlip: (axis: "x" | "y" | "z") => void;
+  onResetToCenter: () => void;
+  onRotate: (deltaDeg: number) => void;
+  onScale: (delta: number) => void;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const showMenu = isHovered;
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <ToolButton id="slice" label="Browse slices" active={active} onClick={onClick} />
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: "100%",
+          paddingBottom: 12,
+          transform: showMenu ? "translate(-50%, 0)" : "translate(-50%, 8px)",
+          opacity: showMenu ? 1 : 0,
+          visibility: showMenu ? "visible" : "hidden",
+          pointerEvents: showMenu ? "auto" : "none",
+          transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
+          zIndex: 40,
+        }}
+      >
+        <div
+          data-theme-surface="panel"
+          onPointerDownCapture={() => onClick()}
+          style={{
+            minWidth: 420,
+            maxWidth: 620,
+            borderRadius: 18,
+            background: "rgba(12,14,18,0.90)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
+            backdropFilter: "blur(14px)",
+            padding: 12,
+            color: "white",
+          }}
+        >
+          <SliceToolPanel
+            selectedLayerName={selectedLayerName}
+            targetPlane={targetPlane}
+            hoveredPlane={hoveredPlane}
+            hasSelectedLayer={hasSelectedLayer}
+            canResetToCenter={canResetToCenter}
+            canAdjustView={canAdjustView}
+            rotationDeg={rotationDeg}
+            scale={scale}
+            flipX={flipX}
+            flipY={flipY}
+            flipZ={flipZ}
+            visibilityXY={visibilityXY}
+            visibilityXZ={visibilityXZ}
+            visibilityYZ={visibilityYZ}
+            onToggleVisibility={onToggleVisibility}
+            onResetSliceView={onResetSliceView}
+            onToggleFlip={onToggleFlip}
+            onResetToCenter={onResetToCenter}
+            onRotate={onRotate}
+            onScale={onScale}
+          />
         </div>
       </div>
     </div>
@@ -736,13 +1261,33 @@ function PencilToolButton({
                     style={{
                       width: 24,
                       height: 24,
+                      padding: 0,
                       borderRadius: 999,
                       border: selected ? "2px solid rgba(255,255,255,0.95)" : "1px solid rgba(255,255,255,0.18)",
-                      background: swatch,
+                      background: "transparent",
                       boxShadow: selected ? "0 0 0 2px rgba(120,190,255,0.34)" : "none",
                       cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      appearance: "none",
+                      WebkitAppearance: "none",
                     }}
-                  />
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 16,
+                        height: 16,
+                        borderRadius: 999,
+                        background: swatch,
+                        display: "block",
+                        boxShadow: swatch.toLowerCase() === "#ffffff"
+                          ? "inset 0 0 0 1px rgba(24,33,43,0.22)"
+                          : "none",
+                      }}
+                    />
+                  </button>
                 );
               })}
             </div>
@@ -765,13 +1310,33 @@ function PencilToolButton({
                       style={{
                         width: 22,
                         height: 22,
+                        padding: 0,
                         borderRadius: 999,
                         border: selected ? "2px solid rgba(160,220,255,0.95)" : "1px solid rgba(255,255,255,0.14)",
-                        background: swatch,
+                        background: "transparent",
                         cursor: "pointer",
                         opacity: 0.95,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        appearance: "none",
+                        WebkitAppearance: "none",
                       }}
-                    />
+                    >
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: 999,
+                          background: swatch,
+                          display: "block",
+                          boxShadow: swatch.toLowerCase() === "#ffffff"
+                            ? "inset 0 0 0 1px rgba(24,33,43,0.22)"
+                            : "none",
+                        }}
+                      />
+                    </button>
                   );
                 })}
               </div>
@@ -868,7 +1433,28 @@ function SaveToolButton({ open, onClick, content }: { open: boolean; onClick: ()
         }}
       >
         <div data-theme-surface="panel" style={{ minWidth: 280, maxWidth: 340, borderRadius: 16, background: "rgba(12,14,18,0.96)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
-          {content}
+          <SliceToolPanel
+            selectedLayerName={selectedLayerName}
+            targetPlane={targetPlane}
+            hoveredPlane={hoveredPlane}
+            hasSelectedLayer={hasSelectedLayer}
+            canResetToCenter={canResetToCenter}
+            canAdjustView={canAdjustView}
+            rotationDeg={rotationDeg}
+            scale={scale}
+            flipX={flipX}
+            flipY={flipY}
+            flipZ={flipZ}
+            visibilityXY={visibilityXY}
+            visibilityXZ={visibilityXZ}
+            visibilityYZ={visibilityYZ}
+            onToggleVisibility={onToggleVisibility}
+            onResetSliceView={onResetSliceView}
+            onToggleFlip={onToggleFlip}
+            onResetToCenter={onResetToCenter}
+            onRotate={onRotate}
+            onScale={onScale}
+          />
         </div>
       </div>
     </div>
@@ -914,19 +1500,34 @@ export default function BottomToolbar({
   onToolChange,
   cameraMode,
   onCameraModeChange,
-  onResetOrbitCenter,
+  onFocusSelectedLayer,
   onSaveCurrentViewer,
   saveNoticeOpen = false,
   saveNoticeContent = null,
   onRequestCloseSaveNotice,
-  slicePopoverOpen = false,
-  slicePopoverContent = null,
-  onRequestCloseSlicePopover,
   statePopoverOpen = false,
   statePopoverContent = null,
   onRequestCloseStatePopover,
   accountPopoverOpen = false,
   shareBlockedLayerNames = [],
+  sliceSelectedLayerName = null,
+  sliceTargetPlane = null,
+  sliceHoveredPlane = null,
+  sliceCanResetToCenter = false,
+  sliceRotationDeg = 0,
+  sliceScale = 1,
+  sliceFlipX = false,
+  sliceFlipY = false,
+  sliceFlipZ = false,
+  sliceVisibilityXY = true,
+  sliceVisibilityXZ = true,
+  sliceVisibilityYZ = true,
+  onSliceToggleVisibility = () => {},
+  onSliceResetView,
+  onSliceToggleFlip,
+  onSliceResetToCenter,
+  onSliceRotate,
+  onSliceScale,
   annotationShape,
   annotationColor,
   annotationOpacity,
@@ -957,14 +1558,29 @@ export default function BottomToolbar({
   onToolChange: (tool: ToolId) => void;
   cameraMode: CameraControlMode;
   onCameraModeChange: (mode: CameraControlMode) => void;
-  onResetOrbitCenter?: () => void;
+  onFocusSelectedLayer?: () => void;
   onSaveCurrentViewer?: () => void;
   saveNoticeOpen?: boolean;
   saveNoticeContent?: ReactNode;
   onRequestCloseSaveNotice?: () => void;
-  slicePopoverOpen?: boolean;
-  slicePopoverContent?: ReactNode;
-  onRequestCloseSlicePopover?: () => void;
+  sliceSelectedLayerName?: string | null;
+  sliceTargetPlane?: SlicePlane | null;
+  sliceHoveredPlane?: SlicePlane | null;
+  sliceCanResetToCenter?: boolean;
+  sliceRotationDeg?: number;
+  sliceScale?: number;
+  sliceFlipX?: boolean;
+  sliceFlipY?: boolean;
+  sliceFlipZ?: boolean;
+  sliceVisibilityXY?: boolean;
+  sliceVisibilityXZ?: boolean;
+  sliceVisibilityYZ?: boolean;
+  onSliceToggleVisibility?: (plane: SlicePlane) => void;
+  onSliceResetView?: () => void;
+  onSliceToggleFlip?: (axis: "x" | "y" | "z") => void;
+  onSliceResetToCenter?: () => void;
+  onSliceRotate?: (deltaDeg: number) => void;
+  onSliceScale?: (delta: number) => void;
   statePopoverOpen?: boolean;
   statePopoverContent?: ReactNode;
   onRequestCloseStatePopover?: () => void;
@@ -999,22 +1615,20 @@ export default function BottomToolbar({
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!saveNoticeOpen && !slicePopoverOpen && !statePopoverOpen) return;
+    if (!saveNoticeOpen && !statePopoverOpen) return;
 
     function handlePointerDown(event: PointerEvent) {
       const target = event.target as Node | null;
       if (!target) return;
       if (rootRef.current?.contains(target)) return;
       onRequestCloseSaveNotice?.();
-      onRequestCloseSlicePopover?.();
       onRequestCloseStatePopover?.();
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         onRequestCloseSaveNotice?.();
-        onRequestCloseSlicePopover?.();
-        onRequestCloseStatePopover?.();
+          onRequestCloseStatePopover?.();
       }
     }
 
@@ -1024,20 +1638,19 @@ export default function BottomToolbar({
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [saveNoticeOpen, slicePopoverOpen, statePopoverOpen, onRequestCloseSaveNotice, onRequestCloseSlicePopover, onRequestCloseStatePopover]);
+  }, [saveNoticeOpen, statePopoverOpen, onRequestCloseSaveNotice, onRequestCloseStatePopover]);
 
   const toolbarButtons = useMemo(
     () =>
       TOOLS.map((tool) => {
         const isActive =
           activeTool === tool.id ||
-          (tool.id === "slice" && slicePopoverOpen) ||
           (tool.id === "export" && statePopoverOpen) ||
           (tool.id === "account" && accountPopoverOpen) ||
           (tool.id === "save" && saveNoticeOpen);
 
         if (tool.id === "mouse") {
-          return <MoveToolButton key={tool.id} active={isActive} cameraMode={cameraMode} onClick={() => onToolChange(tool.id)} onCameraModeChange={onCameraModeChange} onResetOrbitCenter={onResetOrbitCenter} />;
+          return <MoveToolButton key={tool.id} active={isActive} cameraMode={cameraMode} onClick={() => onToolChange(tool.id)} onCameraModeChange={onCameraModeChange} onFocusSelectedLayer={onFocusSelectedLayer} />;
         }
 
         if (tool.id === "pencil") {
@@ -1070,9 +1683,39 @@ export default function BottomToolbar({
           return <SaveToolButton key={tool.id} open={saveNoticeOpen} onClick={() => onSaveCurrentViewer?.()} content={saveNoticeContent} />;
         }
 
+        if (tool.id === "slice") {
+          return (
+            <SliceToolButton
+              key={tool.id}
+              active={activeTool === "slice"}
+              onClick={() => onToolChange(tool.id)}
+              selectedLayerName={sliceSelectedLayerName}
+              targetPlane={sliceTargetPlane}
+              hoveredPlane={sliceHoveredPlane}
+              hasSelectedLayer={!!sliceSelectedLayerName}
+              canResetToCenter={sliceCanResetToCenter}
+              canAdjustView={!!sliceSelectedLayerName && !!sliceTargetPlane}
+              rotationDeg={sliceRotationDeg}
+              scale={sliceScale}
+              flipX={sliceFlipX}
+              flipY={sliceFlipY}
+              flipZ={sliceFlipZ}
+              visibilityXY={sliceVisibilityXY}
+              visibilityXZ={sliceVisibilityXZ}
+              visibilityYZ={sliceVisibilityYZ}
+              onToggleVisibility={onSliceToggleVisibility}
+              onResetSliceView={onSliceResetView}
+              onToggleFlip={onSliceToggleFlip}
+              onResetToCenter={onSliceResetToCenter}
+              onRotate={onSliceRotate}
+              onScale={onSliceScale}
+            />
+          );
+        }
+
         return <ToolButton key={tool.id} id={tool.id} label={tool.label} active={isActive} onClick={() => onToolChange(tool.id)} />;
       }),
-    [activeTool, slicePopoverOpen, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onResetOrbitCenter, onSaveCurrentViewer, onToolChange, saveNoticeContent, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
+    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
   );
 
   return (
@@ -1085,7 +1728,7 @@ export default function BottomToolbar({
         .history-menu-scroll::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, rgba(160,210,255,0.68), rgba(110,170,245,0.48)); }
       `}</style>
       <div ref={rootRef} style={{ position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)", zIndex: 30 }}>
-        <div style={{ position: "absolute", left: "50%", bottom: slicePopoverOpen ? "calc(100% + 260px)" : "calc(100% + 12px)", transform: statePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)", opacity: statePopoverOpen ? 1 : 0, pointerEvents: statePopoverOpen ? "auto" : "none", transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease", visibility: statePopoverOpen ? "visible" : "hidden" }}>
+        <div style={{ position: "absolute", left: "50%", bottom: "calc(100% + 12px)", transform: statePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)", opacity: statePopoverOpen ? 1 : 0, pointerEvents: statePopoverOpen ? "auto" : "none", transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease", visibility: statePopoverOpen ? "visible" : "hidden" }}>
           <div data-theme-surface="panel" style={{ minWidth: 520, maxWidth: 760, borderRadius: 18, background: "rgba(12,14,18,0.94)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
             {shareBlockedLayerNames.length > 0 ? (
               <div
@@ -1145,11 +1788,8 @@ export default function BottomToolbar({
           </div>
         </div>
 
-        <div style={{ position: "absolute", left: "50%", bottom: "calc(100% + 12px)", transform: slicePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)", opacity: slicePopoverOpen ? 1 : 0, pointerEvents: slicePopoverOpen ? "auto" : "none", transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease", visibility: slicePopoverOpen ? "visible" : "hidden" }}>
-          <div data-theme-surface="panel" style={{ minWidth: 420, maxWidth: 520, borderRadius: 18, background: "rgba(12,14,18,0.90)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
-            {slicePopoverContent}
-          </div>
-        </div>
+
+
 
         <div data-theme-surface="panel" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 18, background: "rgba(12,14,18,0.78)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 10px 30px rgba(0,0,0,0.35)", backdropFilter: "blur(12px)" }}>
           <HistoryButton direction="undo" disabled={!canUndo} onClick={() => onUndo?.()} items={undoItems} onJump={onJumpUndo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
