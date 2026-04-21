@@ -1,77 +1,102 @@
-# React + TypeScript + Vite
+# Mouse Brain Viewer
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A web-based 3D viewer for exploring mouse brain data in the browser.
 
-Currently, two official plugins are available:
+This project is designed to visualize volumetric brain data, meshes, slices, and annotations in an interactive scene. It is built with React, TypeScript, Vite, and WebGL, with a strong focus on loading scientific imaging data directly in the browser and giving users practical tools to inspect and manipulate layers.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What this project does
 
-## React Compiler
+The viewer lets users:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- load and visualize 3D brain volumes
+- display canonical slice views and custom slices
+- render meshes in the same 3D scene
+- add and edit annotations
+- manage data through a layer panel with grouping, visibility, and ordering
+- save, restore, and share viewer state
+- work with both remote datasets and browser-local datasets
 
-## Expanding the ESLint configuration
+The goal is to provide a practical interface for exploring mouse brain imaging data in a way that is visual, interactive, and accessible from the web.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Main features
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- **3D WebGL viewer**
+  - interactive camera controls
+  - fly and orbit navigation
+  - scene selection tools
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+- **Layer system**
+  - hierarchical groups
+  - drag and drop reordering
+  - multi-selection support
+  - visibility toggles
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+- **Data support**
+  - remote OME-Zarr volumes
+  - local browser-hosted volume data
+  - mesh layers
+  - custom slice layers
+
+- **Annotation tools**
+  - points
+  - lines
+  - rectangles
+  - circles
+  - freehand drawing
+  - eraser
+
+- **State and sharing**
+  - viewer history
+  - saved viewer library
+  - import/export of viewer state
+  - shareable viewer links for serializable scenes
+
+## Tech stack
+
+- React
+- TypeScript
+- Vite
+- WebGL
+- gl-matrix
+
+## Local development
+
+Install dependencies:
+
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Start the development server:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev
 ```
 
-Available routes : 
-viewer : localhost:5173/
-external embed : localhost:5173/externalembedding
+Build for production:
+
+```bash
+npm run build
+```
+
+Preview the production build locally:
+
+```bash
+npm run preview
+```
+
+## Notes
+
+Some datasets can be loaded from remote sources, while others are stored only in the browser and are not shareable across devices.
+
+The project includes tools for scientific data exploration, so some features are designed around slice navigation, orientation handling, and local dataset management.
+
+## Status
+
+This project is under active development, and the viewer continues to evolve with new interaction tools, UI improvements, and data handling features.
+
+## License
+
+This project is licensed under the MIT License.
+
+Note: external datasets, scientific assets, and other third-party resources used with this viewer may be subject to their own separate licenses and terms of use.
