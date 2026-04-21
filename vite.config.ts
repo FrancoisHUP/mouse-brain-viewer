@@ -6,7 +6,7 @@ const appCommitSha =
   process.env.CF_PAGES_COMMIT_SHA ||
   process.env.GITHUB_SHA ||
   "dev";
-const appRepoUrl = (process.env.VITE_GITHUB_REPO_URL || "").replace(/\/$/, "");
+const appRepoUrl = "https://github.com/FrancoisHUP/mouse-brain-viewer".replace(/\/$/, "");
 
 // https://vite.dev/config/
 export default defineConfig({
