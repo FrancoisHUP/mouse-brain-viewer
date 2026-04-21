@@ -11,6 +11,8 @@ export default function VersionBadge({
   commitUrl: string | null;
   theme: "light" | "gray" | "dark";
 }) {
+  const isRepoFallback = !!commitUrl && commitSha === "dev";
+
   const containerStyle = {
     position: "fixed" as const,
     right: 12,
@@ -45,16 +47,18 @@ export default function VersionBadge({
     transition: "background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease",
   };
 
+  const linkTitle = !commitUrl
+    ? "Git commit unavailable in local development"
+    : isRepoFallback
+      ? "Open repository"
+      : `Open deployed commit ${commitSha}`;
+
   const content = (
     <>
       <span title={`Viewer version ${version}`}>v{version}</span>
       <span style={{ opacity: 0.22 }}>•</span>
       <span
-        title={
-          commitUrl
-            ? `Open deployed commit ${commitSha}`
-            : "Git commit unavailable in local development"
-        }
+        title={linkTitle}
         style={{
           opacity: commitUrl ? 1 : 0.5,
           fontWeight: 500,
@@ -71,7 +75,7 @@ export default function VersionBadge({
         href={commitUrl}
         target="_blank"
         rel="noreferrer"
-        title={`Open deployed commit ${commitSha}`}
+        title={linkTitle}
         style={containerStyle}
       >
         {content}

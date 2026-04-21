@@ -281,9 +281,11 @@ const APP_COMMIT_SHA = __APP_COMMIT_SHA__ || "dev";
 const APP_REPO_URL = __APP_REPO_URL__ || "";
 const APP_COMMIT_SHORT = APP_COMMIT_SHA === "dev" ? "dev" : APP_COMMIT_SHA.slice(0, 7);
 const APP_COMMIT_URL =
-  APP_COMMIT_SHA === "dev" || !APP_REPO_URL
+  !APP_REPO_URL
     ? null
-    : `${APP_REPO_URL}/commit/${APP_COMMIT_SHA}`;
+    : APP_COMMIT_SHA === "dev"
+      ? APP_REPO_URL
+      : `${APP_REPO_URL}/commit/${APP_COMMIT_SHA}`;
 
 const GENERIC_UNEXPECTED_ERROR_MESSAGE =
   "Unexpected error. Please try again or reload the viewer.";
