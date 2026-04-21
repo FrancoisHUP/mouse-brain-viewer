@@ -154,11 +154,6 @@ type ExternalSourceDraft = {
   remoteResolution?: RemoteOmeResolution;
 };
 
-type AddSliceOptions = {
-  volumeLayerId: string;
-  sliceParams: SliceLayerParams;
-  name?: string;
-};
 
 type ViewerStartupSlice = {
   volumeLayerId?: string;
@@ -175,27 +170,6 @@ type AppProps = {
 
 type AnnotationShapeSizeMap = Record<AnnotationShape, number>;
 
-function getCanonicalSlicePlaneMaxIndex(
-  dims: { x: number; y: number; z: number } | null | undefined,
-  plane: SlicePlane
-): number {
-  if (!dims) return 0;
-  if (plane === "xy") return Math.max(0, dims.z - 1);
-  if (plane === "xz") return Math.max(0, dims.y - 1);
-  return Math.max(0, dims.x - 1);
-}
-
-function getCanonicalSlicePlaneLabel(plane: SlicePlane): string {
-  if (plane === "xy") return "Axial (XY)";
-  if (plane === "xz") return "Coronal (XZ)";
-  return "Sagittal (YZ)";
-}
-
-function getCanonicalSlicePlaneCompactLabel(plane: SlicePlane): string {
-  if (plane === "xy") return "XY";
-  if (plane === "xz") return "XZ";
-  return "YZ";
-}
 
 
 function isCanonicalSliceBrowsableLayer(
@@ -466,11 +440,14 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     getFirstLayerId(INITIAL_TREE)
   );
+  const [selectedNodeIdsExternal, setSelectedNodeIdsExternal] = useState<string[] | null>(null);
   const [isLayerPanelCollapsed, setIsLayerPanelCollapsed] = useState(false);
   const [cameraState, setCameraState] = useState<SerializableCameraState>(
     DEFAULT_CAMERA_STATE
   );
   const [cameraSyncKey, setCameraSyncKey] = useState(0);
+  const pendingCameraStateRef = useRef<SerializableCameraState | null>(null);
+  const cameraCommitTimeoutRef = useRef<number | null>(null);
   const [focusSelectedLayerRequestKey, setFocusSelectedLayerRequestKey] = useState(0);
   const [stateModalMode, setStateModalMode] = useState<"export" | "import">("export");
   const [stateTextDraft, setStateTextDraft] = useState("");
@@ -551,7 +528,6 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   const groupOptions = useMemo(() => collectGroups(layerTree), [layerTree]);
   const allLayers = useMemo(() => collectAllLayerItems(layerTree), [layerTree]);
-  const omeLayers = useMemo(() => allLayers.filter(isRemoteOmeLayer), [allLayers]);
   const sliceBrowsableLayers = useMemo(
     () => allLayers.filter(isCanonicalSliceBrowsableLayer),
     [allLayers]
@@ -587,13 +563,17 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (activeTool !== "slice" || !selectedCanonicalSliceLayer) return;
     if (selectedCanonicalSliceLayer.axisSliceState?.activePlane) return;
     setLayerTree((prev) =>
-      updateNodeById(prev, selectedCanonicalSliceLayer.id, (node) => ({
-        ...node,
-        axisSliceState: {
-          ...node.axisSliceState,
-          activePlane: "xy",
-        },
-      }))
+      updateNodeById(prev, selectedCanonicalSliceLayer.id, (node) =>
+        node.kind !== "layer"
+          ? node
+          : {
+              ...node,
+              axisSliceState: {
+                ...node.axisSliceState,
+                activePlane: "xy",
+              },
+            }
+      )
     );
   }, [activeTool, selectedCanonicalSliceLayer]);
 
@@ -717,20 +697,32 @@ export default function App({ startupSlices = [] }: AppProps) {
   }, []);
 
   const handleCameraStateChange = useCallback((next: SerializableCameraState) => {
-    setCameraState((prev) => {
-      if (
-        prev.mode === next.mode &&
-        prev.yaw === next.yaw &&
-        prev.pitch === next.pitch &&
-        prev.fovDeg === next.fovDeg &&
-        prev.position[0] === next.position[0] &&
-        prev.position[1] === next.position[1] &&
-        prev.position[2] === next.position[2]
-      ) {
-        return prev;
-      }
-      return next;
-    });
+    pendingCameraStateRef.current = next;
+
+    if (cameraCommitTimeoutRef.current !== null) {
+      return;
+    }
+
+    cameraCommitTimeoutRef.current = window.setTimeout(() => {
+      cameraCommitTimeoutRef.current = null;
+      const pending = pendingCameraStateRef.current;
+      if (!pending) return;
+
+      setCameraState((prev) => {
+        if (
+          prev.mode === pending.mode &&
+          prev.yaw === pending.yaw &&
+          prev.pitch === pending.pitch &&
+          prev.fovDeg === pending.fovDeg &&
+          prev.position[0] === pending.position[0] &&
+          prev.position[1] === pending.position[1] &&
+          prev.position[2] === pending.position[2]
+        ) {
+          return prev;
+        }
+        return pending;
+      });
+    }, 33);
   }, []);
 
   const handleSelectedLayerRuntimeInfoChange = useCallback(
@@ -757,6 +749,14 @@ export default function App({ startupSlices = [] }: AppProps) {
     []
   );
 
+  useEffect(() => {
+    return () => {
+      if (cameraCommitTimeoutRef.current !== null) {
+        window.clearTimeout(cameraCommitTimeoutRef.current);
+      }
+    };
+  }, []);
+
 
 
   function handleCenterCanonicalSlices() {
@@ -764,16 +764,20 @@ export default function App({ startupSlices = [] }: AppProps) {
     const dims = selectedLayerRuntimeInfo?.dims ?? null;
     if (!targetId || !dims) return;
     setLayerTree((prev) =>
-      updateNodeById(prev, targetId, (node) => ({
-        ...node,
-        axisSliceState: {
-          ...node.axisSliceState,
-          xy: Math.round(Math.max(0, dims.z - 1) * 0.5),
-          xz: Math.round(Math.max(0, dims.y - 1) * 0.5),
-          yz: Math.round(Math.max(0, dims.x - 1) * 0.5),
-          activePlane: node.axisSliceState?.activePlane ?? "xy",
-        },
-      }))
+      updateNodeById(prev, targetId, (node) =>
+        node.kind !== "layer"
+          ? node
+          : {
+              ...node,
+              axisSliceState: {
+                ...node.axisSliceState,
+                xy: Math.round(Math.max(0, dims.z - 1) * 0.5),
+                xz: Math.round(Math.max(0, dims.y - 1) * 0.5),
+                yz: Math.round(Math.max(0, dims.x - 1) * 0.5),
+                activePlane: node.axisSliceState?.activePlane ?? "xy",
+              },
+            }
+      )
     );
   }
 
@@ -822,9 +826,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (!targetId) return;
     setLayerTree((prev) =>
       updateNodeById(prev, targetId, (node) => {
-        const current = node.kind === "layer" && node.axisSliceViewState?.[plane]
-          ? node.axisSliceViewState?.[plane]
-          : undefined;
+        if (node.kind !== "layer") return node;
+        const current = node.axisSliceViewState?.[plane];
         const normalized = {
           flipX: !!current?.flipX,
           flipY: !!current?.flipY,
@@ -886,21 +889,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     }));
   }
 
-  function handleSetCanonicalSliceRotation(rotationDeg: number) {
-    const plane = getCanonicalSliceToolPlane();
-    if (!plane) return;
-    handleUpdateCanonicalSliceViewState(plane, () => ({
-      rotationDeg,
-    }));
-  }
 
-  function handleSetCanonicalSliceScale(scale: number) {
-    const plane = getCanonicalSliceToolPlane();
-    if (!plane) return;
-    handleUpdateCanonicalSliceViewState(plane, () => ({
-      scale: Math.max(0.05, Math.min(6, Math.round(scale * 1000) / 1000)),
-    }));
-  }
 
   function handleResetCanonicalSliceView() {
     const plane = getCanonicalSliceToolPlane();
@@ -915,10 +904,6 @@ export default function App({ startupSlices = [] }: AppProps) {
     }));
   }
 
-  function getScenePointerPlaneLabel(hit: ScenePointerHit | null): string {
-    if (!hit?.plane) return "No plane under pointer";
-    return getCanonicalSlicePlaneLabel(hit.plane);
-  }
 
 
 
@@ -2154,8 +2139,46 @@ export default function App({ startupSlices = [] }: AppProps) {
     });
   }
 
+  function handleLayerPanelSelectionChange(nodeIds: string[], preferredNodeId: string) {
+    const orderedUnique = Array.from(new Set(nodeIds.filter((id) => typeof id === "string" && id.length > 0)));
+    if (!orderedUnique.length) return;
+    setSelectedNodeIdsExternal(orderedUnique);
+    setSelectedNodeId(preferredNodeId || orderedUnique[orderedUnique.length - 1] || orderedUnique[0]);
+  }
+
   function handleSelectNode(nodeId: string) {
     setSelectedNodeId(nodeId);
+    setSelectedNodeIdsExternal([nodeId]);
+  }
+
+  function handleSelectSceneLayer(nodeId: string, options?: { toggle?: boolean }) {
+    const isToggle = !!options?.toggle;
+    setSelectedNodeIdsExternal((prev) => {
+      const current = Array.from(new Set((prev ?? (selectedNodeId ? [selectedNodeId] : [])).filter(Boolean)));
+      let next: string[];
+      if (isToggle) {
+        next = current.includes(nodeId)
+          ? current.filter((id) => id !== nodeId)
+          : [...current, nodeId];
+        if (!next.length) next = [nodeId];
+      } else {
+        next = [nodeId];
+      }
+      return next;
+    });
+    setSelectedNodeId(nodeId);
+  }
+
+  function handleSelectSceneLayers(nodeIds: string[], options?: { append?: boolean; preferredNodeId?: string | null }) {
+    const orderedUnique = Array.from(new Set(nodeIds.filter((id) => typeof id === "string" && id.length > 0)));
+    if (!orderedUnique.length) return;
+    const append = !!options?.append;
+    setSelectedNodeIdsExternal((prev) => {
+      const base = append ? Array.from(new Set((prev ?? (selectedNodeId ? [selectedNodeId] : [])).filter(Boolean))) : [];
+      const merged = append ? Array.from(new Set([...base, ...orderedUnique])) : orderedUnique;
+      return merged.length ? merged : null;
+    });
+    setSelectedNodeId(options?.preferredNodeId ?? orderedUnique[orderedUnique.length - 1] ?? orderedUnique[0]);
   }
 
   function handleToggleGroupExpanded(groupId: string) {
@@ -2751,12 +2774,24 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function reconcileSelectionAfterTreeMutation(next: LayerTreeNode[], removedIds: string[] = []) {
-    if (!selectedNodeId) return;
-    if (removedIds.includes(selectedNodeId) || !findNodeById(next, selectedNodeId)) {
-      setSelectedNodeId(getFirstLayerId(next));
-    }
-    if (removedIds.includes(sliceVolumeLayerId) || (sliceVolumeLayerId && !findNodeById(next, sliceVolumeLayerId))) {
-      const nextOmeLayer = collectAllLayerItems(next).find(isRemoteOmeLayer) ?? null;
+    const nextSelectedNodeId =
+      selectedNodeId && !removedIds.includes(selectedNodeId) && findNodeById(next, selectedNodeId)
+        ? selectedNodeId
+        : getFirstLayerId(next);
+
+    setSelectedNodeId(nextSelectedNodeId);
+    setSelectedNodeIdsExternal((prev) => {
+      if (!prev?.length) return prev;
+      const filtered = prev.filter((id) => !removedIds.includes(id) && !!findNodeById(next, id));
+      if (!filtered.length) return nextSelectedNodeId ? [nextSelectedNodeId] : null;
+      return filtered;
+    });
+
+    const currentSliceVolumeStillExists =
+      !!sliceVolumeLayerId && !removedIds.includes(sliceVolumeLayerId) && !!findNodeById(next, sliceVolumeLayerId);
+
+    if (!currentSliceVolumeStillExists) {
+      const nextOmeLayer = collectAllLayerItems(next).find((node) => isRemoteOmeLayer(node)) ?? null;
       setSliceVolumeLayerId(nextOmeLayer?.id ?? "");
     }
   }
@@ -2894,36 +2929,6 @@ export default function App({ startupSlices = [] }: AppProps) {
     setIsImportPanelOpen(false);
   }
 
-  function handleAddCustomSlice(options: AddSliceOptions) {
-    const volumeNode = findNodeById(layerTree, options.volumeLayerId);
-
-    if (!volumeNode || !isRemoteOmeLayer(volumeNode)) {
-      console.warn("Cannot create slice: target volume layer not found or not OME-Zarr");
-      return;
-    }
-
-    const defaultName =
-      options.sliceParams.mode === "oblique"
-        ? `${volumeNode.name} Oblique Slice`
-        : `${volumeNode.name} ${options.sliceParams.plane.toUpperCase()} @ ${options.sliceParams.index}`;
-
-    addNodeAtBestLocation({
-      id: createId(),
-      kind: "layer",
-      name: options.name?.trim() || defaultName,
-      type: "custom-slice",
-      visible: true,
-      source: {
-        volumeLayerId: options.volumeLayerId,
-      },
-      sourceKind: "built-in",
-      description:
-        options.sliceParams.mode === "oblique"
-          ? "Custom oblique slice"
-          : "Custom slice",
-      sliceParams: options.sliceParams,
-    });
-  }
 
 
   function handleClearPersistedViewerState() {
@@ -3196,13 +3201,17 @@ export default function App({ startupSlices = [] }: AppProps) {
     patch: Partial<NonNullable<LayerItemNode["axisSliceState"]>>
   ) {
     setLayerTree((prev) =>
-      updateNodeById(prev, layerId, (node) => ({
-        ...node,
-        axisSliceState: {
-          ...node.axisSliceState,
-          ...patch,
-        },
-      }))
+      updateNodeById(prev, layerId, (node) =>
+        node.kind !== "layer"
+          ? node
+          : {
+              ...node,
+              axisSliceState: {
+                ...node.axisSliceState,
+                ...patch,
+              },
+            }
+      )
     );
   }
 
@@ -3210,6 +3219,11 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (!selectedNode || selectedNode.kind !== "layer") return;
     setActiveTool("mouse");
     setFocusSelectedLayerRequestKey((prev) => prev + 1);
+  }
+
+  function handleRequestResetOrbitCenter() {
+    setCameraState((prev) => ({ ...DEFAULT_CAMERA_STATE, mode: prev.mode }));
+    setCameraSyncKey((prev) => prev + 1);
   }
 
   return (
@@ -3224,19 +3238,30 @@ export default function App({ startupSlices = [] }: AppProps) {
         background: appPreferences.sceneBackground,
         color: appPreferences.theme === "light" ? "#18212b" : "white",
         cursor:
-          appPreferences.cursorStyle === "crosshair"
+          activeTool === "select"
+            ? "pointer"
+            : appPreferences.cursorStyle === "crosshair"
             ? "crosshair"
             : appPreferences.cursorStyle === "high-contrast"
             ? "cell"
             : "default",
+        userSelect: activeTool === "select" ? "none" : "auto",
+        WebkitUserSelect: activeTool === "select" ? "none" : "auto",
       }}
     >
       <style>{getThemeRootCss(appPreferences.theme)}</style>
+      <style>{`
+        [data-viewer-app-menu='true'] {
+          -webkit-user-select: none;
+          user-select: none;
+        }
+      `}</style>
 
       <WebGLCanvas
         activeTool={activeTool}
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
+        selectedNodeIds={selectedNodeIdsExternal ?? (selectedNodeId ? [selectedNodeId] : [])}
         cameraState={cameraState}
         cameraSyncKey={cameraSyncKey}
         onCameraStateChange={handleCameraStateChange}
@@ -3255,6 +3280,8 @@ export default function App({ startupSlices = [] }: AppProps) {
         onEraseFreehand={handleEraseFreehandStroke}
         onSelectedLayerRuntimeInfoChange={handleSelectedLayerRuntimeInfoChange}
         onScenePointerTargetChange={setScenePointerTarget}
+        onSelectSceneLayer={handleSelectSceneLayer}
+        onSelectSceneLayers={handleSelectSceneLayers}
         onAxisSliceStateChange={handleUpdateAxisSliceState}
         onCanvasElementChange={handleCanvasElementChange}
         onLocalSceneLoadStateChange={handleLocalSceneLoadStateChange}
@@ -3348,6 +3375,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       <LayerPanel
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
+        selectedNodeIdsExternal={selectedNodeIdsExternal}
         activeTool={activeTool}
         groupOptions={groupOptions}
         detailsContent={inspectorPanelContent}
@@ -3357,6 +3385,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onSetCollapsed={setIsLayerPanelCollapsed}
         onToggleVisible={handleToggleVisible}
         onSelectNode={handleSelectNode}
+        onSelectionChange={handleLayerPanelSelectionChange}
         onToggleGroupExpanded={handleToggleGroupExpanded}
         onSetGroupExpanded={handleSetGroupExpanded}
         onAddGroup={handleAddGroup}

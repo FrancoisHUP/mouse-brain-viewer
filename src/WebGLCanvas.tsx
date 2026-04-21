@@ -38,8 +38,10 @@ import {
 import {
   createRayFromScreen,
   intersectRayQuad,
+  intersectRayTriangle,
   transformPoint,
   type RayHit,
+  type SceneRay,
 } from "./scenePicking";
 import { disposeLocalDataLoadWorker, loadLocalBrowserMeshInWorker, loadLocalBrowserVolumeInWorker } from "./localDataLoadWorkerClient";
 
@@ -520,10 +522,18 @@ function transformNormalsByMatrix(model: mat4, normals: [number, number, number]
   return normals.map((normal) => transformNormalByMatrix(model, normal));
 }
 
+function isInteractiveOverlayTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return !!target.closest(
+    "button, a, input, textarea, select, option, label, summary, [role='button'], [contenteditable='true']"
+  );
+}
+
 export default function WebGLCanvas({
   activeTool,
   layerTree,
   selectedNodeId,
+  selectedNodeIds = [],
   cameraState,
   cameraSyncKey,
   onCameraStateChange,
@@ -537,6 +547,8 @@ export default function WebGLCanvas({
   annotationEraseMode = "color",
   onAnnotationSizeChange,
   onScenePointerTargetChange,
+  onSelectSceneLayer,
+  onSelectSceneLayers,
   onCreatePointAnnotation,
   onCreateLineAnnotation,
   onCreateShapeAnnotation,
@@ -552,6 +564,7 @@ export default function WebGLCanvas({
   activeTool: ToolId;
   layerTree: LayerTreeNode[];
   selectedNodeId: string | null;
+  selectedNodeIds?: string[];
   cameraState: SerializableCameraState;
   cameraSyncKey: number;
   onCameraStateChange?: (next: SerializableCameraState) => void;
@@ -565,6 +578,8 @@ export default function WebGLCanvas({
   annotationEraseMode?: "all" | "color";
   onAnnotationSizeChange?: (size: number) => void;
   onScenePointerTargetChange?: (hit: ScenePointerHit | null) => void;
+  onSelectSceneLayer?: (layerId: string, options?: { toggle?: boolean }) => void;
+  onSelectSceneLayers?: (layerIds: string[], options?: { append?: boolean; preferredNodeId?: string | null }) => void;
   onCreatePointAnnotation?: (hit: ScenePointerHit) => void;
   onCreateLineAnnotation?: (params: { start: ScenePointerHit; end: ScenePointerHit }) => void;
   onCreateShapeAnnotation?: (params: { shape: "rectangle" | "circle"; points: [number, number, number][]; normal: [number, number, number]; layerId: string; layerName: string; }) => void;
@@ -607,6 +622,8 @@ export default function WebGLCanvas({
   const handledFocusSelectedLayerRequestRef = useRef(0);
 
   const activeToolRef = useRef<ToolId>(activeTool);
+  const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
+  const highlightedLayerIdsRef = useRef<Set<string>>(new Set());
   const annotationShapeRef = useRef<AnnotationShape>(annotationShape);
   const annotationColorRef = useRef<string>(annotationColor);
   const annotationOpacityRef = useRef<number>(annotationOpacity);
@@ -616,6 +633,8 @@ export default function WebGLCanvas({
   const onAnnotationSizeChangeRef = useRef<typeof onAnnotationSizeChange>(onAnnotationSizeChange);
   const onCreatePointAnnotationRef = useRef<typeof onCreatePointAnnotation>(onCreatePointAnnotation);
   const onAxisSliceStateChangeRef = useRef<typeof onAxisSliceStateChange>(onAxisSliceStateChange);
+  const onSelectSceneLayerRef = useRef<typeof onSelectSceneLayer>(onSelectSceneLayer);
+  const onSelectSceneLayersRef = useRef<typeof onSelectSceneLayers>(onSelectSceneLayers);
   const onCreateLineAnnotationRef = useRef<typeof onCreateLineAnnotation>(onCreateLineAnnotation);
   const onCreateShapeAnnotationRef = useRef<typeof onCreateShapeAnnotation>(onCreateShapeAnnotation);
   const onCommitFreehandStrokeRef = useRef<typeof onCommitFreehandStroke>(onCommitFreehandStroke);
@@ -634,6 +653,7 @@ export default function WebGLCanvas({
   const lastPublishedLocalLoadStateRef = useRef<string>("__uninitialized__");
 
   const [loadTick, setLoadTick] = useState(0);
+  const [selectionRect, setSelectionRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   void localSceneLoadingActive;
 
   function publishLocalLoadState() {
@@ -661,6 +681,10 @@ export default function WebGLCanvas({
   useEffect(() => {
     activeToolRef.current = activeTool;
   }, [activeTool]);
+
+  useEffect(() => {
+    selectedNodeIdRef.current = selectedNodeId;
+  }, [selectedNodeId]);
 
   useEffect(() => {
     annotationShapeRef.current = annotationShape;
@@ -697,6 +721,14 @@ export default function WebGLCanvas({
   useEffect(() => {
     onAxisSliceStateChangeRef.current = onAxisSliceStateChange;
   }, [onAxisSliceStateChange]);
+
+  useEffect(() => {
+    onSelectSceneLayerRef.current = onSelectSceneLayer;
+  }, [onSelectSceneLayer]);
+
+  useEffect(() => {
+    onSelectSceneLayersRef.current = onSelectSceneLayers;
+  }, [onSelectSceneLayers]);
 
   useEffect(() => {
     onCreateLineAnnotationRef.current = onCreateLineAnnotation;
@@ -765,9 +797,34 @@ export default function WebGLCanvas({
   );
 
   const highlightedLayerIds = useMemo(() => {
-    if (!selectedNodeId || !selectedNode) return new Set<string>();
-    return new Set(collectLayerIdsInSubtree(selectedNode));
-  }, [selectedNode, selectedNodeId]);
+    const ids = Array.from(
+      new Set(
+        (selectedNodeIds ?? []).filter(
+          (value): value is string => typeof value === "string" && value.length > 0
+        )
+      )
+    );
+
+    if (!ids.length) {
+      if (!selectedNodeId || !selectedNode) return new Set<string>();
+      return new Set(collectLayerIdsInSubtree(selectedNode));
+    }
+
+    const next = new Set<string>();
+    for (const id of ids) {
+      const node = findNodeById(layerTree, id);
+      if (!node) continue;
+      for (const layerId of collectLayerIdsInSubtree(node)) {
+        next.add(layerId);
+      }
+    }
+    return next;
+  }, [layerTree, selectedNode, selectedNodeId, selectedNodeIds]);
+
+  useEffect(() => {
+    highlightedLayerIdsRef.current = highlightedLayerIds;
+  }, [highlightedLayerIds]);
+
 
   const visibleLayers = useMemo(
     () => collectVisibleLayerItems(layerTree, true),
@@ -1643,12 +1700,388 @@ export default function WebGLCanvas({
       onScenePointerTargetChange?.(hit);
     }
 
-    function pickSceneAtClientPosition(clientX: number, clientY: number): ScenePointerHit | null {
+
+
+    function projectWorldPointToCanvas(
+      point: [number, number, number],
+      projection: mat4,
+      view: mat4
+    ): { x: number; y: number; depth: number } | null {
+      const p = vec3.fromValues(point[0], point[1], point[2]);
+      const vp = mat4.create();
+      mat4.multiply(vp, projection, view);
+      const x = p[0];
+      const y = p[1];
+      const z = p[2];
+      const cx = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
+      const cy = vp[1] * x + vp[5] * y + vp[9] * z + vp[13];
+      const cz = vp[2] * x + vp[6] * y + vp[10] * z + vp[14];
+      const cw = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+      if (Math.abs(cw) <= 1e-8) return null;
+      const ndcX = cx / cw;
+      const ndcY = cy / cw;
+      const ndcZ = cz / cw;
+      if (!Number.isFinite(ndcX) || !Number.isFinite(ndcY) || !Number.isFinite(ndcZ)) return null;
+      if (ndcZ < -1.15 || ndcZ > 1.15) return null;
+      return {
+        x: ((ndcX + 1) * 0.5) * canvas.width,
+        y: ((1 - ndcY) * 0.5) * canvas.height,
+        depth: ndcZ,
+      };
+    }
+
+    function getDistanceToScreenSegment(
+      px: number,
+      py: number,
+      ax: number,
+      ay: number,
+      bx: number,
+      by: number
+    ): { distance: number; t: number } {
+      const abx = bx - ax;
+      const aby = by - ay;
+      const denom = abx * abx + aby * aby;
+      if (denom <= 1e-8) {
+        return { distance: Math.hypot(px - ax, py - ay), t: 0 };
+      }
+      const t = clamp(((px - ax) * abx + (py - ay) * aby) / denom, 0, 1);
+      const qx = ax + abx * t;
+      const qy = ay + aby * t;
+      return { distance: Math.hypot(px - qx, py - qy), t };
+    }
+
+    function interpolateWorldPoint(
+      a: [number, number, number],
+      b: [number, number, number],
+      t: number
+    ): [number, number, number] {
+      return [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+      ];
+    }
+
+    function getAnnotationHitThresholdPx(size: number | undefined): number {
+      return clamp(8 + (size ?? 0.06) * 140, 8, 24);
+    }
+
+    function makeAnnotationScreenHit(
+      layer: LayerItemNode,
+      position: [number, number, number],
+      ray: SceneRay,
+      normal: [number, number, number] = [0, 0, 1]
+    ): ScenePointerHit {
+      const p = vec3.fromValues(position[0], position[1], position[2]);
+      return {
+        layerId: layer.id,
+        layerName: layer.name,
+        kind: "plane",
+        distance: vec3.distance(ray.origin, p),
+        position,
+        normal,
+      };
+    }
+
+    function intersectAnnotationAtClientPosition(
+      layerEntry: ResolvedLayerEntry,
+      clientX: number,
+      clientY: number,
+      projection: mat4,
+      view: mat4,
+      ray: SceneRay
+    ): ScenePointerHit | null {
+      const layer = layerEntry.layer;
+      const annotation = layer.annotation;
+      if (layer.type !== "annotation" || !annotation) return null;
+
+      const rect = canvas.getBoundingClientRect();
+      const px = (clientX - rect.left) * (canvas.width / Math.max(rect.width, 1));
+      const py = (clientY - rect.top) * (canvas.height / Math.max(rect.height, 1));
+      const threshold = getAnnotationHitThresholdPx(annotation.size);
+
+      let best: { distancePx: number; hit: ScenePointerHit } | null = null;
+      const consider = (distancePx: number, hit: ScenePointerHit | null) => {
+        if (!hit || distancePx > threshold) return;
+        if (!best || distancePx < best.distancePx || (Math.abs(distancePx - best.distancePx) < 0.25 && hit.distance < best.hit.distance)) {
+          best = { distancePx, hit };
+        }
+      };
+
+      if (annotation.shape === "point" && annotation.points?.[0]) {
+        const world = transformPoint(layerEntry.worldMatrix, annotation.points[0]);
+        const projected = projectWorldPointToCanvas([world[0], world[1], world[2]], projection, view);
+        if (projected) {
+          consider(
+            Math.hypot(px - projected.x, py - projected.y),
+            makeAnnotationScreenHit(layer, [world[0], world[1], world[2]], ray, annotation.normal ?? [0, 0, 1])
+          );
+        }
+      }
+
+      const considerPolyline = (points: [number, number, number][], closed: boolean, normals?: [number, number, number][]) => {
+        if (points.length < 2) return;
+        const screenPoints = points
+          .map((point) => ({ world: point, screen: projectWorldPointToCanvas(point, projection, view) }))
+          .filter((entry) => !!entry.screen) as Array<{ world: [number, number, number]; screen: { x: number; y: number; depth: number } }>;
+        if (screenPoints.length < 2) return;
+        const segmentCount = closed ? screenPoints.length : screenPoints.length - 1;
+        for (let i = 0; i < segmentCount; i += 1) {
+          const a = screenPoints[i];
+          const b = screenPoints[(i + 1) % screenPoints.length];
+          const nearest = getDistanceToScreenSegment(px, py, a.screen.x, a.screen.y, b.screen.x, b.screen.y);
+          const world = interpolateWorldPoint(a.world, b.world, nearest.t);
+          const normal = normals?.[Math.min(i, normals.length - 1)] ?? annotation.normal ?? [0, 0, 1];
+          consider(nearest.distance, makeAnnotationScreenHit(layer, world, ray, normal));
+        }
+      };
+
+      if (annotation.shape === "line" && annotation.points && annotation.points.length >= 2) {
+        considerPolyline(
+          transformPointsByMatrix(layerEntry.worldMatrix, annotation.points.slice(0, 2) as [number, number, number][]),
+          false
+        );
+      }
+
+      if ((annotation.shape === "rectangle" || annotation.shape === "circle") && annotation.points && annotation.points.length >= 2) {
+        considerPolyline(transformPointsByMatrix(layerEntry.worldMatrix, annotation.points as [number, number, number][]), true);
+      }
+
+      if (annotation.shape === "freehand") {
+        for (const stroke of annotation.freehandStrokes ?? []) {
+          if (!stroke.points || stroke.points.length < 2) continue;
+          considerPolyline(
+            transformPointsByMatrix(layerEntry.worldMatrix, stroke.points),
+            false,
+            stroke.normals ? transformNormalsByMatrix(layerEntry.worldMatrix, stroke.normals) : undefined
+          );
+        }
+      }
+
+      if (!best) return null;
+      return (best as { distancePx: number; hit: ScenePointerHit }).hit;
+    }
+
+    function normalizeScreenRect(a: { x: number; y: number }, b: { x: number; y: number }) {
+      return {
+        left: Math.min(a.x, b.x),
+        top: Math.min(a.y, b.y),
+        right: Math.max(a.x, b.x),
+        bottom: Math.max(a.y, b.y),
+      };
+    }
+
+    function isPointInsideScreenRect(point: { x: number; y: number }, rect: { left: number; top: number; right: number; bottom: number }) {
+      return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+    }
+
+    function doesScreenBoundsIntersectRect(
+      bounds: { left: number; top: number; right: number; bottom: number },
+      rect: { left: number; top: number; right: number; bottom: number }
+    ) {
+      return !(bounds.right < rect.left || bounds.left > rect.right || bounds.bottom < rect.top || bounds.top > rect.bottom);
+    }
+
+    function projectWorldPointsToCanvas(points: [number, number, number][], projection: mat4, view: mat4) {
+      return points
+        .map((point) => projectWorldPointToCanvas(point, projection, view))
+        .filter((value): value is { x: number; y: number; depth: number } => !!value);
+    }
+
+    function screenBoundsFromProjectedPoints(points: Array<{ x: number; y: number }>) {
+      if (!points.length) return null;
+      return points.reduce((acc, point) => ({
+        left: Math.min(acc.left, point.x),
+        top: Math.min(acc.top, point.y),
+        right: Math.max(acc.right, point.x),
+        bottom: Math.max(acc.bottom, point.y),
+      }), { left: points[0].x, top: points[0].y, right: points[0].x, bottom: points[0].y });
+    }
+
+    function getModelQuadWorldPoints(model: mat4): [number, number, number][] {
+      return [
+        [-0.5, -0.5, 0],
+        [0.5, -0.5, 0],
+        [0.5, 0.5, 0],
+        [-0.5, 0.5, 0],
+      ].map((point) => {
+        const p = transformPoint(model, point as [number, number, number]);
+        return [p[0], p[1], p[2]] as [number, number, number];
+      });
+    }
+
+    function doesAnnotationIntersectScreenRect(
+      layerEntry: ResolvedLayerEntry,
+      rect: { left: number; top: number; right: number; bottom: number },
+      projection: mat4,
+      view: mat4
+    ) {
+      const layer = layerEntry.layer;
+      const annotation = layer.annotation;
+      if (layer.type !== "annotation" || !annotation) return false;
+      const candidatePoints: [number, number, number][] = [];
+      if (annotation.points?.length) {
+        candidatePoints.push(...transformPointsByMatrix(layerEntry.worldMatrix, annotation.points as [number, number, number][]));
+      }
+      for (const stroke of annotation.freehandStrokes ?? []) {
+        if (stroke.points?.length) {
+          candidatePoints.push(...transformPointsByMatrix(layerEntry.worldMatrix, stroke.points));
+        }
+      }
+      const projected = projectWorldPointsToCanvas(candidatePoints, projection, view);
+      const bounds = screenBoundsFromProjectedPoints(projected);
+      if (!bounds) return false;
+      if (projected.some((point) => isPointInsideScreenRect(point, rect))) return true;
+      return doesScreenBoundsIntersectRect(bounds, rect);
+    }
+
+    function collectSceneLayerIdsInScreenRect(
+      startClientX: number,
+      startClientY: number,
+      endClientX: number,
+      endClientY: number
+    ) {
+      const rectBounds = canvas.getBoundingClientRect();
+      const sx = (startClientX - rectBounds.left) * (canvas.width / Math.max(rectBounds.width, 1));
+      const sy = (startClientY - rectBounds.top) * (canvas.height / Math.max(rectBounds.height, 1));
+      const ex = (endClientX - rectBounds.left) * (canvas.width / Math.max(rectBounds.width, 1));
+      const ey = (endClientY - rectBounds.top) * (canvas.height / Math.max(rectBounds.height, 1));
+      const rect = normalizeScreenRect({ x: sx, y: sy }, { x: ex, y: ey });
       const { projection, view } = getViewProjectionMatrices();
       const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
+      const result: string[] = [];
+      const pushLayerId = (layerId: string) => {
+        if (!result.includes(layerId)) result.push(layerId);
+      };
+      for (const layerEntry of layers) {
+        const layer = layerEntry.layer;
+        if (layer.type === "annotation") {
+          if (doesAnnotationIntersectScreenRect(layerEntry, rect, projection, view)) pushLayerId(layer.id);
+          continue;
+        }
+        if ((isMeshLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
+          const meshKey = isMeshLayer(layer) ? getMeshCacheKey(layer.source) : getLocalMeshCacheKey(layer.source);
+          const mesh = meshCacheRef.current.get(meshKey);
+          if (!mesh) continue;
+          const meshModel = multiplyModelMatrices(layerEntry.worldMatrix, getAllenMeshModelMatrix(mesh));
+          const corners = [
+            [mesh.bounds.min[0], mesh.bounds.min[1], mesh.bounds.min[2]],
+            [mesh.bounds.min[0], mesh.bounds.min[1], mesh.bounds.max[2]],
+            [mesh.bounds.min[0], mesh.bounds.max[1], mesh.bounds.min[2]],
+            [mesh.bounds.min[0], mesh.bounds.max[1], mesh.bounds.max[2]],
+            [mesh.bounds.max[0], mesh.bounds.min[1], mesh.bounds.min[2]],
+            [mesh.bounds.max[0], mesh.bounds.min[1], mesh.bounds.max[2]],
+            [mesh.bounds.max[0], mesh.bounds.max[1], mesh.bounds.min[2]],
+            [mesh.bounds.max[0], mesh.bounds.max[1], mesh.bounds.max[2]],
+          ] as [number, number, number][];
+          const worldPoints = corners.map((point) => {
+            const p = transformPoint(meshModel, point);
+            return [p[0], p[1], p[2]] as [number, number, number];
+          });
+          const projected = projectWorldPointsToCanvas(worldPoints, projection, view);
+          const bounds = screenBoundsFromProjectedPoints(projected);
+          if (bounds && doesScreenBoundsIntersectRect(bounds, rect)) pushLayerId(layer.id);
+          continue;
+        }
+        const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
+        if (loadedVolumeEntry) {
+          const { volume, profile } = loadedVolumeEntry;
+          const models: mat4[] = [];
+          if (layer.renderMode === "volume") {
+            const plane = chooseStableVolumeRenderPlane(volume);
+            const totalSlices = getPlaneSliceCount(volume, plane);
+            const displayIndices = buildVolumeDisplayIndices(totalSlices);
+            for (const displayIndex of displayIndices) {
+              models.push(multiplyModelMatrices(layerEntry.worldMatrix, makeSliceModelMatrix(volume, plane, displayIndex, profile)));
+            }
+          } else if (layer.renderMode === "slices") {
+            for (const plane of ["xy", "xz", "yz"] as SlicePlane[]) {
+              const viewState = getLayerAxisSliceViewTransform(layer, plane);
+              if (!viewState.visible) continue;
+              const displayIndex = getLayerAxisSliceDisplayIndex(layer, volume, plane);
+              models.push(multiplyModelMatrices(layerEntry.worldMatrix, makeInteractiveSliceModelMatrix(layer, volume, plane, displayIndex, profile)));
+            }
+          }
+          if (models.some((model) => {
+            const projected = projectWorldPointsToCanvas(getModelQuadWorldPoints(model), projection, view);
+            const bounds = screenBoundsFromProjectedPoints(projected);
+            return !!bounds && doesScreenBoundsIntersectRect(bounds, rect);
+          })) pushLayerId(layer.id);
+          continue;
+        }
+        if (layer.type === "custom-slice") {
+          const volumeLayerId = hasVolumeLayerId(layer.source) ? layer.source.volumeLayerId : null;
+          const sliceParams = layer.sliceParams;
+          if (!volumeLayerId || !sliceParams) continue;
+          const volumeNode = findNodeById(layerTreeRef.current, volumeLayerId);
+          if (!volumeNode || volumeNode.kind !== "layer") continue;
+          const loadedVolumeEntry = getLoadedVolumeForLayer(volumeNode);
+          if (!loadedVolumeEntry) continue;
+          const { volume, profile } = loadedVolumeEntry;
+          let model: mat4 | null = null;
+          const isOblique = sliceParams.mode === "oblique" && !!sliceParams.normal;
+          if (isOblique) {
+            model = makeObliqueSliceModelMatrix(volume, { normal: sliceParams.normal, offset: sliceParams.offset ?? 0, width: sliceParams.width ?? 256, height: sliceParams.height ?? 256 }, profile);
+          } else if (isAxisAlignedSliceParams(sliceParams)) {
+            model = makeSliceModelMatrix(volume, sliceParams.plane, clampSliceIndex(volume, sliceParams.plane, sliceParams.index), profile);
+          }
+          if (model) {
+            const projected = projectWorldPointsToCanvas(getModelQuadWorldPoints(multiplyModelMatrices(layerEntry.worldMatrix, model)), projection, view);
+            const bounds = screenBoundsFromProjectedPoints(projected);
+            if (bounds && doesScreenBoundsIntersectRect(bounds, rect)) pushLayerId(layer.id);
+          }
+        }
+      }
+      return result;
+    }
+
+    function intersectMeshAtClientPosition(
+      mesh: LoadedMesh,
+      model: mat4,
+      clientX: number,
+      clientY: number,
+      projection: mat4,
+      view: mat4
+    ): RayHit | null {
+      const ray = createRayFromScreen({
+        canvas,
+        clientX,
+        clientY,
+        projection,
+        view,
+      });
+      if (!ray) return null;
+
+      let best: RayHit | null = null;
+      const positions = mesh.trianglePositions;
+      for (let i = 0; i <= positions.length - 9; i += 9) {
+        const a = transformPoint(model, [positions[i], positions[i + 1], positions[i + 2]]);
+        const b = transformPoint(model, [positions[i + 3], positions[i + 4], positions[i + 5]]);
+        const c = transformPoint(model, [positions[i + 6], positions[i + 7], positions[i + 8]]);
+        const hit = intersectRayTriangle(ray, a, b, c);
+        if (!hit) continue;
+        if (!best || hit.distance < best.distance) {
+          best = hit;
+        }
+      }
+
+      return best;
+    }
+
+    function pickSceneAtClientPosition(clientX: number, clientY: number): ScenePointerHit | null {
+      const { projection, view } = getViewProjectionMatrices();
+      const ray = createRayFromScreen({
+        canvas,
+        clientX,
+        clientY,
+        projection,
+        view,
+      });
+      if (!ray) return null;
+      const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
       const selectedSliceLayer =
-        activeToolRef.current === "slice" && selectedNodeId
-          ? findNodeById(layerTreeRef.current, selectedNodeId)
+        activeToolRef.current === "slice" && selectedNodeIdRef.current
+          ? findNodeById(layerTreeRef.current, selectedNodeIdRef.current)
           : null;
       const selectedSliceLayerId =
         selectedSliceLayer && selectedSliceLayer.kind === "layer" && isCanonicalSliceBrowsableLayer(selectedSliceLayer)
@@ -1656,8 +2089,15 @@ export default function WebGLCanvas({
           : null;
       let bestHit: ScenePointerHit | null = null;
 
-      function considerHit(layer: LayerItemNode, hit: RayHit | null, plane?: SlicePlane) {
+      function considerHit(layer: LayerItemNode, hit: RayHit | ScenePointerHit | null, plane?: SlicePlane) {
         if (!hit) return;
+        if ((hit as ScenePointerHit).layerId) {
+          const sceneHit = hit as ScenePointerHit;
+          if (!bestHit || sceneHit.distance < bestHit.distance) {
+            bestHit = sceneHit;
+          }
+          return;
+        }
         if (!bestHit || hit.distance < bestHit.distance) {
           bestHit = {
             layerId: layer.id,
@@ -1674,6 +2114,21 @@ export default function WebGLCanvas({
       for (let i = 0; i < layers.length; i += 1) {
         const layerEntry = layers[i];
         const layer = layerEntry.layer;
+
+        if (activeToolRef.current === "select" && layer.type === "annotation") {
+          considerHit(layer, intersectAnnotationAtClientPosition(layerEntry, clientX, clientY, projection, view, ray));
+          continue;
+        }
+
+        if (activeToolRef.current === "select" && (isMeshLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
+          const meshKey = isMeshLayer(layer) ? getMeshCacheKey(layer.source) : getLocalMeshCacheKey(layer.source);
+          const mesh = meshCacheRef.current.get(meshKey);
+          if (mesh) {
+            const model = multiplyModelMatrices(layerEntry.worldMatrix, getAllenMeshModelMatrix(mesh));
+            considerHit(layer, intersectMeshAtClientPosition(mesh, model, clientX, clientY, projection, view));
+          }
+          continue;
+        }
 
         const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
         if (loadedVolumeEntry) {
@@ -1785,6 +2240,9 @@ export default function WebGLCanvas({
     let erasePath: [number, number, number][] = [];
     let lastMouseX = 0;
     let lastMouseY = 0;
+    let selectRectDragging = false;
+    let selectRectStartClientX = 0;
+    let selectRectStartClientY = 0;
     let animationFrameId = 0;
     let lastTime = performance.now();
 
@@ -1913,8 +2371,8 @@ export default function WebGLCanvas({
       if (pendingRequest === handledFocusSelectedLayerRequestRef.current) return;
       handledFocusSelectedLayerRequestRef.current = pendingRequest;
 
-      if (!selectedNodeId) return;
-      const selectedNode = findNodeById(layerTreeRef.current, selectedNodeId);
+      if (!selectedNodeIdRef.current) return;
+      const selectedNode = findNodeById(layerTreeRef.current, selectedNodeIdRef.current);
       if (!selectedNode || selectedNode.kind !== "layer") return;
 
       const resolvedLayers = collectResolvedVisibleLayers(layerTreeRef.current);
@@ -2335,6 +2793,216 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       gl.disable(gl.BLEND);
     }
 
+    function drawMeshLines(mesh: LoadedMesh, mvp: mat4, color: [number, number, number, number], lineWidth: number = 1.4) {
+      const entry = getOrCreateMeshBuffer(mesh);
+      if (!entry.lineBuffer || entry.lineVertexCount <= 0) {
+        return;
+      }
+
+      resetVertexAttribArrays();
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      gl.useProgram(colorProgram);
+      gl.uniformMatrix4fv(uColorMVP, false, mvp);
+      gl.uniform4f(uColor, color[0], color[1], color[2], color[3]);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
+      gl.enableVertexAttribArray(aColorPosition);
+      gl.vertexAttribPointer(aColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.lineWidth(lineWidth);
+      gl.drawArrays(gl.LINES, 0, entry.lineVertexCount);
+    }
+
+
+    function makeVolumeBoundsModelMatrix(volume: LoadedVolume): mat4 {
+      const { sx, sy, sz } = getVolumeDisplayScale(volume);
+      const model = mat4.create();
+      mat4.scale(model, model, [sx, sy, sz]);
+      return model;
+    }
+
+    function drawBoxOutline(model: mat4, view: mat4, projection: mat4, color: [number, number, number, number], radius: number = 0.0045) {
+      const corners: [number, number, number][] = [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1],
+        [-1, -1, 1],
+        [1, -1, 1],
+        [1, 1, 1],
+        [-1, 1, 1],
+      ];
+      const edges: Array<[number, number]> = [
+        [0, 1], [1, 2], [2, 3], [3, 0],
+        [4, 5], [5, 6], [6, 7], [7, 4],
+        [0, 4], [1, 5], [2, 6], [3, 7],
+      ];
+      const worldCorners = transformPointsByMatrix(model, corners);
+      for (const [aIndex, bIndex] of edges) {
+        const lineModel = makeLineModelMatrix(worldCorners[aIndex], worldCorners[bIndex], radius);
+        if (!lineModel) continue;
+        const mv = mat4.create();
+        const mvp = mat4.create();
+        mat4.multiply(mv, view, lineModel);
+        mat4.multiply(mvp, projection, mv);
+        drawColorCylinder(mvp, color);
+      }
+    }
+
+    function renderSelectionIndicator(layerEntry: ResolvedLayerEntry, view: mat4, projection: mat4, color: [number, number, number, number]) {
+      const layer = layerEntry.layer;
+
+      if ((isMeshLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
+        const meshKey = isMeshLayer(layer) ? getMeshCacheKey(layer.source) : getLocalMeshCacheKey(layer.source);
+        const mesh = meshCacheRef.current.get(meshKey);
+        if (!mesh) return;
+        const model = multiplyModelMatrices(layerEntry.worldMatrix, getAllenMeshModelMatrix(mesh));
+        const mv = mat4.create();
+        const mvp = mat4.create();
+        mat4.multiply(mv, view, model);
+        mat4.multiply(mvp, projection, mv);
+        drawMeshLines(mesh, mvp, color, 1.6);
+        return;
+      }
+
+      const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
+      if (loadedVolumeEntry) {
+        const { volume, profile } = loadedVolumeEntry;
+        if (layer.renderMode === "volume") {
+          const model = multiplyModelMatrices(layerEntry.worldMatrix, makeVolumeBoundsModelMatrix(volume));
+          drawBoxOutline(model, view, projection, color, 0.0038);
+          return;
+        }
+
+        if (layer.renderMode === "slices") {
+          for (const plane of ["xy", "xz", "yz"] as SlicePlane[]) {
+            const viewState = getLayerAxisSliceViewTransform(layer, plane);
+            if (!viewState.visible) continue;
+            const displayIndex = getLayerAxisSliceDisplayIndex(layer, volume, plane);
+            const model = multiplyModelMatrices(
+              layerEntry.worldMatrix,
+              makeInteractiveSliceModelMatrix(layer, volume, plane, displayIndex, profile)
+            );
+            const mv = mat4.create();
+            const mvp = mat4.create();
+            mat4.multiply(mv, view, model);
+            mat4.multiply(mvp, projection, mv);
+            drawPlaneOutline(mvp, color, 2.0);
+          }
+          return;
+        }
+      }
+
+      if (layer.type === "custom-slice") {
+        const volumeLayerId = hasVolumeLayerId(layer.source) ? layer.source.volumeLayerId : null;
+        const sliceParams = layer.sliceParams;
+        if (!volumeLayerId || !sliceParams) return;
+        const volumeNode = findNodeById(layerTreeRef.current, volumeLayerId);
+        if (!volumeNode || volumeNode.kind !== "layer") return;
+        const loadedVolumeEntry = getLoadedVolumeForLayer(volumeNode);
+        if (!loadedVolumeEntry) return;
+        const { volume, profile } = loadedVolumeEntry;
+        let model: mat4 | null = null;
+        if (
+          sliceParams.mode === "oblique" &&
+          sliceParams.normal &&
+          typeof sliceParams.normal.x === "number" &&
+          typeof sliceParams.normal.y === "number" &&
+          typeof sliceParams.normal.z === "number"
+        ) {
+          model = makeObliqueSliceModelMatrix(volume, {
+            normal: { x: sliceParams.normal.x, y: sliceParams.normal.y, z: sliceParams.normal.z },
+            offset: sliceParams.offset ?? 0,
+            width: sliceParams.width ?? 256,
+            height: sliceParams.height ?? 256,
+          }, profile);
+        } else if (isAxisAlignedSliceParams(sliceParams)) {
+          model = makeSliceModelMatrix(volume, sliceParams.plane, clampSliceIndex(volume, sliceParams.plane, sliceParams.index), profile);
+        }
+        if (!model) return;
+        const finalModel = multiplyModelMatrices(layerEntry.worldMatrix, model);
+        const mv = mat4.create();
+        const mvp = mat4.create();
+        mat4.multiply(mv, view, finalModel);
+        mat4.multiply(mvp, projection, mv);
+        drawPlaneOutline(mvp, color, 2.2);
+        return;
+      }
+
+      if (layer.type !== "annotation" || !layer.annotation) {
+        return;
+      }
+
+      const annotation = layer.annotation;
+      const overlayColor: [number, number, number, number] = [color[0], color[1], color[2], clamp(color[3] * 0.2, 0.08, 0.24)];
+
+      if (annotation.shape === "point" && annotation.points?.[0]) {
+        const point = annotation.points[0];
+        const size = Math.max(0.002, annotation.size ?? 0.06) * 1.14;
+        const localModel = mat4.create();
+        const model = mat4.create();
+        const mv = mat4.create();
+        const mvp = mat4.create();
+        mat4.translate(localModel, localModel, point);
+        mat4.scale(localModel, localModel, [size, size, size]);
+        mat4.multiply(model, layerEntry.worldMatrix, localModel);
+        mat4.multiply(mv, view, model);
+        mat4.multiply(mvp, projection, mv);
+        drawColorSphere(mvp, overlayColor);
+        return;
+      }
+
+      if (annotation.shape === "line" && annotation.points && annotation.points.length >= 2) {
+        const points = transformPointsByMatrix(layerEntry.worldMatrix, annotation.points.slice(0, 2) as [number, number, number][]);
+        const radius = Math.max(0.002, annotation.size ?? 0.03) * 1.18;
+        const lineModel = makeLineModelMatrix(points[0], points[1], radius);
+        if (lineModel) {
+          const mv = mat4.create();
+          const mvp = mat4.create();
+          mat4.multiply(mv, view, lineModel);
+          mat4.multiply(mvp, projection, mv);
+          drawColorCylinder(mvp, overlayColor);
+        }
+        const endpointSize = Math.max(radius * 1.08, 0.008);
+        for (const point of points) {
+          const model = mat4.create();
+          const mv = mat4.create();
+          const mvp = mat4.create();
+          mat4.translate(model, model, point);
+          mat4.scale(model, model, [endpointSize, endpointSize, endpointSize]);
+          mat4.multiply(mv, view, model);
+          mat4.multiply(mvp, projection, mv);
+          drawColorSphere(mvp, overlayColor);
+        }
+        return;
+      }
+
+      if ((annotation.shape === "rectangle" || annotation.shape === "circle") && annotation.points && annotation.points.length >= 2) {
+        const points = transformPointsByMatrix(layerEntry.worldMatrix, annotation.points as [number, number, number][]);
+        drawPolylineCylinders(points, true, Math.max(0.0015, (annotation.size ?? 0.06) * 0.34), overlayColor, view, projection);
+        return;
+      }
+
+      if (annotation.shape === "freehand") {
+        for (const stroke of annotation.freehandStrokes ?? []) {
+          if (!stroke.points?.length) continue;
+          drawFreehandStroke(
+            transformPointsByMatrix(layerEntry.worldMatrix, stroke.points),
+            transformNormalsByMatrix(layerEntry.worldMatrix, stroke.normals ?? stroke.points.map(() => [0, 0, 1] as [number, number, number])),
+            Math.max((annotation.size ?? 0.06) * 1.08, 0.004),
+            Math.max((annotation.brushDepth ?? 0.015) * 1.04, 0.003),
+            overlayColor,
+            view,
+            projection
+          );
+        }
+      }
+    }
+
+
     function drawTexturedPlane(texture: WebGLTexture, mvp: mat4, alpha: number) {
       resetVertexAttribArrays();
 
@@ -2517,7 +3185,8 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       for (let i = 0; i < layers.length; i += 1) {
         const layerEntry = layers[i];
         const layer = layerEntry.layer;
-        const isHighlighted = highlightedLayerIds.has(layer.id);
+        const isHoveredSelectionLayer =
+          activeToolRef.current === "select" && hoveredSceneHitRef.current?.layerId === layer.id;
 
         if ((isMeshLayer(layer) || isLocalMeshLayer(layer)) && typeof layer.source === "string") {
           const meshKey = isMeshLayer(layer) ? getMeshCacheKey(layer.source) : getLocalMeshCacheKey(layer.source);
@@ -2534,9 +3203,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             drawMeshSurface(
               mesh,
               mvp,
-              isHighlighted
-                ? [0.72, 0.96, 1.0, clamp(0.26 * Math.max(layerEntry.opacity, 0.2), 0.05, 1)]
-                : [0.52, 0.72, 0.96, clamp(0.16 * layerEntry.opacity, 0.03, 1)]
+              [0.52, 0.72, 0.96, clamp((isHoveredSelectionLayer ? 0.18 : 0.14) * layerEntry.opacity, 0.03, 1)]
             );
           }
 
@@ -2549,10 +3216,10 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
           if (volume) {
             if (layer.renderMode === "volume") {
-              renderVolumeLayer(volumeKey, volume, isHighlighted, layerEntry.opacity, layerEntry.worldMatrix, view, projection, loadedVolumeEntry.profile);
+              renderVolumeLayer(volumeKey, volume, isHoveredSelectionLayer, layerEntry.opacity, layerEntry.worldMatrix, view, projection, loadedVolumeEntry.profile);
             } else if (layer.renderMode === "slices") {
               const activePlane =
-                activeToolRef.current === "slice" && selectedNodeId === layer.id
+                activeToolRef.current === "slice" && selectedNodeIdRef.current === layer.id
                   ? layer.axisSliceState?.activePlane ?? "xy"
                   : null;
               const hoveredPlane =
@@ -2579,8 +3246,8 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
                 const isActivePlane = activePlane === plane;
                 const isHoveredPlane = hoveredPlane === plane;
                 const alpha = clamp(
-                  (isHighlighted
-                    ? 0.98
+                  (isHoveredSelectionLayer
+                    ? 0.86
                     : isActivePlane
                       ? 1.0
                       : isHoveredPlane
@@ -2711,7 +3378,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           drawTexturedPlane(
             sliceTex.texture,
             mvp,
-            clamp((isHighlighted ? 1.0 : sliceParams.opacity ?? 0.92) * layerEntry.opacity, 0.02, 1)
+            clamp(((isHoveredSelectionLayer ? 0.92 : (sliceParams.opacity ?? 0.92))) * layerEntry.opacity, 0.02, 1)
           );
 
           continue;
@@ -2735,11 +3402,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             mat4.multiply(mv, view, model);
             mat4.multiply(mvp, projection, mv);
 
-            if (isHighlighted) {
-              drawColorSphere(mvp, [Math.min(r + 0.18, 1), Math.min(g + 0.18, 1), Math.min(b + 0.18, 1), 1]);
-            } else {
-              drawColorSphere(mvp, [r, g, b, opacity]);
-            }
+            drawColorSphere(mvp, [r, g, b, opacity]);
           }
 
           if (annotation?.shape === "line" && annotation.points && annotation.points.length >= 2) {
@@ -2755,11 +3418,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
               const mvp = mat4.create();
               mat4.multiply(mv, view, lineModel);
               mat4.multiply(mvp, projection, mv);
-              if (isHighlighted) {
-                drawColorCylinder(mvp, [Math.min(r + 0.18, 1), Math.min(g + 0.18, 1), Math.min(b + 0.18, 1), 1]);
-              } else {
-                drawColorCylinder(mvp, [r, g, b, opacity]);
-              }
+              drawColorCylinder(mvp, [r, g, b, opacity]);
             }
 
             const endpointSize = Math.max(radius * 1.25, 0.008);
@@ -2771,7 +3430,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
               mat4.scale(model, model, [endpointSize, endpointSize, endpointSize]);
               mat4.multiply(mv, view, model);
               mat4.multiply(mvp, projection, mv);
-              drawColorSphere(mvp, isHighlighted ? [Math.min(r + 0.18, 1), Math.min(g + 0.18, 1), Math.min(b + 0.18, 1), 1] : [r, g, b, opacity]);
+              drawColorSphere(mvp, [r, g, b, opacity]);
             }
           }
 
@@ -2779,9 +3438,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             const radius = Math.max(0.0015, (annotation.size ?? 0.06) * 0.28);
             const opacity = clamp((annotation.opacity ?? 0.9) * layerEntry.opacity, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
-            const color: [number, number, number, number] = isHighlighted
-              ? [Math.min(r + 0.18, 1), Math.min(g + 0.18, 1), Math.min(b + 0.18, 1), 1]
-              : [r, g, b, opacity];
+            const color: [number, number, number, number] = [r, g, b, opacity];
             drawPolylineCylinders(transformPointsByMatrix(layerEntry.worldMatrix, annotation.points as [number, number, number][]), true, radius, color, view, projection);
           }
 
@@ -2790,9 +3447,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             const brushDepth = Math.max(0.0015, annotation.brushDepth ?? Math.max(size * 0.28, 0.015));
             const opacity = clamp((annotation.opacity ?? 0.9) * layerEntry.opacity, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
-            const color: [number, number, number, number] = isHighlighted
-              ? [Math.min(r + 0.18, 1), Math.min(g + 0.18, 1), Math.min(b + 0.18, 1), 1]
-              : [r, g, b, opacity];
+            const color: [number, number, number, number] = [r, g, b, opacity];
             for (const stroke of annotation.freehandStrokes ?? []) {
               drawFreehandStroke(
                 transformPointsByMatrix(layerEntry.worldMatrix, stroke.points),
@@ -2820,6 +3475,31 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         if (layer.type === "remote") {
           continue;
         }
+      }
+
+
+      const hoverSelectionColor: [number, number, number, number] = [1.0, 1.0, 1.0, 0.7];
+      const selectedSelectionColor: [number, number, number, number] = [0.62, 0.88, 1.0, 0.9];
+      const selectedHoverSelectionColor: [number, number, number, number] = [0.84, 0.96, 1.0, 0.95];
+
+      for (let i = 0; i < layers.length; i += 1) {
+        const layerEntry = layers[i];
+        const layer = layerEntry.layer;
+        const isHoveredSelectionLayer =
+          activeToolRef.current === "select" && hoveredSceneHitRef.current?.layerId === layer.id;
+        const isSelectedLayer = highlightedLayerIdsRef.current.has(layer.id);
+
+        if (!isHoveredSelectionLayer && !isSelectedLayer) {
+          continue;
+        }
+
+        const color = isHoveredSelectionLayer && isSelectedLayer
+          ? selectedHoverSelectionColor
+          : isHoveredSelectionLayer
+            ? hoverSelectionColor
+            : selectedSelectionColor;
+
+        renderSelectionIndicator(layerEntry, view, projection, color);
       }
 
       const hoveredHit = hoveredSceneHitRef.current;
@@ -2952,6 +3632,33 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       keys.delete(e.key.toLowerCase());
     }
 
+    function beginSelectRectDrag(clientX: number, clientY: number) {
+      selectRectDragging = true;
+      selectRectStartClientX = clientX;
+      selectRectStartClientY = clientY;
+      setSelectionRect({ left: clientX, top: clientY, width: 0, height: 0 });
+    }
+
+    function onWindowMouseDownCapture(e: MouseEvent) {
+      if (activeToolRef.current !== "select") return;
+      if (e.button !== 0) return;
+      if (!canvasRef.current) return;
+      if (e.target === canvasRef.current) return;
+      if (isInteractiveOverlayTarget(e.target)) return;
+
+      const rect = canvasRef.current.getBoundingClientRect();
+      const insideCanvas =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+
+      if (!insideCanvas) return;
+
+      e.preventDefault();
+      beginSelectRectDrag(e.clientX, e.clientY);
+    }
+
     function onMouseDown(e: MouseEvent) {
       if (activeToolRef.current === "mouse") {
         if (camera.mode === "orbit") {
@@ -2978,6 +3685,19 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         dragMode = "rotate";
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
+        return;
+      }
+
+      if (activeToolRef.current === "select") {
+        const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
+        publishHoveredSceneHit(hit);
+
+        if (e.button !== 0) {
+          return;
+        }
+
+        e.preventDefault();
+        beginSelectRectDrag(e.clientX, e.clientY);
         return;
       }
 
@@ -3104,6 +3824,29 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       freehandAttachedLayerId = undefined;
       freehandAttachedLayerName = undefined;
 
+      if (activeToolRef.current === "select") {
+        const totalDx = e.clientX - selectRectStartClientX;
+        const totalDy = e.clientY - selectRectStartClientY;
+        const movedEnough = Math.hypot(totalDx, totalDy) >= 6;
+        const isToggle = e.ctrlKey || e.metaKey;
+        if (selectRectDragging) {
+          if (movedEnough) {
+            const layerIds = collectSceneLayerIdsInScreenRect(selectRectStartClientX, selectRectStartClientY, e.clientX, e.clientY);
+            if (layerIds.length) {
+              onSelectSceneLayersRef.current?.(layerIds, { append: isToggle, preferredNodeId: layerIds[layerIds.length - 1] ?? null });
+            }
+          } else {
+            const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY) ?? hoveredSceneHitRef.current;
+            if (hit) {
+              onSelectSceneLayerRef.current?.(hit.layerId, { toggle: isToggle });
+            }
+          }
+        }
+        selectRectDragging = false;
+        setSelectionRect(null);
+        return;
+      }
+
       if (activeToolRef.current !== "pencil") return;
       if (!shapeDragStartHitRef.current) return;
       if (annotationShapeRef.current !== "rectangle" && annotationShapeRef.current !== "circle") {
@@ -3145,11 +3888,26 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       dragging = false;
       dragMode = null;
       sliceDrag = null;
+      selectRectDragging = false;
+      setSelectionRect(null);
       shapeDragCurrentHitRef.current = null;
       publishHoveredSceneHit(null);
     }
 
     function onMouseMove(e: MouseEvent) {
+      if (activeToolRef.current === "select") {
+        if (selectRectDragging) {
+          const nextLeft = Math.min(selectRectStartClientX, e.clientX);
+          const nextTop = Math.min(selectRectStartClientY, e.clientY);
+          setSelectionRect({ left: nextLeft, top: nextTop, width: Math.abs(e.clientX - selectRectStartClientX), height: Math.abs(e.clientY - selectRectStartClientY) });
+          publishHoveredSceneHit(null);
+        } else {
+          const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
+          publishHoveredSceneHit(hit);
+        }
+        return;
+      }
+
       if (activeToolRef.current === "slice") {
         const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
         publishHoveredSceneHit(hit);
@@ -3293,6 +4051,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("mousedown", onWindowMouseDownCapture, true);
     canvas.addEventListener("mousedown", onMouseDown);
     canvas.addEventListener("mouseleave", onMouseLeave);
     window.addEventListener("mouseup", onMouseUp);
@@ -3318,6 +4077,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       cancelAnimationFrame(animationFrameId);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("mousedown", onWindowMouseDownCapture, true);
       canvas.removeEventListener("mousedown", onMouseDown);
       canvas.removeEventListener("mouseleave", onMouseLeave);
       window.removeEventListener("mouseup", onMouseUp);
@@ -3358,11 +4118,28 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       gl.deleteProgram(textureProgram);
       gl.deleteProgram(volumeTextureProgram);
     };
-  }, [selectedNodeId, highlightedLayerIds, loadTick, backgroundColor]);
+  }, [loadTick, backgroundColor]);
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+
+      {selectionRect ? (
+        <div
+          style={{
+            position: "fixed",
+            left: selectionRect.left,
+            top: selectionRect.top,
+            width: selectionRect.width,
+            height: selectionRect.height,
+            border: "1px solid rgba(160,220,255,0.95)",
+            background: "rgba(120,190,255,0.14)",
+            boxShadow: "0 0 0 1px rgba(255,255,255,0.08) inset",
+            pointerEvents: "none",
+            zIndex: 30,
+          }}
+        />
+      ) : null}
 
       {infoPanelContent ? (
         <div

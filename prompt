@@ -1,7 +1,3 @@
-slice browser { 
-  ok nice, Now a few more finetuning on the slice browser. I want to work a bit the ui layout of the controle panel.  
-  RIght now we have 
-}
 [todo] the user should be able to add a personnal (browser hosted data) in the viewer without having to re upload the file.  
 
 Annotations { 
@@ -21,6 +17,7 @@ Extracter {
 *[NTH] add login and cloud support for file with limit and tierd user
 *[NTH] add a way for people to push external link (library of external link for users) 
 *[NTH] annotations with AI 3D assistance
+*[NTH] A panel with gpu/cpu/ram/data usage + I could put a compass
 
 [NTH] screen shot tool, and recording tool?
 [NTH] tutorial how to use.   

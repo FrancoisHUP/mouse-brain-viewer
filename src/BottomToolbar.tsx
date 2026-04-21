@@ -13,6 +13,7 @@ declare global {
 
 export type ToolId =
   | "mouse"
+  | "select"
   | "pencil"
   | "slice"
   | "data"
@@ -36,6 +37,7 @@ type ToolDefinition = {
 
 const TOOLS: ToolDefinition[] = [
   { id: "mouse", label: "Move" },
+  { id: "select", label: "Select" },
   { id: "pencil", label: "Draw" },
   { id: "slice", label: "Browse slices" },
 ];
@@ -87,6 +89,20 @@ function Icon({ id }: { id: ToolId }) {
       return (
         <svg {...common}>
           <path d="M8 4l8 8-4 1 2 5-2 1-2-5-3 3z" />
+        </svg>
+      );
+    case "select":
+      return (
+        <svg {...common} viewBox="0 0 24 24">
+          <path d="M5 3.5h3" />
+          <path d="M3.5 5v3" />
+          <path d="M16 3.5h3" />
+          <path d="M20.5 5v3" />
+          <path d="M3.5 16v3" />
+          <path d="M5 20.5h3" />
+          <path d="M11.5 20.5h2" />
+          <path d="M20.5 11.5v2" />
+          <path d="M14.5 12.5v10.7a.3.3 0 0 0 .5.2l2.95-2.95a.3.3 0 0 1 .21-.09H22a.3.3 0 0 0 .21-.51l-7.2-7.2a.3.3 0 0 0-.51.21Z" />
         </svg>
       );
     case "pencil":
@@ -1433,28 +1449,7 @@ function SaveToolButton({ open, onClick, content }: { open: boolean; onClick: ()
         }}
       >
         <div data-theme-surface="panel" style={{ minWidth: 280, maxWidth: 340, borderRadius: 16, background: "rgba(12,14,18,0.96)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
-          <SliceToolPanel
-            selectedLayerName={selectedLayerName}
-            targetPlane={targetPlane}
-            hoveredPlane={hoveredPlane}
-            hasSelectedLayer={hasSelectedLayer}
-            canResetToCenter={canResetToCenter}
-            canAdjustView={canAdjustView}
-            rotationDeg={rotationDeg}
-            scale={scale}
-            flipX={flipX}
-            flipY={flipY}
-            flipZ={flipZ}
-            visibilityXY={visibilityXY}
-            visibilityXZ={visibilityXZ}
-            visibilityYZ={visibilityYZ}
-            onToggleVisibility={onToggleVisibility}
-            onResetSliceView={onResetSliceView}
-            onToggleFlip={onToggleFlip}
-            onResetToCenter={onResetToCenter}
-            onRotate={onRotate}
-            onScale={onScale}
-          />
+          {content}
         </div>
       </div>
     </div>
@@ -1704,11 +1699,11 @@ export default function BottomToolbar({
               visibilityXZ={sliceVisibilityXZ}
               visibilityYZ={sliceVisibilityYZ}
               onToggleVisibility={onSliceToggleVisibility}
-              onResetSliceView={onSliceResetView}
-              onToggleFlip={onSliceToggleFlip}
-              onResetToCenter={onSliceResetToCenter}
-              onRotate={onSliceRotate}
-              onScale={onSliceScale}
+              onResetSliceView={onSliceResetView ?? (() => {})}
+              onToggleFlip={onSliceToggleFlip ?? (() => {})}
+              onResetToCenter={onSliceResetToCenter ?? (() => {})}
+              onRotate={onSliceRotate ?? (() => {})}
+              onScale={onSliceScale ?? (() => {})}
             />
           );
         }

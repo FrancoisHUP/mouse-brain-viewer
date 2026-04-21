@@ -36,6 +36,10 @@ export type AxisSliceViewTransform = {
 
 export type AxisSliceViewState = Partial<Record<SlicePlane, AxisSliceViewTransform>>;
 
+export type AxisSliceNavigationState = Partial<Record<SlicePlane, number>> & {
+  activePlane?: SlicePlane;
+};
+
 export type CustomSliceSource = {
   volumeLayerId: string;
 };
