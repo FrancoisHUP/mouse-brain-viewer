@@ -426,7 +426,115 @@ function getCanonicalSlicePlaneCompactLabel(plane: SlicePlane): string {
   return "YZ";
 }
 
-function SliceToolPanel({
+function SlicePanelIcon({ children }: { children: ReactNode }) {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        width: 24,
+        height: 24,
+        borderRadius: 8,
+        border: "1px solid rgba(255,255,255,0.10)",
+        background: "rgba(255,255,255,0.05)",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "rgba(255,255,255,0.88)",
+        flexShrink: 0,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function SliceHeaderIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 4.5l6 3.5-6 3.5-6-3.5 6-3.5z" />
+      <path d="M6 8v8l6 3.5 6-3.5V8" />
+      <path d="M12 11.5v8" />
+    </svg>
+  );
+}
+
+function VisibilityIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </svg>
+  );
+}
+
+function FlipIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 4v16" />
+      <path d="M9 8H5l2.5-2.5" />
+      <path d="M9 16H5l2.5 2.5" />
+      <path d="M15 8h4l-2.5-2.5" />
+      <path d="M15 16h4l-2.5 2.5" />
+    </svg>
+  );
+}
+
+function RotateIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 11a8 8 0 10-2.34 5.66" />
+      <path d="M20 4v7h-7" />
+    </svg>
+  );
+}
+
+function ScaleIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 12L5 5" />
+      <path d="M5 9V5h4" />
+      <path d="M12 12l7 7" />
+      <path d="M15 19h4v-4" />
+      <path d="M12 12l7-7" />
+      <path d="M15 5h4v4" />
+      <path d="M12 12l-7 7" />
+      <path d="M5 15v4h4" />
+    </svg>
+  );
+}
+
+function PanelSection({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,0.08)",
+        background: "rgba(255,255,255,0.03)",
+        padding: 12,
+        display: "grid",
+        gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "2px 2px 0 2px" }}>
+        <SlicePanelIcon>{icon}</SlicePanelIcon>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.92)" }}>{title}</div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+void PanelSection;
+
+function SliceToolPanelLegacy({
   selectedLayerName,
   targetPlane,
   hoveredPlane,
@@ -469,6 +577,20 @@ function SliceToolPanel({
   onRotate: (deltaDeg: number) => void;
   onScale: (delta: number) => void;
 }) {
+  const headerTitle = hasSelectedLayer
+    ? targetPlane
+      ? getCanonicalSlicePlaneLabel(targetPlane)
+      : hoveredPlane
+        ? `${getCanonicalSlicePlaneLabel(hoveredPlane)} ready`
+        : "Slice explorer ready"
+    : "Slice explorer";
+  const helperText = hasSelectedLayer
+    ? hoveredPlane
+      ? "Drag in the scene to move this plane, use the wheel to browse slices, then fine-tune the view here."
+      : "Hover one of the canonical planes in the scene to start adjusting it."
+    : "Select a slice-rendered layer in the layer panel to browse and adjust its canonical planes.";
+  void headerTitle;
+  void helperText;
   return (
     <div
       style={{
@@ -478,21 +600,13 @@ function SliceToolPanel({
         color: "white",
         fontFamily: "sans-serif",
         display: "grid",
-        gap: 8,
+        gap: 10,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div
-          aria-hidden="true"
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 999,
-            background: hoveredPlane ? "rgba(120,200,255,0.95)" : "rgba(255,255,255,0.30)",
-            boxShadow: hoveredPlane ? "0 0 0 4px rgba(120,200,255,0.16)" : "none",
-            flexShrink: 0,
-          }}
-        />
+        <SlicePanelIcon>
+          <SliceHeaderIcon />
+        </SlicePanelIcon>
         <div
           data-theme-text="strong"
           style={{
@@ -696,7 +810,7 @@ function SliceToolPanel({
               <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.76, minWidth: 58 }}>
                 Rotation
               </span>
-              {[-90, -10, -1, 1, 10, 90].map((step) => (
+              {[-90, 90].map((step) => (
                 <button
                   key={step}
                   type="button"
@@ -754,9 +868,375 @@ function SliceToolPanel({
   );
 }
 
+void SliceToolPanelLegacy;
+
+function SliceToolPanel({
+  selectedLayerName,
+  targetPlane,
+  hoveredPlane,
+  hasSelectedLayer,
+  canResetToCenter,
+  canAdjustView,
+  rotationDeg,
+  scale,
+  flipX,
+  flipY,
+  flipZ,
+  visibilityXY,
+  visibilityXZ,
+  visibilityYZ,
+  onToggleVisibility,
+  onResetSliceView,
+  onToggleFlip,
+  onResetToCenter,
+  onRotate,
+  onScale,
+}: {
+  selectedLayerName: string | null;
+  targetPlane: SlicePlane | null;
+  hoveredPlane: SlicePlane | null;
+  hasSelectedLayer: boolean;
+  canResetToCenter: boolean;
+  canAdjustView: boolean;
+  rotationDeg: number;
+  scale: number;
+  flipX: boolean;
+  flipY: boolean;
+  flipZ: boolean;
+  visibilityXY: boolean;
+  visibilityXZ: boolean;
+  visibilityYZ: boolean;
+  onToggleVisibility: (plane: SlicePlane) => void;
+  onResetSliceView: () => void;
+  onToggleFlip: (axis: "x" | "y" | "z") => void;
+  onResetToCenter: () => void;
+  onRotate: (deltaDeg: number) => void;
+  onScale: (delta: number) => void;
+}) {
+  const activePlane = targetPlane ?? hoveredPlane;
+  const summaryTitle = activePlane ? getCanonicalSlicePlaneLabel(activePlane) : "Slice explorer";
+  const summaryHint = !hasSelectedLayer
+    ? "Select a slice-rendered layer to browse and adjust its canonical planes."
+    : !targetPlane
+      ? "Hover a canonical plane in the scene to choose which one to adjust."
+      : null;
+  const rowLabelStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 92,
+    fontSize: 11,
+    fontWeight: 700,
+    color: "rgba(255,255,255,0.84)",
+    flexShrink: 0,
+  } as const;
+  const actionButtonStyle = {
+    height: 28,
+    padding: "0 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(255,255,255,0.05)",
+    color: "inherit",
+    fontSize: 11,
+    fontWeight: 700,
+  } as const;
+
+  return (
+    <div
+      style={{
+        minWidth: 320,
+        maxWidth: 540,
+        borderRadius: 12,
+        color: "white",
+        fontFamily: "sans-serif",
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gap: 8,
+          borderRadius: 12,
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(255,255,255,0.03)",
+          padding: 10,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 8, minWidth: 0 }}>
+            <SlicePanelIcon>
+              <SliceHeaderIcon />
+            </SlicePanelIcon>
+            <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
+              <div data-theme-text="strong" style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.35 }}>
+                {summaryTitle}
+              </div>
+              <div
+                data-theme-text="muted"
+                style={{
+                  fontSize: 11,
+                  opacity: 0.8,
+                  lineHeight: 1.35,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: 280,
+                }}
+              >
+                {selectedLayerName ? selectedLayerName : "No layer selected"}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onResetToCenter}
+            disabled={!canResetToCenter}
+            title="Reset to center"
+            aria-label="Reset to center"
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(255,255,255,0.05)",
+              color: "inherit",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: canResetToCenter ? "pointer" : "default",
+              opacity: canResetToCenter ? 1 : 0.5,
+              flexShrink: 0,
+            }}
+          >
+            <RecenterIcon />
+          </button>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          {activePlane ? (
+            <span
+              data-theme-text="strong"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                minHeight: 26,
+                padding: "0 9px",
+                borderRadius: 999,
+                border: "1px solid rgba(120,200,255,0.28)",
+                background: "rgba(120,200,255,0.10)",
+                fontSize: 11,
+                fontWeight: 700,
+              }}
+            >
+              {getCanonicalSlicePlaneCompactLabel(activePlane)}
+            </span>
+          ) : null}
+          {hasSelectedLayer && targetPlane ? (
+            <>
+              <span
+                data-theme-text="default"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  minHeight: 26,
+                  padding: "0 9px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.05)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                Rotation {rotationDeg.toFixed(1)} deg
+              </span>
+              <span
+                data-theme-text="default"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  minHeight: 26,
+                  padding: "0 9px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.05)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                Scale {scale.toFixed(2)}x
+              </span>
+            </>
+          ) : null}
+        </div>
+        {summaryHint ? (
+          <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72, lineHeight: 1.35 }}>
+            {summaryHint}
+          </div>
+        ) : null}
+      </div>
+
+      {hasSelectedLayer && targetPlane ? (
+        <div
+          style={{
+            display: "grid",
+            gap: 8,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.08)",
+            background: "rgba(255,255,255,0.03)",
+            padding: 10,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
+            <div data-theme-text="strong" style={{ fontSize: 12, fontWeight: 700 }}>
+              Transformations
+            </div>
+            <button
+              type="button"
+              onClick={onResetSliceView}
+              disabled={!canAdjustView}
+              title="Reset slice view"
+              aria-label="Reset slice view"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                color: "inherit",
+                cursor: canAdjustView ? "pointer" : "default",
+                opacity: canAdjustView ? 1 : 0.5,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <ResetTransformIcon />
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={rowLabelStyle}>
+                <SlicePanelIcon>
+                  <VisibilityIcon />
+                </SlicePanelIcon>
+                Visibility
+              </span>
+              {([
+                ["xy", "XY", visibilityXY],
+                ["xz", "XZ", visibilityXZ],
+                ["yz", "YZ", visibilityYZ],
+              ] as const).map(([planeId, label, isVisible]) => (
+                <button
+                  key={planeId}
+                  type="button"
+                  onClick={() => onToggleVisibility(planeId)}
+                  style={{
+                    ...actionButtonStyle,
+                    minWidth: 42,
+                    background: isVisible ? "rgba(80,160,255,0.18)" : "rgba(255,255,255,0.05)",
+                    cursor: "pointer",
+                    opacity: 1,
+                  }}
+                  title={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
+                  aria-label={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={rowLabelStyle}>
+                <SlicePanelIcon>
+                  <FlipIcon />
+                </SlicePanelIcon>
+                Flip
+              </span>
+              {([
+                ["x", "X", flipX],
+                ["y", "Y", flipY],
+                ["z", "Z", flipZ],
+              ] as const).map(([axis, label, isActive]) => (
+                <button
+                  key={axis}
+                  type="button"
+                  onClick={() => onToggleFlip(axis)}
+                  disabled={!canAdjustView}
+                  title={axis === "z" ? "Reverse the slice browsing direction for this plane" : `Flip ${label}`}
+                  aria-label={axis === "z" ? "Flip Z" : `Flip ${label}`}
+                  style={{
+                    ...actionButtonStyle,
+                    minWidth: 30,
+                    background: isActive ? "rgba(80,160,255,0.18)" : "rgba(255,255,255,0.05)",
+                    cursor: canAdjustView ? "pointer" : "default",
+                    opacity: canAdjustView ? 1 : 0.5,
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={rowLabelStyle}>
+                <SlicePanelIcon>
+                  <RotateIcon />
+                </SlicePanelIcon>
+                Rotation
+              </span>
+              {[-90, 90].map((step) => (
+                <button
+                  key={step}
+                  type="button"
+                  onClick={() => onRotate(step)}
+                  disabled={!canAdjustView}
+                  style={{
+                    ...actionButtonStyle,
+                    cursor: canAdjustView ? "pointer" : "default",
+                    opacity: canAdjustView ? 1 : 0.5,
+                  }}
+                >
+                  {step > 0 ? `+${step}` : step} deg
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={rowLabelStyle}>
+                <SlicePanelIcon>
+                  <ScaleIcon />
+                </SlicePanelIcon>
+                Scale
+              </span>
+              {[-0.1, 0.1].map((step) => (
+                <button
+                  key={step}
+                  type="button"
+                  onClick={() => onScale(step)}
+                  disabled={!canAdjustView}
+                  style={{
+                    ...actionButtonStyle,
+                    cursor: canAdjustView ? "pointer" : "default",
+                    opacity: canAdjustView ? 1 : 0.5,
+                  }}
+                >
+                  {step > 0 ? `+${step.toFixed(2)}` : step.toFixed(2)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SliceToolButton({
   active,
   onClick,
+  onHoverLockChange,
   selectedLayerName,
   targetPlane,
   hoveredPlane,
@@ -780,6 +1260,7 @@ function SliceToolButton({
 }: {
   active: boolean;
   onClick: () => void;
+  onHoverLockChange?: (locked: boolean) => void;
   selectedLayerName: string | null;
   targetPlane: SlicePlane | null;
   hoveredPlane: SlicePlane | null;
@@ -804,6 +1285,11 @@ function SliceToolButton({
   const [isHovered, setIsHovered] = useState(false);
   const showMenu = isHovered;
 
+  useEffect(() => {
+    onHoverLockChange?.(showMenu);
+    return () => onHoverLockChange?.(false);
+  }, [onHoverLockChange, showMenu]);
+
   return (
     <div
       style={{ position: "relative" }}
@@ -827,16 +1313,20 @@ function SliceToolButton({
       >
         <div
           data-theme-surface="panel"
-          onPointerDownCapture={() => onClick()}
+          onPointerDownCapture={() => {
+            if (!active) {
+              onClick();
+            }
+          }}
           style={{
-            minWidth: 420,
-            maxWidth: 620,
-            borderRadius: 18,
+            minWidth: 360,
+            maxWidth: 560,
+            borderRadius: 16,
             background: "rgba(12,14,18,0.90)",
             border: "1px solid rgba(255,255,255,0.10)",
             boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
             backdropFilter: "blur(14px)",
-            padding: 12,
+            padding: 10,
             color: "white",
           }}
         >
@@ -1517,6 +2007,7 @@ export default function BottomToolbar({
   sliceVisibilityXY = true,
   sliceVisibilityXZ = true,
   sliceVisibilityYZ = true,
+  onSliceHoverLockChange,
   onSliceToggleVisibility = () => {},
   onSliceResetView,
   onSliceToggleFlip,
@@ -1570,6 +2061,7 @@ export default function BottomToolbar({
   sliceVisibilityXY?: boolean;
   sliceVisibilityXZ?: boolean;
   sliceVisibilityYZ?: boolean;
+  onSliceHoverLockChange?: (locked: boolean) => void;
   onSliceToggleVisibility?: (plane: SlicePlane) => void;
   onSliceResetView?: () => void;
   onSliceToggleFlip?: (axis: "x" | "y" | "z") => void;
@@ -1684,6 +2176,7 @@ export default function BottomToolbar({
               key={tool.id}
               active={activeTool === "slice"}
               onClick={() => onToolChange(tool.id)}
+              onHoverLockChange={onSliceHoverLockChange}
               selectedLayerName={sliceSelectedLayerName}
               targetPlane={sliceTargetPlane}
               hoveredPlane={sliceHoveredPlane}
@@ -1710,7 +2203,7 @@ export default function BottomToolbar({
 
         return <ToolButton key={tool.id} id={tool.id} label={tool.label} active={isActive} onClick={() => onToolChange(tool.id)} />;
       }),
-    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
+    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
   );
 
   return (

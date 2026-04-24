@@ -1,4 +1,26 @@
-[todo] the user should be able to add a personnal (browser hosted data) in the viewer without having to re upload the file.  
+wish list {
+  be the center of data for mouse brain 
+  create a data center where all the mouse brain and mouse experiement can be hosted and everything should be easy to view. 
+  use ai to annotate, 
+  export annotation 
+}
+
+[todo] fix the selection on skeleton (right now it select every verticies)
+[todo] what should happen on group selection with the paremeters (opacity)
+[todo] add the tilted slice to the slice explorer.
+
+import data {
+  [todo] the user should be able to add a personnal (browser hosted data) in the viewer without having to re upload the file.  
+  [todo] rewrok the import so I have a panel with all the date (online and local / personnal or shared or built in)
+  [todo] fix the import so the brain has the right orientation of every slices. 
+  [todo] rework the data panel. The user should be able to load an imported data into the scene (without having to reupload)
+}
+
+
+Export {
+  [todo] add exports? download the file in other types then the original (converter), download the transformation / apply the transformation to the brain (for this one I should make sure I import the data the right way compatible with other software), download RAS (auto detect).  download images, annotaions, recordings ?  
+}
+
 
 Annotations { 
   [todo] making the annotation match the color of the allen atlas; getting the other skeleton of the annotation instead of volumetric data or both ? 
@@ -34,8 +56,6 @@ Extracter {
 --- BUG LIST
 
 --- Check list
-[bug] when a user draw at different brush size, the size of the brush apply to every annotation (even old one, so it changes the old annotation size).  
-
 [bug] when the user click on the open library, it triggers an error. Also this panel needs reworks!
 
 

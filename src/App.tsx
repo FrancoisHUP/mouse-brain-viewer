@@ -29,8 +29,8 @@ import {
 } from "./appPreferencesStore";
 import {
   clearPersistedViewerState,
-  loadPersistedViewerState,
-  savePersistedViewerState,
+  loadPersistedViewerSession,
+  savePersistedViewerSession,
 } from "./viewerStateStorage";
 import {
   ALLEN_VIEWER_EMBED_NAMESPACE,
@@ -69,9 +69,11 @@ import {
   clearPersistedViewerLibrary,
   createSavedViewerEntry,
   loadPersistedViewerLibrary,
+  overwriteSavedViewerEntry,
   savePersistedViewerLibrary,
   upsertSharedViewerEntry,
   type SavedViewerEntry,
+  type SavedViewerRevision,
 } from "./viewerLibrary";
 import {
   VIEWER_HISTORY_STORAGE_KEY,
@@ -169,6 +171,10 @@ type AppProps = {
 };
 
 type AnnotationShapeSizeMap = Record<AnnotationShape, number>;
+type LayerClipboardPayload = {
+  sourceIds: string[];
+  nodes: LayerTreeNode[];
+};
 
 
 
@@ -181,6 +187,148 @@ function isCanonicalSliceBrowsableLayer(
     (node.type === "remote" || node.type === "file") &&
     node.renderMode === "slices"
   );
+}
+
+function cloneLayerTreeNodeSnapshot(node: LayerTreeNode): LayerTreeNode {
+  if (typeof structuredClone === "function") {
+    return structuredClone(node);
+  }
+  return JSON.parse(JSON.stringify(node)) as LayerTreeNode;
+}
+
+function buildDuplicateLayerName(baseName: string, usedNames: Set<string>): string {
+  const trimmed = baseName.trim() || "Untitled";
+  const copyBase = `${trimmed} copy`;
+  if (!usedNames.has(copyBase)) {
+    usedNames.add(copyBase);
+    return copyBase;
+  }
+
+  let suffix = 2;
+  while (usedNames.has(`${copyBase} ${suffix}`)) {
+    suffix += 1;
+  }
+  const nextName = `${copyBase} ${suffix}`;
+  usedNames.add(nextName);
+  return nextName;
+}
+
+function cloneLayerTreeNodeWithFreshIds(
+  node: LayerTreeNode,
+  rootNameOverride?: string
+): LayerTreeNode {
+  const snapshot = cloneLayerTreeNodeSnapshot(node);
+
+  function assignFreshIds(current: LayerTreeNode, nameOverride?: string): LayerTreeNode {
+    if (current.kind === "group") {
+      return {
+        ...current,
+        id: createId(),
+        name: nameOverride ?? current.name,
+        children: current.children.map((child) => assignFreshIds(child)),
+      };
+    }
+
+    return {
+      ...current,
+      id: createId(),
+      name: nameOverride ?? current.name,
+    };
+  }
+
+  return assignFreshIds(snapshot, rootNameOverride);
+}
+
+function collectTopLevelSelectedNodes(
+  nodes: LayerTreeNode[],
+  selectedIds: string[]
+): LayerTreeNode[] {
+  const selectedIdSet = new Set(
+    selectedIds.filter((id) => typeof id === "string" && id.length > 0)
+  );
+  const result: LayerTreeNode[] = [];
+
+  function walk(current: LayerTreeNode[], ancestorSelected: boolean) {
+    for (const node of current) {
+      const isSelected = selectedIdSet.has(node.id);
+      if (isSelected && !ancestorSelected) {
+        result.push(node);
+        continue;
+      }
+
+      if (node.kind === "group") {
+        walk(node.children, ancestorSelected || isSelected);
+      }
+    }
+  }
+
+  walk(nodes, false);
+  return result;
+}
+
+function duplicateLayerNodesByIds(
+  nodes: LayerTreeNode[],
+  selectedIds: string[]
+): { tree: LayerTreeNode[]; duplicatedRootIds: string[] } {
+  const topLevelSelection = collectTopLevelSelectedNodes(nodes, selectedIds);
+  if (!topLevelSelection.length) {
+    return { tree: nodes, duplicatedRootIds: [] };
+  }
+
+  const selectedIdSet = new Set(topLevelSelection.map((node) => node.id));
+  const duplicatedRootIds: string[] = [];
+
+  function walk(current: LayerTreeNode[]): LayerTreeNode[] {
+    const out: LayerTreeNode[] = [];
+    const usedNames = new Set(current.map((node) => node.name));
+
+    for (const node of current) {
+      if (selectedIdSet.has(node.id)) {
+        out.push(node);
+        const duplicateName = buildDuplicateLayerName(node.name, usedNames);
+        const duplicateNode = cloneLayerTreeNodeWithFreshIds(node, duplicateName);
+        duplicatedRootIds.push(duplicateNode.id);
+        out.push(duplicateNode);
+        continue;
+      }
+
+      if (node.kind === "group") {
+        out.push({
+          ...node,
+          children: walk(node.children),
+        });
+        continue;
+      }
+
+      out.push(node);
+    }
+
+    return out;
+  }
+
+  return {
+    tree: walk(nodes),
+    duplicatedRootIds,
+  };
+}
+
+function appendClipboardNodesToRoot(
+  nodes: LayerTreeNode[],
+  clipboardNodes: LayerTreeNode[]
+): { tree: LayerTreeNode[]; duplicatedRootIds: string[] } {
+  if (!clipboardNodes.length) {
+    return { tree: nodes, duplicatedRootIds: [] };
+  }
+
+  const usedNames = new Set(nodes.map((node) => node.name));
+  const duplicates = clipboardNodes.map((node) =>
+    cloneLayerTreeNodeWithFreshIds(node, buildDuplicateLayerName(node.name, usedNames))
+  );
+
+  return {
+    tree: [...nodes, ...duplicates],
+    duplicatedRootIds: duplicates.map((node) => node.id),
+  };
 }
 
 
@@ -273,6 +421,17 @@ function getCurrentSharedViewerUrl(): string | null {
   if (!rawHash) return null;
   const params = new URLSearchParams(rawHash);
   return params.get("vs") ? window.location.href : null;
+}
+
+function resolveOwnedSavedViewerId(entryId: string | null, entries: SavedViewerEntry[]): string | null {
+  if (!entryId) return null;
+  const entry = entries.find((item) => item.id === entryId);
+  return entry?.ownerKind === "owned" ? entry.id : null;
+}
+
+function buildLibrarySavePlaceholder(entries: SavedViewerEntry[]) {
+  const nextIndex = entries.filter((entry) => entry.ownerKind === "owned").length + 1;
+  return `Viewer ${nextIndex}`;
 }
 
 
@@ -443,6 +602,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     getFirstLayerId(INITIAL_TREE)
   );
   const [selectedNodeIdsExternal, setSelectedNodeIdsExternal] = useState<string[] | null>(null);
+  const layerClipboardRef = useRef<LayerClipboardPayload | null>(null);
   const [isLayerPanelCollapsed, setIsLayerPanelCollapsed] = useState(false);
   const [cameraState, setCameraState] = useState<SerializableCameraState>(
     DEFAULT_CAMERA_STATE
@@ -459,7 +619,9 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [viewerLibrary, setViewerLibrary] = useState<SavedViewerEntry[]>(() =>
     loadPersistedViewerLibrary()
   );
-  const [libraryMessage, setLibraryMessage] = useState<string | null>(null);
+  const [activeSavedViewerId, setActiveSavedViewerId] = useState<string | null>(null);
+  const [viewerLibraryMode, setViewerLibraryMode] = useState<"browse" | "save">("browse");
+  const [, setLibraryMessage] = useState<string | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [saveToasts, setSaveToasts] = useState<SaveToast[]>([]);
   const runtimeErrorFingerprintRef = useRef<Map<string, number>>(new Map());
@@ -482,6 +644,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [isGlobalFileDragActive, setIsGlobalFileDragActive] = useState(false);
   const [droppedLocalEntries, setDroppedLocalEntries] = useState<LocalInputEntry[] | null>(null);
   const [scenePointerTarget, setScenePointerTarget] = useState<ScenePointerHit | null>(null);
+  const [isSlicePanelHoverLocked, setIsSlicePanelHoverLocked] = useState(false);
   const [sliceToolPlane, setSliceToolPlane] = useState<SlicePlane | null>(null);
 
   useEffect(() => {
@@ -580,17 +743,6 @@ export default function App({ startupSlices = [] }: AppProps) {
   }, [activeTool, selectedCanonicalSliceLayer]);
 
   useEffect(() => {
-    if (activeTool !== "slice") return;
-    if (
-      scenePointerTarget?.plane &&
-      selectedCanonicalSliceLayer &&
-      scenePointerTarget.layerId === selectedCanonicalSliceLayer.id
-    ) {
-      setSliceToolPlane(scenePointerTarget.plane);
-    }
-  }, [activeTool, scenePointerTarget, selectedCanonicalSliceLayer]);
-
-  useEffect(() => {
     if (activeTool !== "slice") {
       setSliceToolPlane(null);
       return;
@@ -599,7 +751,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       setSliceToolPlane(null);
       return;
     }
-    setSliceToolPlane((prev) => prev ?? selectedCanonicalSliceLayer.axisSliceState?.activePlane ?? "xy");
+    setSliceToolPlane(selectedCanonicalSliceLayer.axisSliceState?.activePlane ?? "xy");
   }, [activeTool, selectedCanonicalSliceLayer]);
 
   useEffect(() => {
@@ -975,6 +1127,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     [...viewerLibrary].sort((a, b) => b.updatedAt - a.updatedAt),
     [viewerLibrary]
   );
+  const viewerLibrarySavePlaceholder = useMemo(
+    () => buildLibrarySavePlaceholder(viewerLibrary),
+    [viewerLibrary]
+  );
 
   const canUndo = pastStatesRef.current.length > 0;
   const canRedo = futureStatesRef.current.length > 0;
@@ -1243,6 +1399,40 @@ export default function App({ startupSlices = [] }: AppProps) {
     setShortcutBindings(resetShortcutBindings());
   }
 
+  function openViewerLibrary(
+    mode: "browse" | "save" = "browse",
+    options?: { preserveFeedback?: boolean }
+  ) {
+    if (!options?.preserveFeedback) {
+      setLibraryError(null);
+      setLibraryMessage(null);
+    }
+    setViewerLibraryMode(mode);
+    setActiveTool("library");
+    setIsAppMenuOpen(false);
+  }
+
+  function requestNewSavedViewerFlow() {
+    if (!isSerializableLayerTree(currentViewerState.scene.layerTree)) {
+      setLibraryMessage(null);
+      setLibraryError("This viewer contains layers that cannot be saved locally.");
+      openViewerLibrary("browse", { preserveFeedback: true });
+      return;
+    }
+
+    openViewerLibrary("save");
+  }
+
+  function handlePrimarySaveAction() {
+    const targetId = resolveOwnedSavedViewerId(activeSavedViewerId, viewerLibrary);
+    if (!targetId) {
+      requestNewSavedViewerFlow();
+      return;
+    }
+
+    handleOverwriteSavedViewer(targetId);
+  }
+
   function shouldIgnoreShortcutTarget(target: EventTarget | null): boolean {
     const element = target as HTMLElement | null;
     if (!element) return false;
@@ -1270,15 +1460,13 @@ export default function App({ startupSlices = [] }: AppProps) {
   function executeShortcutCommand(commandId: ShortcutCommandId) {
     switch (commandId) {
       case "saveViewer":
-        handleSaveCurrentViewerToLibrary();
+        handlePrimarySaveAction();
         return;
       case "newViewer":
         handleCreateNewViewer();
         return;
       case "openLibrary":
-        setLibraryError(null);
-        setLibraryMessage(null);
-            setActiveTool("library");
+        openViewerLibrary("browse");
         return;
       case "openShareDialog":
         openShareDialog();
@@ -1365,13 +1553,14 @@ export default function App({ startupSlices = [] }: AppProps) {
 
     const stateFromLocation = readInitialStateFromLocation();
     const sharedViewerUrl = getCurrentSharedViewerUrl();
-    const persistedState = loadPersistedViewerState();
+    const persistedSession = loadPersistedViewerSession();
     const persistedHistory = loadPersistedViewerHistory();
 
     if (stateFromLocation) {
       lastCommittedStateRef.current = stateFromLocation;
       lastCommittedHashRef.current = hashViewerStateForHistory(stateFromLocation);
       applyViewerState(stateFromLocation, { suppressAutoCommit: true });
+      setActiveSavedViewerId(null);
       if (sharedViewerUrl && isSerializableLayerTree(stateFromLocation.scene.layerTree)) {
         setViewerLibrary((prev) =>
           upsertSharedViewerEntry(prev, {
@@ -1387,25 +1576,30 @@ export default function App({ startupSlices = [] }: AppProps) {
       return;
     }
 
-    const initialState = persistedState ?? persistedHistory?.present.state ?? currentViewerState;
+    const initialState = persistedSession?.state ?? persistedHistory?.present.state ?? currentViewerState;
 
     if (persistedHistory) {
       pastStatesRef.current = persistedHistory.past;
       futureStatesRef.current = persistedHistory.future;
     }
 
-    if (persistedState || persistedHistory) {
+    if (persistedSession || persistedHistory) {
       lastCommittedStateRef.current = initialState;
       lastCommittedHashRef.current = hashViewerStateForHistory(initialState);
       applyViewerState(initialState, { suppressAutoCommit: true });
-      setHasPersistedViewerState(!!persistedState || !!persistedHistory);
+      setActiveSavedViewerId(resolveOwnedSavedViewerId(persistedSession?.activeSavedViewerId ?? null, viewerLibrary));
+      setHasPersistedViewerState(!!persistedSession || !!persistedHistory);
       bumpHistoryRevision();
       return;
     }
 
     lastCommittedStateRef.current = currentViewerState;
     lastCommittedHashRef.current = currentViewerHash;
-    savePersistedViewerState(currentViewerState);
+    savePersistedViewerSession({
+      version: 2,
+      state: currentViewerState,
+      activeSavedViewerId: null,
+    });
     setHasPersistedViewerState(true);
     bumpHistoryRevision();
   }, []);
@@ -1450,16 +1644,24 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (!hasHydratedHistoryRef.current) return;
 
     if (isSerializableLayerTree(currentViewerState.scene.layerTree)) {
-      savePersistedViewerState(currentViewerState);
+      savePersistedViewerSession({
+        version: 2,
+        state: currentViewerState,
+        activeSavedViewerId: resolveOwnedSavedViewerId(activeSavedViewerId, viewerLibrary),
+      });
       setHasPersistedViewerState(true);
     } else {
       clearPersistedViewerState();
       setHasPersistedViewerState(false);
     }
-  }, [currentViewerState]);
+  }, [activeSavedViewerId, currentViewerState, viewerLibrary]);
 
   useEffect(() => {
     savePersistedViewerLibrary(viewerLibrary);
+  }, [viewerLibrary]);
+
+  useEffect(() => {
+    setActiveSavedViewerId((prev) => resolveOwnedSavedViewerId(prev, viewerLibrary));
   }, [viewerLibrary]);
 
   useEffect(() => {
@@ -1583,6 +1785,24 @@ export default function App({ startupSlices = [] }: AppProps) {
       if (blockingOverlayOpen) return;
       if (shouldIgnoreShortcutTarget(event.target)) return;
 
+      const hasPrimaryModifier = event.metaKey || event.ctrlKey;
+      const hasNoSecondaryModifiers = !event.altKey && !event.shiftKey;
+      const lowerKey = event.key.toLowerCase();
+
+      if (hasPrimaryModifier && hasNoSecondaryModifiers && lowerKey === "c") {
+        if (handleCopySelectedNodesToClipboard()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (hasPrimaryModifier && hasNoSecondaryModifiers && lowerKey === "v") {
+        if (handlePasteCopiedNodes()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
       const match = SHORTCUT_DEFINITIONS.find((definition) =>
         doesShortcutMatchKeyboardEvent(event, shortcutBindings[definition.id])
       );
@@ -1619,6 +1839,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     isUserProfilePanelOpen,
     historyRevision,
     layerTree,
+    selectedNodeId,
+    selectedNodeIdsExternal,
   ]);
 
   function handleUndo() {
@@ -1732,6 +1954,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     setStateShareMessage(null);
     setStateTextDraft("");
     setIsAppMenuOpen(false);
+    setViewerLibraryMode("browse");
+    setActiveSavedViewerId(null);
     commitCurrentStateNow(nextState);
   }
 
@@ -1834,6 +2058,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     try {
       const parsed = parseViewerState(stateTextDraft);
       commitCurrentStateNow(parsed);
+      setActiveSavedViewerId(null);
+      setViewerLibraryMode("browse");
       setStateShareMessage(null);
       setIsStateDialogOpen(false);
       setActiveTool("mouse");
@@ -2010,10 +2236,6 @@ export default function App({ startupSlices = [] }: AppProps) {
     dismissToastLater(id, durationMs);
   }
 
-  function enqueueSaveToast(message: string) {
-    enqueueToast({ tone: "success", title: "Viewer saved", message });
-  }
-
   function enqueueErrorToast(error: unknown, options?: { source?: string; technicalMessage?: string | null }) {
     const rawMessage = options?.technicalMessage ?? normalizeUnknownErrorMessage(error);
 
@@ -2063,6 +2285,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       setLibraryError(
         "This viewer contains layers that cannot be saved locally."
       );
+      openViewerLibrary("browse", { preserveFeedback: true });
       return;
     }
 
@@ -2074,27 +2297,87 @@ export default function App({ startupSlices = [] }: AppProps) {
     });
 
     setViewerLibrary((prev) => [entry, ...prev]);
+    setActiveSavedViewerId(entry.id);
+    setViewerLibraryMode("browse");
     setLibraryError(null);
     setLibraryMessage(null);
-    enqueueSaveToast(`Saved "${entry.name}".`);
+    enqueueToast({
+      tone: "success",
+      title: "Viewer saved",
+      message: `Created "${entry.name}". Ctrl+S will now update this saved viewer.`,
+    });
   }
 
-  function handleOpenSavedViewer(entry: SavedViewerEntry) {
-    commitCurrentStateNow(entry.state);
+  function handleOverwriteSavedViewer(entryId: string) {
+    if (!isSerializableLayerTree(currentViewerState.scene.layerTree)) {
+      setLibraryMessage(null);
+      setLibraryError("This viewer contains layers that cannot be saved locally.");
+      openViewerLibrary("browse", { preserveFeedback: true });
+      return;
+    }
+
+    let savedName = "";
+    let didOverwrite = false;
+
     setViewerLibrary((prev) =>
-      prev.map((item) =>
-        item.id === entry.id ? { ...item, updatedAt: Date.now() } : item
-      )
+      prev.map((entry) => {
+        if (entry.id !== entryId || entry.ownerKind !== "owned") {
+          return entry;
+        }
+
+        didOverwrite = true;
+        const nextEntry = overwriteSavedViewerEntry(entry, {
+          state: currentViewerState,
+          thumbnailDataUrl: captureViewerThumbnailDataUrl(),
+        });
+        savedName = nextEntry.name;
+        return nextEntry;
+      })
     );
+
+    if (!didOverwrite) {
+      requestNewSavedViewerFlow();
+      return;
+    }
+
+    setActiveSavedViewerId(entryId);
+    setViewerLibraryMode("browse");
     setLibraryError(null);
     setLibraryMessage(null);
+    enqueueToast({
+      tone: "success",
+      title: "Viewer updated",
+      message: `Updated "${savedName}". The previous saved version is still available from version history.`,
+    });
+  }
+
+  function handleOpenSavedViewer(entry: SavedViewerEntry, revision: SavedViewerRevision | null) {
+    commitCurrentStateNow(revision?.state ?? entry.state);
+    setActiveSavedViewerId(entry.ownerKind === "owned" ? entry.id : null);
+    setViewerLibraryMode("browse");
+    setLibraryError(null);
+    setLibraryMessage(null);
+    setIsAppMenuOpen(false);
+    setIsStateDialogOpen(false);
     setActiveTool("mouse");
   }
 
-  function handleDeleteSavedViewer(entryId: string) {
-    setViewerLibrary((prev) => prev.filter((entry) => entry.id !== entryId));
+  function handleDeleteSavedViewer(entryIds: string[]) {
+    if (!entryIds.length) return;
+    const uniqueIds = Array.from(new Set(entryIds));
+    setViewerLibrary((prev) => prev.filter((entry) => !uniqueIds.includes(entry.id)));
+    setActiveSavedViewerId((prev) => (prev && uniqueIds.includes(prev) ? null : prev));
+    setViewerLibraryMode("browse");
     setLibraryError(null);
-    setLibraryMessage("Viewer removed.");
+    setLibraryMessage(null);
+    enqueueToast({
+      tone: "info",
+      title: uniqueIds.length === 1 ? "Viewer removed" : "Viewers removed",
+      message:
+        uniqueIds.length === 1
+          ? "The saved viewer was removed from this browser."
+          : `${uniqueIds.length} saved viewers were removed from this browser.`,
+    });
   }
 
   function handleRenameSavedViewer(entryId: string, nextName: string) {
@@ -2104,17 +2387,22 @@ export default function App({ startupSlices = [] }: AppProps) {
     setViewerLibrary((prev) =>
       prev.map((entry) =>
         entry.id === entryId
-          ? { ...entry, name: trimmed, updatedAt: Date.now() }
+          ? { ...entry, name: trimmed }
           : entry
       )
     );
     setLibraryError(null);
-    setLibraryMessage("Viewer renamed.");
+    setLibraryMessage(null);
+    enqueueToast({
+      tone: "info",
+      title: "Viewer renamed",
+      message: `This saved viewer is now called "${trimmed}".`,
+    });
   }
 
 
   function handleToolChange(tool: ToolId) {
-    setActiveTool((prev) => (prev === tool && tool === "slice" ? "mouse" : tool));
+    setActiveTool(tool);
     if (tool !== "slice") {
       setScenePointerTarget(null);
     }
@@ -2153,7 +2441,13 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSelectedNodeIdsExternal([nodeId]);
   }
 
-  function handleSelectSceneLayer(nodeId: string, options?: { toggle?: boolean }) {
+  function handleSelectSceneLayer(nodeId: string | null, options?: { toggle?: boolean }) {
+    if (!nodeId) {
+      setSelectedNodeId(null);
+      setSelectedNodeIdsExternal(null);
+      return;
+    }
+
     const isToggle = !!options?.toggle;
     setSelectedNodeIdsExternal((prev) => {
       const current = Array.from(new Set((prev ?? (selectedNodeId ? [selectedNodeId] : [])).filter(Boolean)));
@@ -2775,6 +3069,55 @@ export default function App({ startupSlices = [] }: AppProps) {
     setLayerTree((prev) => renameNodeById(prev, nodeId, trimmed));
   }
 
+  function applyDuplicatedLayerSelection(nodeIds: string[]) {
+    if (!nodeIds.length) return;
+    setSelectedNodeIdsExternal(nodeIds);
+    setSelectedNodeId(nodeIds[nodeIds.length - 1] ?? nodeIds[0]);
+  }
+
+  function handleCopySelectedNodesToClipboard() {
+    const selectionIds = selectedNodeIdsExternal ?? (selectedNodeId ? [selectedNodeId] : []);
+    const topLevelSelection = collectTopLevelSelectedNodes(layerTree, selectionIds);
+    if (!topLevelSelection.length) return false;
+
+    layerClipboardRef.current = {
+      sourceIds: topLevelSelection.map((node) => node.id),
+      nodes: topLevelSelection.map((node) => cloneLayerTreeNodeSnapshot(node)),
+    };
+    return true;
+  }
+
+  function handleDuplicateNodes(nodeIds: string[]) {
+    const uniqueIds = Array.from(new Set(nodeIds.filter((id) => typeof id === "string" && id.length > 0)));
+    if (!uniqueIds.length) return false;
+
+    const result = duplicateLayerNodesByIds(layerTree, uniqueIds);
+    if (!result.duplicatedRootIds.length) return false;
+
+    setLayerTree(result.tree);
+    applyDuplicatedLayerSelection(result.duplicatedRootIds);
+    return true;
+  }
+
+  function handleDuplicateNode(nodeId: string) {
+    handleDuplicateNodes([nodeId]);
+  }
+
+  function handlePasteCopiedNodes() {
+    const clipboard = layerClipboardRef.current;
+    if (!clipboard?.nodes.length) return false;
+
+    const inPlaceResult = duplicateLayerNodesByIds(layerTree, clipboard.sourceIds);
+    const result = inPlaceResult.duplicatedRootIds.length
+      ? inPlaceResult
+      : appendClipboardNodesToRoot(layerTree, clipboard.nodes);
+    if (!result.duplicatedRootIds.length) return false;
+
+    setLayerTree(result.tree);
+    applyDuplicatedLayerSelection(result.duplicatedRootIds);
+    return true;
+  }
+
   function reconcileSelectionAfterTreeMutation(next: LayerTreeNode[], removedIds: string[] = []) {
     const nextSelectedNodeId =
       selectedNodeId && !removedIds.includes(selectedNodeId) && findNodeById(next, selectedNodeId)
@@ -2937,6 +3280,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     clearPersistedViewerState();
     clearPersistedViewerLibrary();
     setViewerLibrary([]);
+    setActiveSavedViewerId(null);
+    setViewerLibraryMode("browse");
     setHasPersistedViewerState(false);
     notifyProfileDataChanged();
   }
@@ -2962,6 +3307,8 @@ export default function App({ startupSlices = [] }: AppProps) {
       window.localStorage.removeItem(ANNOTATION_RECENT_COLORS_STORAGE_KEY);
     } catch {}
     setViewerLibrary([]);
+    setActiveSavedViewerId(null);
+    setViewerLibraryMode("browse");
     setAnnotationRecentColors([]);
     pastStatesRef.current = [];
     futureStatesRef.current = [];
@@ -3202,6 +3549,9 @@ export default function App({ startupSlices = [] }: AppProps) {
     layerId: string,
     patch: Partial<NonNullable<LayerItemNode["axisSliceState"]>>
   ) {
+    if (activeTool === "slice" && patch.activePlane && selectedCanonicalSliceLayer?.id === layerId) {
+      setSliceToolPlane(patch.activePlane);
+    }
     setLayerTree((prev) =>
       updateNodeById(prev, layerId, (node) =>
         node.kind !== "layer"
@@ -3282,6 +3632,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onEraseFreehand={handleEraseFreehandStroke}
         onSelectedLayerRuntimeInfoChange={handleSelectedLayerRuntimeInfoChange}
         onScenePointerTargetChange={setScenePointerTarget}
+        suppressScenePointerTarget={isSlicePanelHoverLocked}
         onSelectSceneLayer={handleSelectSceneLayer}
         onSelectSceneLayers={handleSelectSceneLayers}
         onAxisSliceStateChange={handleUpdateAxisSliceState}
@@ -3327,8 +3678,8 @@ export default function App({ startupSlices = [] }: AppProps) {
         open={isAppMenuOpen}
         onToggleOpen={() => setIsAppMenuOpen((prev) => !prev)}
         onCreateNewViewer={handleCreateNewViewer}
-        onOpenLibrary={() => { setLibraryError(null); setLibraryMessage(null); setActiveTool("library"); setIsAppMenuOpen(false); }}
-        onSaveViewer={() => { handleSaveCurrentViewerToLibrary(); setIsAppMenuOpen(false); }}
+        onOpenLibrary={() => openViewerLibrary("browse")}
+        onSaveViewer={requestNewSavedViewerFlow}
         onOpenImportData={() => { setIsImportPanelOpen(true); setIsAppMenuOpen(false); }}
         onOpenManageLocalData={() => { setIsLocalDatasetManagerOpen(true); setIsAppMenuOpen(false); }}
         onOpenExportState={() => { openExportStateModal(); setIsAppMenuOpen(false); }}
@@ -3393,6 +3744,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onAddGroup={handleAddGroup}
         onAddLayer={handleOpenAddLayer}
         onRenameNode={handleRenameNode}
+        onDuplicateNode={handleDuplicateNode}
         onDeleteNode={handleDeleteNode}
         onDeleteNodes={handleDeleteNodes}
         onCreateGroupFromNodes={handleCreateGroupFromNodes}
@@ -3456,12 +3808,19 @@ export default function App({ startupSlices = [] }: AppProps) {
 
       <ViewerLibraryPanel
         open={activeTool === "library"}
-        onClose={() => setActiveTool("mouse")}
+        mode={viewerLibraryMode}
+        onSetMode={setViewerLibraryMode}
+        onClose={() => {
+          setViewerLibraryMode("browse");
+          setActiveTool("mouse");
+        }}
         entries={libraryEntries}
+        activeSavedViewerId={activeSavedViewerId}
         errorMessage={libraryError}
-        successMessage={libraryMessage}
+        saveNamePlaceholder={viewerLibrarySavePlaceholder}
+        onSaveNewViewer={handleSaveCurrentViewerToLibrary}
         onOpenViewer={handleOpenSavedViewer}
-        onDeleteViewer={handleDeleteSavedViewer}
+        onDeleteViewers={handleDeleteSavedViewer}
         onRenameViewer={handleRenameSavedViewer}
       />
 
@@ -3517,6 +3876,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         sliceSelectedLayerName={selectedCanonicalSliceLayer?.name ?? null}
         sliceTargetPlane={sliceToolTargetPlane}
         sliceHoveredPlane={
+          !isSlicePanelHoverLocked &&
           scenePointerTarget?.plane &&
           selectedCanonicalSliceLayer &&
           scenePointerTarget.layerId === selectedCanonicalSliceLayer.id
@@ -3532,6 +3892,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         sliceVisibilityXY={getCanonicalSliceViewState("xy").visible}
         sliceVisibilityXZ={getCanonicalSliceViewState("xz").visible}
         sliceVisibilityYZ={getCanonicalSliceViewState("yz").visible}
+        onSliceHoverLockChange={setIsSlicePanelHoverLocked}
         onSliceToggleVisibility={handleToggleCanonicalSliceVisibility}
         onSliceResetView={handleResetCanonicalSliceView}
         onSliceToggleFlip={handleToggleCanonicalSliceFlip}

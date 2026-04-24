@@ -19,11 +19,27 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { LayerGroupNode, LayerTreeNode, FlatTreeRow } from "./layerTypes";
-import { flattenTree, isLocalOnlyFileLayer } from "./layerTypes";
+import { findParentId, flattenTree, isLocalOnlyFileLayer } from "./layerTypes";
 
 const ROOT_DROP_ID = "__root_drop_zone__";
 const DEFAULT_SPLIT_RATIO = 0.5;
 const MIN_PANE_HEIGHT_PX = 170;
+
+function getAncestorGroupIds(nodes: LayerTreeNode[], id: string): string[] {
+  const ancestorIds: string[] = [];
+  let currentId: string | null = id;
+  let safety = 0;
+
+  while (currentId && safety < 1000) {
+    const parentId = findParentId(nodes, currentId);
+    if (!parentId) break;
+    ancestorIds.unshift(parentId);
+    currentId = parentId;
+    safety += 1;
+  }
+
+  return ancestorIds;
+}
 
 type MenuPosition = {
   top: number;
@@ -170,7 +186,7 @@ function RootDropZone({ active }: { active: boolean }) {
   return <div ref={setNodeRef} style={{ marginTop: 10, height: 44, borderRadius: 12, border: isOver ? "1px solid rgba(130,240,190,0.85)" : "1px dashed rgba(255,255,255,0.18)", background: isOver ? "rgba(90,210,160,0.16)" : "rgba(255,255,255,0.03)", color: "rgba(255,255,255,0.7)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, transition: "all 160ms ease" }}>Drop here to move to root</div>;
 }
 
-function SortableTreeRow({ row, focusedNodeId, selectedNodeIds, openMenuId, setOpenMenuId, setMenuPosition, renamingId, renameDraft, setRenameDraft, finishRename, cancelRename, hoveredGroupId, onToggleVisible, onSelectNode, onToggleGroupExpanded, activeTool }: { row: FlatTreeRow; focusedNodeId: string | null; selectedNodeIds: string[]; openMenuId: string | null; setOpenMenuId: (id: string | null) => void; setMenuPosition: (position: MenuPosition | null) => void; renamingId: string | null; renameDraft: string; setRenameDraft: (value: string) => void; startRename: (row: FlatTreeRow) => void; finishRename: (nodeId: string) => void; cancelRename: () => void; hoveredGroupId: string | null; onToggleVisible: (nodeId: string) => void; onSelectNode: (nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => void; onToggleGroupExpanded: (groupId: string) => void; activeTool?: string; }) {
+function SortableTreeRow({ row, focusedNodeId, selectedNodeIds, openMenuId, setOpenMenuId, setMenuPosition, renamingId, renameDraft, setRenameDraft, finishRename, cancelRename, hoveredGroupId, onToggleVisible, onSelectNode, onToggleGroupExpanded, registerRowElement, activeTool }: { row: FlatTreeRow; focusedNodeId: string | null; selectedNodeIds: string[]; openMenuId: string | null; setOpenMenuId: (id: string | null) => void; setMenuPosition: (position: MenuPosition | null) => void; renamingId: string | null; renameDraft: string; setRenameDraft: (value: string) => void; startRename: (row: FlatTreeRow) => void; finishRename: (nodeId: string) => void; cancelRename: () => void; hoveredGroupId: string | null; onToggleVisible: (nodeId: string) => void; onSelectNode: (nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => void; onToggleGroupExpanded: (groupId: string) => void; registerRowElement?: (id: string, node: HTMLDivElement | null) => void; activeTool?: string; }) {
   const isSelected = selectedNodeIds.includes(row.id);
   const inheritedSelected = !isSelected && !!focusedNodeId && row.ancestorIds.includes(focusedNodeId);
   const isEditing = renamingId === row.id;
@@ -184,7 +200,13 @@ function SortableTreeRow({ row, focusedNodeId, selectedNodeIds, openMenuId, setO
   const style: CSSProperties = { transform: CSS.Transform.toString(transform), transition };
 
   return (
-    <div ref={setNodeRef}>
+    <div
+      ref={(node) => {
+        setNodeRef(node);
+        registerRowElement?.(row.id, node);
+      }}
+      data-layer-row-id={row.id}
+    >
       <RowShell row={row} selected={isSelected} inheritedSelected={inheritedSelected} hoveringGroupTarget={hoveringGroupTarget} dragStyle={style} dragging={isDragging}>
         <div onClick={(event) => onSelectNode(row.id, event)} style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button ref={setActivatorNodeRef} type="button" title="Drag to reorder" {...attributes} {...listeners} onClick={(e) => e.stopPropagation()} style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "grab", flexShrink: 0 }}><GripDots /></button>
@@ -195,7 +217,7 @@ function SortableTreeRow({ row, focusedNodeId, selectedNodeIds, openMenuId, setO
             {isEditing ? <input autoFocus value={renameDraft} onChange={(e) => setRenameDraft(e.target.value)} onClick={(e) => e.stopPropagation()} onBlur={() => finishRename(row.id)} onKeyDown={(e) => { if (e.key === "Enter") finishRename(row.id); if (e.key === "Escape") cancelRename(); }} style={{ width: "100%", height: 32, borderRadius: 8, border: "1px solid rgba(160,220,255,0.45)", background: "rgba(255,255,255,0.07)", color: "white", padding: "0 10px", boxSizing: "border-box", outline: "none" }} /> : <><div data-theme-text="strong" style={{ fontSize: isSelected ? 13.5 : inheritedSelected ? 13.2 : 13, fontWeight: isSelected ? 700 : inheritedSelected ? 650 : 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", userSelect: "none", WebkitUserSelect: "none" }}>{row.name}</div><div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, minWidth: 0, flexWrap: "wrap" }}><div data-theme-text="muted" style={{ fontSize: 11, opacity: isSelected || inheritedSelected ? 0.85 : 0.58, textTransform: "uppercase", letterSpacing: 0.4, userSelect: "none", WebkitUserSelect: "none" }}></div>{isLocalOnlyFileLayer(row.node) ? <div style={{ height: 18, padding: "0 6px", borderRadius: 999, border: "1px solid rgba(255,210,120,0.26)", background: "rgba(255,210,120,0.12)", color: "#ffe4ad", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", lineHeight: 1 }}>LOCAL ONLY</div> : null}{isSliceBrowsableLayer ? <div style={{ height: 18, padding: "0 6px", borderRadius: 999, border: activeTool === "slice" ? "1px solid rgba(120,200,255,0.30)" : "1px solid rgba(255,255,255,0.12)", background: activeTool === "slice" ? "rgba(80,160,255,0.12)" : "rgba(255,255,255,0.05)", color: activeTool === "slice" ? "#d6efff" : "rgba(255,255,255,0.82)", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", lineHeight: 1 }}>SLICES</div> : null}{isSliceBrowsableLayer && activeTool === "slice" && isSelected ? <div style={{ height: 18, padding: "0 6px", borderRadius: 999, border: "1px solid rgba(120,200,255,0.34)", background: "rgba(120,200,255,0.10)", color: "#d6efff", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", lineHeight: 1 }}>ACTIVE {String(activePlane).toUpperCase()}</div> : null}</div></>}
           </div>
           <div data-layer-menu-container="true" style={{ position: "relative" }}>
-            <button type="button" title="More" onClick={(e) => { e.stopPropagation(); if (openMenuId === row.id) { setOpenMenuId(null); setMenuPosition(null); return; } const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect(); const menuWidth = 140; const gap = 6; let left = rect.right - menuWidth; let top = rect.bottom + gap; if (left < 8) left = 8; if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8; const estimatedMenuHeight = 84; if (top + estimatedMenuHeight > window.innerHeight - 8) top = rect.top - estimatedMenuHeight - gap; if (top < 8) top = 8; setMenuPosition({ top, left }); setOpenMenuId(row.id); }} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.8)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><MoreVertical /></button>
+            <button type="button" title="More" onClick={(e) => { e.stopPropagation(); if (openMenuId === row.id) { setOpenMenuId(null); setMenuPosition(null); return; } const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect(); const menuWidth = 140; const gap = 6; let left = rect.right - menuWidth; let top = rect.bottom + gap; if (left < 8) left = 8; if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8; const estimatedMenuHeight = 118; if (top + estimatedMenuHeight > window.innerHeight - 8) top = rect.top - estimatedMenuHeight - gap; if (top < 8) top = 8; setMenuPosition({ top, left }); setOpenMenuId(row.id); }} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.8)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><MoreVertical /></button>
           </div>
         </div>
       </RowShell>
@@ -205,7 +227,7 @@ function SortableTreeRow({ row, focusedNodeId, selectedNodeIds, openMenuId, setO
 
 const menuItemStyle: CSSProperties = { width: "100%", height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px" };
 
-export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsExternal, activeTool: _activeTool, groupOptions: _groupOptions, detailsContent = null, isDetailsCollapsed = false, onToggleDetailsCollapsed, isCollapsed, onSetCollapsed, onToggleVisible, onSelectNode, onSelectionChange, onToggleGroupExpanded, onSetGroupExpanded, onAddGroup, onAddLayer, onRenameNode, onDeleteNode, onDeleteNodes, onCreateGroupFromNodes, onDropNodeIntoGroup, onDropNodeToRoot, onReorderBefore, onDropNodesIntoGroup, onDropNodesToRoot, onReorderNodesBefore }: { layerTree: LayerTreeNode[]; selectedNodeId: string | null; selectedNodeIdsExternal?: string[] | null; activeTool?: string; groupOptions: LayerGroupNode[]; detailsContent?: React.ReactNode; isDetailsCollapsed?: boolean; onToggleDetailsCollapsed?: () => void; isCollapsed: boolean; onSetCollapsed: (collapsed: boolean) => void; onToggleVisible: (nodeId: string) => void; onSelectNode: (nodeId: string) => void; onSelectionChange?: (nodeIds: string[], preferredNodeId: string) => void; onToggleGroupExpanded: (groupId: string) => void; onSetGroupExpanded: (groupId: string, expanded: boolean) => void; onAddGroup: () => void; onAddLayer: () => void; onRenameNode: (nodeId: string, newName: string) => void; onDeleteNode: (nodeId: string) => void; onDeleteNodes: (nodeIds: string[]) => void; onCreateGroupFromNodes: (nodeIds: string[]) => void; onDropNodeIntoGroup: (nodeId: string, groupId: string) => void; onDropNodeToRoot: (nodeId: string) => void; onReorderBefore: (activeId: string, overId: string) => void; onDropNodesIntoGroup: (nodeIds: string[], groupId: string) => void; onDropNodesToRoot: (nodeIds: string[]) => void; onReorderNodesBefore: (nodeIds: string[], overId: string) => void; }) {
+export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsExternal, activeTool: _activeTool, groupOptions: _groupOptions, detailsContent = null, isDetailsCollapsed = false, onToggleDetailsCollapsed, isCollapsed, onSetCollapsed, onToggleVisible, onSelectNode, onSelectionChange, onToggleGroupExpanded, onSetGroupExpanded, onAddGroup, onAddLayer, onRenameNode, onDuplicateNode, onDeleteNode, onDeleteNodes, onCreateGroupFromNodes, onDropNodeIntoGroup, onDropNodeToRoot, onReorderBefore, onDropNodesIntoGroup, onDropNodesToRoot, onReorderNodesBefore }: { layerTree: LayerTreeNode[]; selectedNodeId: string | null; selectedNodeIdsExternal?: string[] | null; activeTool?: string; groupOptions: LayerGroupNode[]; detailsContent?: React.ReactNode; isDetailsCollapsed?: boolean; onToggleDetailsCollapsed?: () => void; isCollapsed: boolean; onSetCollapsed: (collapsed: boolean) => void; onToggleVisible: (nodeId: string) => void; onSelectNode: (nodeId: string) => void; onSelectionChange?: (nodeIds: string[], preferredNodeId: string) => void; onToggleGroupExpanded: (groupId: string) => void; onSetGroupExpanded: (groupId: string, expanded: boolean) => void; onAddGroup: () => void; onAddLayer: () => void; onRenameNode: (nodeId: string, newName: string) => void; onDuplicateNode: (nodeId: string) => void; onDeleteNode: (nodeId: string) => void; onDeleteNodes: (nodeIds: string[]) => void; onCreateGroupFromNodes: (nodeIds: string[]) => void; onDropNodeIntoGroup: (nodeId: string, groupId: string) => void; onDropNodeToRoot: (nodeId: string) => void; onReorderBefore: (activeId: string, overId: string) => void; onDropNodesIntoGroup: (nodeIds: string[], groupId: string) => void; onDropNodesToRoot: (nodeIds: string[]) => void; onReorderNodesBefore: (nodeIds: string[], overId: string) => void; }) {
   const rows = useMemo(() => flattenTree(layerTree), [layerTree]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(selectedNodeId ? [selectedNodeId] : []);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(selectedNodeId);
@@ -221,10 +243,13 @@ export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsE
   const [isDetailsToggleAnimating, setIsDetailsToggleAnimating] = useState(false);
   const detailsHeaderRef = useRef<HTMLDivElement | null>(null);
   const detailsBodyMeasureRef = useRef<HTMLDivElement | null>(null);
-  const [detailsBodyHeight, setDetailsBodyHeight] = useState(0);
   const hoverExpandTimerRef = useRef<number | null>(null);
   const internalSelectionUpdateRef = useRef(false);
   const splitAreaRef = useRef<HTMLDivElement | null>(null);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const rowElementRefs = useRef(new Map<string, HTMLDivElement>());
+  const pendingRevealNodeIdRef = useRef<string | null>(null);
+  const lastExternalSelectionKeyRef = useRef<string | null>(null);
   const resizeStateRef = useRef<{ startY: number; startRatio: number; areaHeight: number } | null>(null);
   const sensors = useSensors(useSensor(MouseSensor, { activationConstraint: { distance: 6 } }), useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 6 } }));
   const activeRow = rows.find((row) => row.id === activeId) ?? null;
@@ -241,6 +266,13 @@ export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsE
       return;
     }
     if (!selectedNodeId) return;
+    pendingRevealNodeIdRef.current = selectedNodeId;
+    if (isCollapsed) {
+      onSetCollapsed(false);
+    }
+    for (const groupId of getAncestorGroupIds(layerTree, selectedNodeId)) {
+      onSetGroupExpanded(groupId, true);
+    }
     setSelectedNodeIds([selectedNodeId]);
     setSelectionAnchorId(selectedNodeId);
   }, [selectedNodeId]);
@@ -248,9 +280,39 @@ export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsE
   useEffect(() => {
     if (!selectedNodeIdsExternal) return;
     const nextIds = Array.from(new Set(selectedNodeIdsExternal.filter((id) => typeof id === "string" && id.length > 0)));
+    const nextKey = nextIds.join("|");
+    if (lastExternalSelectionKeyRef.current === nextKey) {
+      return;
+    }
+    lastExternalSelectionKeyRef.current = nextKey;
+    if (nextIds.length) {
+      pendingRevealNodeIdRef.current = selectedNodeId && nextIds.includes(selectedNodeId) ? selectedNodeId : nextIds[0];
+      if (isCollapsed) {
+        onSetCollapsed(false);
+      }
+      const ancestorGroupIds = new Set<string>();
+      for (const nodeId of nextIds) {
+        for (const groupId of getAncestorGroupIds(layerTree, nodeId)) {
+          ancestorGroupIds.add(groupId);
+        }
+      }
+      for (const groupId of ancestorGroupIds) {
+        onSetGroupExpanded(groupId, true);
+      }
+    }
     setSelectedNodeIds(nextIds);
     setSelectionAnchorId(nextIds[0] ?? null);
-  }, [selectedNodeIdsExternal]);
+  }, [isCollapsed, layerTree, onSetCollapsed, onSetGroupExpanded, selectedNodeId, selectedNodeIdsExternal]);
+
+  useLayoutEffect(() => {
+    if (isCollapsed) return;
+    const targetId = pendingRevealNodeIdRef.current;
+    if (!targetId) return;
+    const targetRow = rowElementRefs.current.get(targetId);
+    if (!targetRow || !listScrollRef.current?.contains(targetRow)) return;
+    targetRow.scrollIntoView({ block: "nearest", inline: "nearest" });
+    pendingRevealNodeIdRef.current = null;
+  }, [isCollapsed, rows, selectedNodeId]);
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -293,32 +355,13 @@ export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsE
     };
   }, []);
 
-  useLayoutEffect(() => {
-    const measure = () => {
-      const next = detailsBodyMeasureRef.current?.scrollHeight ?? 0;
-      setDetailsBodyHeight((prev) => (Math.abs(prev - next) > 1 ? next : prev));
-    };
-
-    measure();
-
-    if (typeof ResizeObserver === "undefined") return;
-    const target = detailsBodyMeasureRef.current;
-    if (!target) return;
-
-    const observer = new ResizeObserver(() => {
-      measure();
-    });
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [detailsContent]);
-
   useEffect(() => {
     setIsDetailsToggleAnimating(true);
     const timeoutId = window.setTimeout(() => {
       setIsDetailsToggleAnimating(false);
     }, 360);
     return () => window.clearTimeout(timeoutId);
-  }, [isDetailsCollapsed, detailsBodyHeight]);
+  }, [isDetailsCollapsed, detailsContent]);
 
 
   function startRename(row: FlatTreeRow) { setRenamingId(row.id); setRenameDraft(row.name); }
@@ -432,10 +475,10 @@ export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsE
           <div ref={splitAreaRef} style={{ display: "flex", flexDirection: "column", gap: 0, flex: "0 1 auto", minHeight: 0, maxHeight: splitAreaMaxHeight }}>
             <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: "0 1 auto", maxHeight: listPaneMaxHeight, overflow: "hidden" }}>
               {selectionCount > 1 ? <div data-theme-surface="soft" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", marginBottom: 10, background: "rgba(255,255,255,0.035)", flex: "0 0 auto" }}><div style={{ width: 22, height: 22, borderRadius: 999, background: "rgba(120,190,255,0.16)", border: "1px solid rgba(160,220,255,0.20)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "white", flexShrink: 0 }}>{selectionCount}</div><div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.25 }}>multi-select active</div><div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}><button type="button" title="Create group from selection" onClick={() => onCreateGroupFromNodes(selectedNodeIds)} style={{ height: 30, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(160,220,255,0.22)", background: "rgba(120,190,255,0.10)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><AddGroupIcon /><span>+ Group</span></button><button type="button" title="Delete selected" onClick={() => onDeleteNodes(selectedNodeIds)} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,120,120,0.22)", background: "rgba(255,80,80,0.10)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><TrashIcon /></button><button type="button" title="Close multi-select" onClick={() => { const nextIds = selectedNodeId ? [selectedNodeId] : []; setSelectedNodeIds(nextIds); setSelectionAnchorId(selectedNodeId); internalSelectionUpdateRef.current = true; if (selectedNodeId) { if (onSelectionChange) onSelectionChange([selectedNodeId], selectedNodeId); else onSelectNode(selectedNodeId); } }} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><CloseIcon /></button></div></div> : null}
-              <div className="layer-panel-scroll" style={{ flex: "0 1 auto", overflowX: "hidden", overflowY: isDetailsToggleAnimating ? "hidden" : "auto" }}>
+              <div ref={listScrollRef} className="layer-panel-scroll" style={{ flex: "0 1 auto", overflowX: "hidden", overflowY: isDetailsToggleAnimating ? "hidden" : "auto" }}>
                 <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={(event) => { const nextActiveId = String(event.active.id); setActiveId(nextActiveId); setOpenMenuId(null); setMenuPosition(null); const movedIds = selectedNodeIds.includes(nextActiveId) ? getOrderedSelection(selectedNodeIds) : [nextActiveId]; setDragNodeIds(movedIds); if (!selectedNodeIds.includes(nextActiveId)) { setSelectedNodeIds([nextActiveId]); setSelectionAnchorId(nextActiveId); internalSelectionUpdateRef.current = true; if (onSelectionChange) onSelectionChange([nextActiveId], nextActiveId); else onSelectNode(nextActiveId); } }} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={() => { clearHoverExpandTimer(); setActiveId(null); setDragNodeIds([]); setHoveredGroupId(null); setOpenMenuId(null); setMenuPosition(null); }}>
                   <SortableContext items={rows.map((row) => row.id)} strategy={verticalListSortingStrategy}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{rows.map((row) => <SortableTreeRow key={row.id} row={row} focusedNodeId={selectedNodeId} selectedNodeIds={selectedNodeIds} openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} setMenuPosition={setMenuPosition} renamingId={renamingId} renameDraft={renameDraft} setRenameDraft={setRenameDraft} startRename={startRename} finishRename={finishRename} cancelRename={cancelRename} hoveredGroupId={hoveredGroupId} onToggleVisible={onToggleVisible} onSelectNode={handleRowSelect} onToggleGroupExpanded={onToggleGroupExpanded} />)}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{rows.map((row) => <SortableTreeRow key={row.id} row={row} focusedNodeId={selectedNodeId} selectedNodeIds={selectedNodeIds} openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} setMenuPosition={setMenuPosition} renamingId={renamingId} renameDraft={renameDraft} setRenameDraft={setRenameDraft} startRename={startRename} finishRename={finishRename} cancelRename={cancelRename} hoveredGroupId={hoveredGroupId} onToggleVisible={onToggleVisible} onSelectNode={handleRowSelect} onToggleGroupExpanded={onToggleGroupExpanded} registerRowElement={(id, node) => { if (node) rowElementRefs.current.set(id, node); else rowElementRefs.current.delete(id); }} />)}</div>
                   </SortableContext>
                   <RootDropZone active={!!activeId} />
                   <DragOverlay>{activeRow ? <div style={{ width: 320 }}><RowShell row={activeRow} selected={selectedNodeIds.includes(activeRow.id)} inheritedSelected={false} hoveringGroupTarget={false}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", display: "flex", alignItems: "center", justifyContent: "center" }}><GripDots /></div><div style={{ width: 20, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeRow.kind === "group" ? <Chevron open={(activeRow.node as LayerGroupNode).expanded} /> : null}</div><div style={{ width: 30, height: 30, borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", color: activeRow.visible ? "#d5ecff" : "rgba(255,255,255,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}><EyeIcon open={activeRow.visible} /></div><div style={{ width: 20, display: "flex", justifyContent: "center" }}>{activeRow.kind === "group" ? <FolderIcon /> : <LayerIcon />}</div><div style={{ minWidth: 0, flex: 1, fontWeight: 700 }}>{dragNodeIds.length > 1 ? `${dragNodeIds.length} items` : activeRow.name}</div></div></RowShell></div> : null}</DragOverlay>
@@ -596,6 +639,6 @@ export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsE
         </div>}
       </div>
     </div>
-    {openMenuId && menuPosition ? createPortal(<div data-layer-menu-popup="true" data-theme-surface="panel" onClick={(e) => e.stopPropagation()} style={{ position: "fixed", top: menuPosition.top, left: menuPosition.left, minWidth: 140, background: "rgba(14,17,22,0.98)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 12, boxShadow: "0 12px 28px rgba(0,0,0,0.35)", padding: 6, zIndex: 9999 }}><button type="button" onClick={() => { const row = rows.find((r) => r.id === openMenuId); if (!row) return; startRename(row); setOpenMenuId(null); setMenuPosition(null); }} style={menuItemStyle}>Rename</button><button type="button" onClick={() => { onDeleteNode(openMenuId); setOpenMenuId(null); setMenuPosition(null); }} style={menuItemStyle}>Delete</button></div>, document.body) : null}
+    {openMenuId && menuPosition ? createPortal(<div data-layer-menu-popup="true" data-theme-surface="panel" onClick={(e) => e.stopPropagation()} style={{ position: "fixed", top: menuPosition.top, left: menuPosition.left, minWidth: 140, background: "rgba(14,17,22,0.98)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 12, boxShadow: "0 12px 28px rgba(0,0,0,0.35)", padding: 6, zIndex: 9999 }}><button type="button" onClick={() => { const row = rows.find((r) => r.id === openMenuId); if (!row) return; startRename(row); setOpenMenuId(null); setMenuPosition(null); }} style={menuItemStyle}>Rename</button><button type="button" onClick={() => { onDuplicateNode(openMenuId); setOpenMenuId(null); setMenuPosition(null); }} style={menuItemStyle}>Duplicate</button><button type="button" onClick={() => { onDeleteNode(openMenuId); setOpenMenuId(null); setMenuPosition(null); }} style={menuItemStyle}>Delete</button></div>, document.body) : null}
   </>);
 }

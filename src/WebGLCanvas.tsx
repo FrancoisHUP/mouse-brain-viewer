@@ -75,6 +75,9 @@ type SliceDragState = {
   startClientX: number;
   startClientY: number;
   maxIndex: number;
+  stepIndexDelta: number;
+  stepScreenDx: number;
+  stepScreenDy: number;
 };
 
 export type ScenePointerHit = {
@@ -525,7 +528,7 @@ function transformNormalsByMatrix(model: mat4, normals: [number, number, number]
 function isInteractiveOverlayTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return !!target.closest(
-    "button, a, input, textarea, select, option, label, summary, [role='button'], [contenteditable='true']"
+    "button, a, input, textarea, select, option, label, summary, [role='button'], [contenteditable='true'], [data-theme-surface='panel'], [data-viewer-app-menu='true'], [data-layer-menu-container='true'], [data-layer-menu-popup='true'], [data-viewer-library-menu='true']"
   );
 }
 
@@ -547,6 +550,7 @@ export default function WebGLCanvas({
   annotationEraseMode = "color",
   onAnnotationSizeChange,
   onScenePointerTargetChange,
+  suppressScenePointerTarget = false,
   onSelectSceneLayer,
   onSelectSceneLayers,
   onCreatePointAnnotation,
@@ -578,7 +582,8 @@ export default function WebGLCanvas({
   annotationEraseMode?: "all" | "color";
   onAnnotationSizeChange?: (size: number) => void;
   onScenePointerTargetChange?: (hit: ScenePointerHit | null) => void;
-  onSelectSceneLayer?: (layerId: string, options?: { toggle?: boolean }) => void;
+  suppressScenePointerTarget?: boolean;
+  onSelectSceneLayer?: (layerId: string | null, options?: { toggle?: boolean }) => void;
   onSelectSceneLayers?: (layerIds: string[], options?: { append?: boolean; preferredNodeId?: string | null }) => void;
   onCreatePointAnnotation?: (hit: ScenePointerHit) => void;
   onCreateLineAnnotation?: (params: { start: ScenePointerHit; end: ScenePointerHit }) => void;
@@ -639,6 +644,7 @@ export default function WebGLCanvas({
   const onCreateShapeAnnotationRef = useRef<typeof onCreateShapeAnnotation>(onCreateShapeAnnotation);
   const onCommitFreehandStrokeRef = useRef<typeof onCommitFreehandStroke>(onCommitFreehandStroke);
   const onEraseFreehandRef = useRef<typeof onEraseFreehand>(onEraseFreehand);
+  const suppressScenePointerTargetRef = useRef<boolean>(suppressScenePointerTarget);
   const layerTreeRef = useRef<LayerTreeNode[]>(layerTree);
   const volumeCacheRef = useRef<Map<string, LoadedVolume>>(new Map());
   const meshCacheRef = useRef<Map<string, LoadedMesh>>(new Map());
@@ -664,6 +670,15 @@ export default function WebGLCanvas({
     lastPublishedLocalLoadStateRef.current = nextKey;
     onLocalSceneLoadStateChange?.(next);
   }
+
+  useEffect(() => {
+    suppressScenePointerTargetRef.current = suppressScenePointerTarget;
+    if (suppressScenePointerTarget) {
+      hoveredSceneHitRef.current = null;
+      lastPublishedSceneHitRef.current = "null";
+      onScenePointerTargetChange?.(null);
+    }
+  }, [suppressScenePointerTarget]);
 
   useEffect(() => {
     onCanvasElementChange?.(canvasRef.current);
@@ -1691,13 +1706,14 @@ export default function WebGLCanvas({
     }
 
     function publishHoveredSceneHit(hit: ScenePointerHit | null) {
-      hoveredSceneHitRef.current = hit;
-      const key = hit
-        ? `${hit.layerId}|${hit.plane ?? "none"}|${hit.position.map((value) => value.toFixed(5)).join(",")}|${hit.distance.toFixed(5)}`
+      const publishedHit = suppressScenePointerTargetRef.current ? null : hit;
+      hoveredSceneHitRef.current = publishedHit;
+      const key = publishedHit
+        ? `${publishedHit.layerId}|${publishedHit.plane ?? "none"}|${publishedHit.position.map((value) => value.toFixed(5)).join(",")}|${publishedHit.distance.toFixed(5)}`
         : "null";
       if (key === lastPublishedSceneHitRef.current) return;
       lastPublishedSceneHitRef.current = key;
-      onScenePointerTargetChange?.(hit);
+      onScenePointerTargetChange?.(publishedHit);
     }
 
 
@@ -1727,6 +1743,49 @@ export default function WebGLCanvas({
         x: ((ndcX + 1) * 0.5) * canvas.width,
         y: ((1 - ndcY) * 0.5) * canvas.height,
         depth: ndcZ,
+      };
+    }
+
+    function getSliceDragScreenStep(
+      layerEntry: ResolvedLayerEntry,
+      layer: LayerItemNode,
+      volume: LoadedVolume,
+      plane: SlicePlane,
+      displayIndex: number,
+      projection: mat4,
+      view: mat4,
+      profile: ViewerOrientationProfile
+    ): { stepIndexDelta: number; stepScreenDx: number; stepScreenDy: number } {
+      const maxIndex = Math.max(0, getPlaneSliceCount(volume, plane) - 1);
+      const adjacentIndex =
+        displayIndex < maxIndex ? displayIndex + 1 : displayIndex > 0 ? displayIndex - 1 : displayIndex;
+      const stepIndexDelta = adjacentIndex - displayIndex;
+      if (stepIndexDelta === 0) {
+        return { stepIndexDelta: 0, stepScreenDx: 0, stepScreenDy: 0 };
+      }
+
+      const currentModel = multiplyModelMatrices(
+        layerEntry.worldMatrix,
+        makeInteractiveSliceModelMatrix(layer, volume, plane, displayIndex, profile)
+      );
+      const adjacentModel = multiplyModelMatrices(
+        layerEntry.worldMatrix,
+        makeInteractiveSliceModelMatrix(layer, volume, plane, adjacentIndex, profile)
+      );
+
+      const currentCenter = transformPoint(currentModel, [0, 0, 0]);
+      const adjacentCenter = transformPoint(adjacentModel, [0, 0, 0]);
+      const currentScreen = projectWorldPointToCanvas([currentCenter[0], currentCenter[1], currentCenter[2]], projection, view);
+      const adjacentScreen = projectWorldPointToCanvas([adjacentCenter[0], adjacentCenter[1], adjacentCenter[2]], projection, view);
+
+      if (!currentScreen || !adjacentScreen) {
+        return { stepIndexDelta, stepScreenDx: 0, stepScreenDy: 0 };
+      }
+
+      return {
+        stepIndexDelta,
+        stepScreenDx: adjacentScreen.x - currentScreen.x,
+        stepScreenDy: adjacentScreen.y - currentScreen.y,
       };
     }
 
@@ -3273,8 +3332,8 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
                     mvp,
                     isActivePlane
                       ? [0.48, 0.82, 1.0, 0.95]
-                      : [1.0, 1.0, 1.0, 0.72],
-                    isActivePlane ? 2.2 : 1.6
+                      : [1.0, 0.76, 0.34, 0.92],
+                    isActivePlane ? 2.4 : 1.9
                   );
                 }
               }
@@ -3643,17 +3702,8 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       if (activeToolRef.current !== "select") return;
       if (e.button !== 0) return;
       if (!canvasRef.current) return;
-      if (e.target === canvasRef.current) return;
+      if (e.target !== canvasRef.current) return;
       if (isInteractiveOverlayTarget(e.target)) return;
-
-      const rect = canvasRef.current.getBoundingClientRect();
-      const insideCanvas =
-        e.clientX >= rect.left &&
-        e.clientX <= rect.right &&
-        e.clientY >= rect.top &&
-        e.clientY <= rect.bottom;
-
-      if (!insideCanvas) return;
 
       e.preventDefault();
       beginSelectRectDrag(e.clientX, e.clientY);
@@ -3719,7 +3769,22 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           return;
         }
 
+        const resolvedLayerEntry =
+          collectResolvedVisibleLayers(layerTreeRef.current, true).find((entry) => entry.layer.id === targetNode.id) ?? null;
         const startIndex = getLayerAxisSliceDisplayIndex(targetNode, loadedVolumeEntry.volume, hit.plane);
+        const { projection, view } = getViewProjectionMatrices();
+        const dragScreenStep = resolvedLayerEntry
+          ? getSliceDragScreenStep(
+              resolvedLayerEntry,
+              targetNode,
+              loadedVolumeEntry.volume,
+              hit.plane,
+              startIndex,
+              projection,
+              view,
+              loadedVolumeEntry.profile
+            )
+          : { stepIndexDelta: 0, stepScreenDx: 0, stepScreenDy: 0 };
         sliceDrag = {
           layerId: targetNode.id,
           plane: hit.plane,
@@ -3727,6 +3792,9 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           startClientX: e.clientX,
           startClientY: e.clientY,
           maxIndex: Math.max(0, getPlaneSliceCount(loadedVolumeEntry.volume, hit.plane) - 1),
+          stepIndexDelta: dragScreenStep.stepIndexDelta,
+          stepScreenDx: dragScreenStep.stepScreenDx,
+          stepScreenDy: dragScreenStep.stepScreenDy,
         };
         onAxisSliceStateChangeRef.current?.(targetNode.id, {
           activePlane: hit.plane,
@@ -3837,9 +3905,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             }
           } else {
             const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY) ?? hoveredSceneHitRef.current;
-            if (hit) {
-              onSelectSceneLayerRef.current?.(hit.layerId, { toggle: isToggle });
-            }
+            onSelectSceneLayerRef.current?.(hit?.layerId ?? null, { toggle: isToggle });
           }
         }
         selectRectDragging = false;
@@ -3896,6 +3962,12 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
 
     function onMouseMove(e: MouseEvent) {
       if (activeToolRef.current === "select") {
+        if (isInteractiveOverlayTarget(e.target)) {
+          if (!selectRectDragging) {
+            publishHoveredSceneHit(null);
+          }
+          return;
+        }
         if (selectRectDragging) {
           const nextLeft = Math.min(selectRectStartClientX, e.clientX);
           const nextTop = Math.min(selectRectStartClientY, e.clientY);
@@ -3909,19 +3981,28 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       }
 
       if (activeToolRef.current === "slice") {
-        const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
-        publishHoveredSceneHit(hit);
-
         if (sliceDrag) {
+          publishHoveredSceneHit(null);
           const deltaX = e.clientX - sliceDrag.startClientX;
           const deltaY = e.clientY - sliceDrag.startClientY;
-          const dominantDelta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY;
-          const deltaIndex = Math.round(dominantDelta / 6);
+          const stepLengthSq =
+            sliceDrag.stepScreenDx * sliceDrag.stepScreenDx +
+            sliceDrag.stepScreenDy * sliceDrag.stepScreenDy;
+          const deltaIndex =
+            Math.abs(sliceDrag.stepIndexDelta) > 0 && stepLengthSq > 1
+              ? Math.round(
+                  ((deltaX * sliceDrag.stepScreenDx + deltaY * sliceDrag.stepScreenDy) / stepLengthSq) *
+                    sliceDrag.stepIndexDelta
+                )
+              : Math.round((Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY) / 6);
           const nextIndex = clamp(sliceDrag.startIndex + deltaIndex, 0, sliceDrag.maxIndex);
           onAxisSliceStateChangeRef.current?.(sliceDrag.layerId, {
             [sliceDrag.plane]: nextIndex,
             activePlane: sliceDrag.plane,
           });
+        } else {
+          const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
+          publishHoveredSceneHit(hit);
         }
         return;
       }
