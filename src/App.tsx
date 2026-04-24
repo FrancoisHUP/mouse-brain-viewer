@@ -101,6 +101,12 @@ import { type LocalImportCandidate, type LocalInputEntry } from "./localDataHand
 import { clearAllLocalDatasetRecords, deleteLocalDatasetRecord, renameLocalDatasetRecord, storeLocalDatasetFile, storeLocalDatasetTree } from "./localDataStore";
 import type { ScenePointerHit, SelectedLayerRuntimeInfo } from "./WebGLCanvas";
 import {
+  ALLEN_VOLUME_PROFILE,
+  IDENTITY_PROFILE,
+  getProfileAdjustedPlaneBasis,
+  makePlaneBasis,
+} from "./omeZarr";
+import {
   collectAllLayerItems,
   collectGroups,
   deleteNodeById,
@@ -109,6 +115,7 @@ import {
   insertIntoGroup,
   insertNodesBeforeNode,
   insertNodesIntoGroup,
+  isCustomSliceLayer,
   isGroupNode,
   isRemoteOmeLayer,
   moveNodeBeforeNode,
@@ -175,6 +182,8 @@ type LayerClipboardPayload = {
   sourceIds: string[];
   nodes: LayerTreeNode[];
 };
+type SliceVec3 = { x: number; y: number; z: number };
+type VolumeDims = { x: number; y: number; z: number };
 
 
 
@@ -329,6 +338,179 @@ function appendClipboardNodesToRoot(
     tree: [...nodes, ...duplicates],
     duplicatedRootIds: duplicates.map((node) => node.id),
   };
+}
+
+function hasVolumeLayerId(source: unknown): source is { volumeLayerId: string } {
+  return !!source && typeof source === "object" && "volumeLayerId" in source;
+}
+
+function isObliqueSliceParams(
+  params: SliceLayerParams | undefined | null
+): params is Extract<SliceLayerParams, { mode: "oblique" }> {
+  return (
+    !!params &&
+    params.mode === "oblique" &&
+    typeof params.normal?.x === "number" &&
+    typeof params.normal?.y === "number" &&
+    typeof params.normal?.z === "number"
+  );
+}
+
+function normalizeSliceVec3(vector: SliceVec3): SliceVec3 {
+  const length = Math.hypot(vector.x, vector.y, vector.z) || 1;
+  return {
+    x: vector.x / length,
+    y: vector.y / length,
+    z: vector.z / length,
+  };
+}
+
+function crossSliceVec3(a: SliceVec3, b: SliceVec3): SliceVec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function projectSliceVec3OntoPlane(vector: SliceVec3, normal: SliceVec3): SliceVec3 {
+  const dot = dotSliceVec3(vector, normal);
+  return {
+    x: vector.x - normal.x * dot,
+    y: vector.y - normal.y * dot,
+    z: vector.z - normal.z * dot,
+  };
+}
+
+function dotSliceVec3(a: SliceVec3, b: SliceVec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function rotateSliceVec3AroundAxis(
+  vector: SliceVec3,
+  axis: SliceVec3,
+  deltaDeg: number
+): SliceVec3 {
+  const unitVector = normalizeSliceVec3(vector);
+  const unitAxis = normalizeSliceVec3(axis);
+  const theta = (deltaDeg * Math.PI) / 180;
+  const cosTheta = Math.cos(theta);
+  const sinTheta = Math.sin(theta);
+  const cross = crossSliceVec3(unitAxis, unitVector);
+  const dot = dotSliceVec3(unitAxis, unitVector);
+  return normalizeSliceVec3({
+    x:
+      unitVector.x * cosTheta +
+      cross.x * sinTheta +
+      unitAxis.x * dot * (1 - cosTheta),
+    y:
+      unitVector.y * cosTheta +
+      cross.y * sinTheta +
+      unitAxis.y * dot * (1 - cosTheta),
+    z:
+      unitVector.z * cosTheta +
+      cross.z * sinTheta +
+      unitAxis.z * dot * (1 - cosTheta),
+  });
+}
+
+function getCanonicalPlaneNormal(plane: SlicePlane): SliceVec3 {
+  if (plane === "xy") return { x: 0, y: 0, z: 1 };
+  if (plane === "xz") return { x: 0, y: 1, z: 0 };
+  return { x: 1, y: 0, z: 0 };
+}
+
+function getPlaneCenterCoordinate(dims: VolumeDims, plane: SlicePlane): number {
+  if (plane === "xy") return (dims.z - 1) * 0.5;
+  if (plane === "xz") return (dims.y - 1) * 0.5;
+  return (dims.x - 1) * 0.5;
+}
+
+function getAxisSliceSizeForPlane(
+  dims: VolumeDims,
+  plane: SlicePlane
+): { width: number; height: number } {
+  if (plane === "xy") return { width: dims.x, height: dims.y };
+  if (plane === "xz") return { width: dims.x, height: dims.z };
+  return { width: dims.z, height: dims.y };
+}
+
+function getSliceOrientationProfileForLayer(layer: LayerItemNode) {
+  return layer.type === "file" ? IDENTITY_PROFILE : ALLEN_VOLUME_PROFILE;
+}
+
+function getPlaneReverseIndex(
+  plane: SlicePlane,
+  profile: typeof ALLEN_VOLUME_PROFILE
+): boolean {
+  if (plane === "xy") return !!profile.xy?.reverseIndex;
+  if (plane === "xz") return !!profile.xz?.reverseIndex;
+  return !!profile.yz?.reverseIndex;
+}
+
+function buildObliqueSliceFromCanonicalPlane(
+  layer: LayerItemNode,
+  dims: VolumeDims,
+  plane: SlicePlane,
+  displayIndex: number,
+  viewTransform?: {
+    flipX?: boolean;
+    flipY?: boolean;
+    flipZ?: boolean;
+    rotationDeg?: number;
+    scale?: number;
+  }
+): Extract<SliceLayerParams, { mode: "oblique" }> {
+  const profile = getSliceOrientationProfileForLayer(layer);
+  const maxIndex =
+    plane === "xy" ? Math.max(0, dims.z - 1) : plane === "xz" ? Math.max(0, dims.y - 1) : Math.max(0, dims.x - 1);
+  const safeDisplayIndex = Math.max(0, Math.min(maxIndex, Math.round(displayIndex)));
+  const dataIndex = getPlaneReverseIndex(plane, profile)
+    ? maxIndex - safeDisplayIndex
+    : safeDisplayIndex;
+  const { width, height } = getAxisSliceSizeForPlane(dims, plane);
+  const normal = getCanonicalPlaneNormal(plane);
+  const basis = getProfileAdjustedPlaneBasis(normal, profile, undefined, plane);
+
+  return {
+    mode: "oblique",
+    normal,
+    uAxis: basis.u,
+    referencePlane: plane,
+    offset: dataIndex - getPlaneCenterCoordinate(dims, plane),
+    width,
+    height,
+    opacity: 0.92,
+    flipX: !!viewTransform?.flipX,
+    flipY: !!viewTransform?.flipY,
+    flipZ: !!viewTransform?.flipZ,
+    rotationDeg: Number.isFinite(viewTransform?.rotationDeg) ? Number(viewTransform?.rotationDeg) : 0,
+    scale: Number.isFinite(viewTransform?.scale) ? Number(viewTransform?.scale) : 1,
+  };
+}
+
+function getObliqueSliceBasis(
+  params: Extract<SliceLayerParams, { mode: "oblique" }>
+): { u: SliceVec3; v: SliceVec3; n: SliceVec3 } {
+  const n = normalizeSliceVec3(params.normal);
+  const projectedU = params.uAxis
+    ? projectSliceVec3OntoPlane(params.uAxis, n)
+    : null;
+  const projectedULength = projectedU
+    ? Math.hypot(projectedU.x, projectedU.y, projectedU.z)
+    : 0;
+  const fallbackBasis = makePlaneBasis(n);
+  const u =
+    projectedU && projectedULength > 1e-6
+      ? normalizeSliceVec3(projectedU)
+      : normalizeSliceVec3(fallbackBasis.u);
+  const rawV = crossSliceVec3(n, u);
+  const rawVLength = Math.hypot(rawV.x, rawV.y, rawV.z);
+  const v =
+    rawVLength > 1e-6
+      ? normalizeSliceVec3(rawV)
+      : normalizeSliceVec3(fallbackBasis.v);
+  return { u, v, n };
 }
 
 
@@ -713,6 +895,14 @@ export default function App({ startupSlices = [] }: AppProps) {
   const selectedCanonicalSliceLayer = isCanonicalSliceBrowsableLayer(selectedNode)
     ? selectedNode
     : null;
+  const selectedCustomSliceLayer =
+    selectedNode && selectedNode.kind === "layer" && isCustomSliceLayer(selectedNode)
+      ? selectedNode
+      : null;
+  const selectedObliqueSliceLayer =
+    selectedCustomSliceLayer && isObliqueSliceParams(selectedCustomSliceLayer.sliceParams)
+      ? selectedCustomSliceLayer
+      : null;
 
   const selectedAnnotation = selectedAnnotationLayer?.annotation ?? null;
 
@@ -956,6 +1146,20 @@ export default function App({ startupSlices = [] }: AppProps) {
     };
   }
 
+  function getObliqueSliceViewState() {
+    const params =
+      selectedObliqueSliceLayer && isObliqueSliceParams(selectedObliqueSliceLayer.sliceParams)
+        ? selectedObliqueSliceLayer.sliceParams
+        : null;
+    return {
+      flipX: !!params?.flipX,
+      flipY: !!params?.flipY,
+      flipZ: !!params?.flipZ,
+      rotationDeg: Number.isFinite(params?.rotationDeg) ? Number(params?.rotationDeg) : 0,
+      scale: Number.isFinite(params?.scale) ? Number(params?.scale) : 1,
+    };
+  }
+
   function getCanonicalSliceToolPlane(): SlicePlane | null {
     if (!selectedCanonicalSliceLayer) return null;
     return (
@@ -1058,21 +1262,240 @@ export default function App({ startupSlices = [] }: AppProps) {
     }));
   }
 
+  function handleUpdateObliqueSliceParams(
+    updater: (
+      current: Extract<SliceLayerParams, { mode: "oblique" }>
+    ) => Extract<SliceLayerParams, { mode: "oblique" }>
+  ) {
+    const targetId = selectedObliqueSliceLayer?.id;
+    if (!targetId) return;
+
+    setLayerTree((prev) =>
+      updateNodeById(prev, targetId, (node) => {
+        if (
+          node.kind !== "layer" ||
+          node.type !== "custom-slice" ||
+          !isObliqueSliceParams(node.sliceParams)
+        ) {
+          return node;
+        }
+
+        return {
+          ...node,
+          sliceParams: updater(node.sliceParams),
+        };
+      })
+    );
+  }
+
+  function handleUpdateObliqueSliceViewState(
+    updater: (current: { flipX: boolean; flipY: boolean; flipZ: boolean; rotationDeg: number; scale: number }) => {
+      flipX?: boolean;
+      flipY?: boolean;
+      flipZ?: boolean;
+      rotationDeg?: number;
+      scale?: number;
+    }
+  ) {
+    handleUpdateObliqueSliceParams((current) => {
+      const normalized = {
+        flipX: !!current.flipX,
+        flipY: !!current.flipY,
+        flipZ: !!current.flipZ,
+        rotationDeg: Number.isFinite(current.rotationDeg) ? Number(current.rotationDeg) : 0,
+        scale: Number.isFinite(current.scale) ? Number(current.scale) : 1,
+      };
+      return {
+        ...current,
+        ...normalized,
+        ...updater(normalized),
+      };
+    });
+  }
+
+  function handleCreateFreeSliceFromCanonical() {
+    const layer = selectedCanonicalSliceLayer;
+    const dims = selectedLayerRuntimeInfo?.dims ?? null;
+    const plane = getCanonicalSliceToolPlane();
+    if (!layer || !dims || !plane) return;
+
+    const displayIndex =
+      layer.axisSliceState?.[plane] ??
+      Math.round(getPlaneCenterCoordinate(dims, plane));
+    const nextSliceParams = buildObliqueSliceFromCanonicalPlane(
+      layer,
+      dims,
+      plane,
+      displayIndex,
+      getCanonicalSliceViewState(plane)
+    );
+    const nextId = createId();
+    const nextName = `${layer.name} free slice`;
+
+    setLayerTree((prev) => [
+      ...prev,
+      {
+        id: nextId,
+        kind: "layer",
+        name: nextName,
+        type: "custom-slice",
+        visible: true,
+        source: { volumeLayerId: layer.id },
+        sourceKind: "built-in",
+        description: `Free slice from ${layer.name}`,
+        sliceParams: nextSliceParams,
+      },
+    ]);
+    setSelectedNodeId(nextId);
+    setSelectedNodeIdsExternal([nextId]);
+    setSliceVolumeLayerId(layer.id);
+    setSliceName(nextName);
+    setSliceParamsDraft(nextSliceParams);
+  }
+
+  function handleSnapObliqueSliceToPlane(plane: SlicePlane) {
+    const dims = selectedLayerRuntimeInfo?.dims ?? null;
+    if (!dims) return;
+    const profile = selectedCanonicalSliceLayer
+      ? getSliceOrientationProfileForLayer(selectedCanonicalSliceLayer)
+      : ALLEN_VOLUME_PROFILE;
+    const basis = getProfileAdjustedPlaneBasis(
+      getCanonicalPlaneNormal(plane),
+      profile,
+      undefined,
+      plane
+    );
+    handleUpdateObliqueSliceParams((current) => ({
+      ...current,
+      normal: getCanonicalPlaneNormal(plane),
+      uAxis: basis.u,
+      referencePlane: plane,
+      offset: 0,
+      ...getAxisSliceSizeForPlane(dims, plane),
+    }));
+  }
+
+  function handleNudgeObliqueSliceOffset(delta: number) {
+    handleUpdateObliqueSliceParams((current) => ({
+      ...current,
+      offset: Math.round(((current.offset ?? 0) + delta) * 1000) / 1000,
+    }));
+  }
+
+  function handleRotateObliqueSlice(deltaDeg: number) {
+    handleUpdateObliqueSliceViewState((current) => ({
+      rotationDeg: ((current.rotationDeg + deltaDeg) % 360 + 360) % 360,
+    }));
+  }
+
+  function handleToggleObliqueSliceFlip(axis: "x" | "y" | "z") {
+    handleUpdateObliqueSliceViewState((current) => {
+      if (axis === "x") return { flipX: !current.flipX };
+      if (axis === "y") return { flipY: !current.flipY };
+      return { flipZ: !current.flipZ };
+    });
+  }
+
+  function handleScaleObliqueSlice(delta: number) {
+    handleUpdateObliqueSliceViewState((current) => ({
+      scale: Math.max(0.05, Math.min(6, Math.round((current.scale + delta) * 1000) / 1000)),
+    }));
+  }
+
+  function handleResetObliqueSliceView() {
+    handleUpdateObliqueSliceViewState(() => ({
+      flipX: false,
+      flipY: false,
+      flipZ: false,
+      rotationDeg: 0,
+      scale: 1,
+    }));
+  }
+
+  function handleTiltObliqueSlice(axis: "u" | "v", deltaDeg: number) {
+    handleUpdateObliqueSliceParams((current) => {
+      const basis = getObliqueSliceBasis(current);
+      const rotationAxis = axis === "u" ? basis.u : basis.v;
+      const nextNormal = rotateSliceVec3AroundAxis(current.normal, rotationAxis, deltaDeg);
+      const nextUAxis =
+        axis === "u"
+          ? basis.u
+          : rotateSliceVec3AroundAxis(basis.u, rotationAxis, deltaDeg);
+      return {
+        ...current,
+        normal: nextNormal,
+        uAxis: normalizeSliceVec3(projectSliceVec3OntoPlane(nextUAxis, nextNormal)),
+      };
+    });
+  }
+
+  function handleResetObliqueSliceToCenter() {
+    handleUpdateObliqueSliceParams((current) => ({
+      ...current,
+      offset: 0,
+    }));
+  }
+
+  function handleTiltObliqueSliceForLayer(
+    layerId: string,
+    axis: "u" | "v",
+    deltaDeg: number
+  ) {
+    setLayerTree((prev) =>
+      updateNodeById(prev, layerId, (node) => {
+        if (
+          node.kind !== "layer" ||
+          node.type !== "custom-slice" ||
+          !isObliqueSliceParams(node.sliceParams)
+        ) {
+          return node;
+        }
+
+        const current = node.sliceParams;
+        const basis = getObliqueSliceBasis(current);
+        const rotationAxis = axis === "u" ? basis.u : basis.v;
+        const nextNormal = rotateSliceVec3AroundAxis(current.normal, rotationAxis, deltaDeg);
+        const nextUAxis =
+          axis === "u"
+            ? basis.u
+            : rotateSliceVec3AroundAxis(basis.u, rotationAxis, deltaDeg);
+
+        return {
+          ...node,
+          sliceParams: {
+            ...current,
+            normal: nextNormal,
+            uAxis: normalizeSliceVec3(projectSliceVec3OntoPlane(nextUAxis, nextNormal)),
+          },
+        };
+      })
+    );
+  }
+
 
 
 
 
 
   const sliceToolTargetPlane = getCanonicalSliceToolPlane();
-  const sliceToolViewState = sliceToolTargetPlane
-    ? getCanonicalSliceViewState(sliceToolTargetPlane)
-    : {
-        flipX: false,
-        flipY: false,
-        flipZ: false,
-        rotationDeg: 0,
-        scale: 1,
-      };
+  const sliceToolViewState = selectedObliqueSliceLayer
+    ? getObliqueSliceViewState()
+    : sliceToolTargetPlane
+      ? getCanonicalSliceViewState(sliceToolTargetPlane)
+      : {
+          flipX: false,
+          flipY: false,
+          flipZ: false,
+          rotationDeg: 0,
+          scale: 1,
+        };
+  const sliceToolMode = selectedObliqueSliceLayer ? "free" : "canonical";
+  const sliceToolSelectedLayerName =
+    selectedObliqueSliceLayer?.name ?? selectedCanonicalSliceLayer?.name ?? null;
+  const sliceToolFreeSliceOffset =
+    selectedObliqueSliceLayer && isObliqueSliceParams(selectedObliqueSliceLayer.sliceParams)
+      ? selectedObliqueSliceLayer.sliceParams.offset ?? 0
+      : 0;
 
   const inspectorPanelContent = (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1521,11 +1944,21 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   useEffect(() => {
-    if (isCanonicalSliceBrowsableLayer(selectedNode)) {
-      if (sliceVolumeLayerId !== selectedNode.id) {
-        setSliceVolumeLayerId(selectedNode.id);
+    if (selectedCanonicalSliceLayer) {
+      if (sliceVolumeLayerId !== selectedCanonicalSliceLayer.id) {
+        setSliceVolumeLayerId(selectedCanonicalSliceLayer.id);
       }
       return;
+    }
+
+    if (selectedCustomSliceLayer && hasVolumeLayerId(selectedCustomSliceLayer.source)) {
+      const volumeNode = findNodeById(layerTree, selectedCustomSliceLayer.source.volumeLayerId);
+      if (volumeNode && isCanonicalSliceBrowsableLayer(volumeNode)) {
+        if (sliceVolumeLayerId !== volumeNode.id) {
+          setSliceVolumeLayerId(volumeNode.id);
+        }
+        return;
+      }
     }
 
     const currentSliceVolumeNode = sliceVolumeLayerId
@@ -1545,7 +1978,13 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (sliceVolumeLayerId !== "") {
       setSliceVolumeLayerId("");
     }
-  }, [selectedNode, sliceVolumeLayerId, sliceBrowsableLayers, layerTree]);
+  }, [
+    selectedCanonicalSliceLayer,
+    selectedCustomSliceLayer,
+    sliceVolumeLayerId,
+    sliceBrowsableLayers,
+    layerTree,
+  ]);
 
   useEffect(() => {
     if (hasHydratedHistoryRef.current) return;
@@ -2408,6 +2847,15 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
 
     if (tool === "slice") {
+      if (
+        selectedCustomSliceLayer &&
+        hasVolumeLayerId(selectedCustomSliceLayer.source)
+      ) {
+        setSelectedNodeId(selectedCustomSliceLayer.id);
+        setSliceVolumeLayerId(selectedCustomSliceLayer.source.volumeLayerId);
+        return;
+      }
+
       const preferredLayer =
         selectedCanonicalSliceLayer ??
         (sliceVolumeLayerId ? findNodeById(layerTree, sliceVolumeLayerId) : null) ??
@@ -3567,6 +4015,34 @@ export default function App({ startupSlices = [] }: AppProps) {
     );
   }
 
+  function handleUpdateCustomSliceParams(
+    layerId: string,
+    patch: Partial<Extract<SliceLayerParams, { mode: "oblique" }>>
+  ) {
+    setLayerTree((prev) =>
+      updateNodeById(prev, layerId, (node) => {
+        if (
+          node.kind !== "layer" ||
+          node.type !== "custom-slice" ||
+          !isObliqueSliceParams(node.sliceParams)
+        ) {
+          return node;
+        }
+
+        return {
+          ...node,
+          sliceParams: {
+            ...node.sliceParams,
+            ...patch,
+            normal: patch.normal
+              ? normalizeSliceVec3(patch.normal)
+              : node.sliceParams.normal,
+          },
+        };
+      })
+    );
+  }
+
   function handleRequestFocusSelectedLayer() {
     if (!selectedNode || selectedNode.kind !== "layer") return;
     setActiveTool("mouse");
@@ -3636,6 +4112,8 @@ export default function App({ startupSlices = [] }: AppProps) {
         onSelectSceneLayer={handleSelectSceneLayer}
         onSelectSceneLayers={handleSelectSceneLayers}
         onAxisSliceStateChange={handleUpdateAxisSliceState}
+        onCustomSliceParamsChange={handleUpdateCustomSliceParams}
+        onCustomSliceTilt={handleTiltObliqueSliceForLayer}
         onCanvasElementChange={handleCanvasElementChange}
         onLocalSceneLoadStateChange={handleLocalSceneLoadStateChange}
         localSceneLoadingActive={localSceneLoadState.active}
@@ -3873,7 +4351,8 @@ export default function App({ startupSlices = [] }: AppProps) {
         onAnnotationDepthChange={handleAnnotationDraftDepthChange}
         onAnnotationEraseModeChange={(mode) => setAnnotationDraft((prev) => ({ ...prev, eraseMode: mode }))}
         onAnnotationPickColorFromScreen={handlePickAnnotationColorFromScreen}
-        sliceSelectedLayerName={selectedCanonicalSliceLayer?.name ?? null}
+        sliceMode={sliceToolMode}
+        sliceSelectedLayerName={sliceToolSelectedLayerName}
         sliceTargetPlane={sliceToolTargetPlane}
         sliceHoveredPlane={
           !isSlicePanelHoverLocked &&
@@ -3883,7 +4362,7 @@ export default function App({ startupSlices = [] }: AppProps) {
             ? scenePointerTarget.plane
             : null
         }
-        sliceCanResetToCenter={!!selectedCanonicalSliceLayer && !!selectedLayerRuntimeInfo?.dims}
+        sliceCanResetToCenter={!!sliceToolSelectedLayerName && !!selectedLayerRuntimeInfo?.dims}
         sliceRotationDeg={sliceToolViewState.rotationDeg}
         sliceScale={sliceToolViewState.scale}
         sliceFlipX={sliceToolViewState.flipX}
@@ -3892,13 +4371,19 @@ export default function App({ startupSlices = [] }: AppProps) {
         sliceVisibilityXY={getCanonicalSliceViewState("xy").visible}
         sliceVisibilityXZ={getCanonicalSliceViewState("xz").visible}
         sliceVisibilityYZ={getCanonicalSliceViewState("yz").visible}
+        sliceCanCreateFreeSlice={!!selectedCanonicalSliceLayer && !!sliceToolTargetPlane && !!selectedLayerRuntimeInfo?.dims}
+        sliceFreeSliceOffset={sliceToolFreeSliceOffset}
         onSliceHoverLockChange={setIsSlicePanelHoverLocked}
         onSliceToggleVisibility={handleToggleCanonicalSliceVisibility}
-        onSliceResetView={handleResetCanonicalSliceView}
-        onSliceToggleFlip={handleToggleCanonicalSliceFlip}
-        onSliceResetToCenter={handleCenterCanonicalSlices}
-        onSliceRotate={handleRotateCanonicalSlice}
-        onSliceScale={handleScaleCanonicalSlice}
+        onSliceResetView={sliceToolMode === "free" ? handleResetObliqueSliceView : handleResetCanonicalSliceView}
+        onSliceToggleFlip={sliceToolMode === "free" ? handleToggleObliqueSliceFlip : handleToggleCanonicalSliceFlip}
+        onSliceResetToCenter={sliceToolMode === "free" ? handleResetObliqueSliceToCenter : handleCenterCanonicalSlices}
+        onSliceRotate={sliceToolMode === "free" ? handleRotateObliqueSlice : handleRotateCanonicalSlice}
+        onSliceScale={sliceToolMode === "free" ? handleScaleObliqueSlice : handleScaleCanonicalSlice}
+        onSliceCreateFreeSlice={handleCreateFreeSliceFromCanonical}
+        onSliceNudgeFreeOffset={handleNudgeObliqueSliceOffset}
+        onSliceTiltFreeSlice={handleTiltObliqueSlice}
+        onSliceSnapFreeSlice={handleSnapObliqueSliceToPlane}
       />
     </div>
   );

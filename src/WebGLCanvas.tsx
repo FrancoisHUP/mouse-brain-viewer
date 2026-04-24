@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { mat4, vec3 } from "gl-matrix";
 import type { SerializableCameraState, CameraControlMode } from "./viewerState";
 import type { ToolId } from "./BottomToolbar";
-import type { AnnotationShape, LayerTreeNode, LayerItemNode, RemoteContentKind, RemoteOmeResolution } from "./layerTypes";
+import type { AnnotationShape, LayerTreeNode, LayerItemNode, RemoteContentKind, RemoteOmeResolution, SliceLayerParams } from "./layerTypes";
 import {
   collectLayerIdsInSubtree,
   collectVisibleLayerItems,
@@ -69,6 +69,7 @@ type AxisSliceTextureEntry = {
 };
 
 type SliceDragState = {
+  kind: "axis";
   layerId: string;
   plane: SlicePlane;
   startIndex: number;
@@ -76,6 +77,15 @@ type SliceDragState = {
   startClientY: number;
   maxIndex: number;
   stepIndexDelta: number;
+  stepScreenDx: number;
+  stepScreenDy: number;
+} | {
+  kind: "oblique";
+  layerId: string;
+  startOffset: number;
+  startClientX: number;
+  startClientY: number;
+  stepOffsetDelta: number;
   stepScreenDx: number;
   stepScreenDy: number;
 };
@@ -251,6 +261,18 @@ function isAxisAlignedSliceParams(
   );
 }
 
+function isObliqueSliceParams(
+  params: SliceLayerParams | null | undefined
+): params is Extract<SliceLayerParams, { mode: "oblique" }> {
+  return (
+    !!params &&
+    params.mode === "oblique" &&
+    typeof params.normal?.x === "number" &&
+    typeof params.normal?.y === "number" &&
+    typeof params.normal?.z === "number"
+  );
+}
+
 function getRemoteLayerResolution(layer: LayerItemNode): RemoteOmeResolution {
   return layer.remoteResolution ?? "100um";
 }
@@ -411,6 +433,18 @@ function getLayerAxisSliceViewTransform(
   };
 }
 
+function getObliqueSliceViewTransform(
+  sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>
+): { flipX: boolean; flipY: boolean; flipZ: boolean; rotationDeg: number; scale: number } {
+  return {
+    flipX: !!sliceParams.flipX,
+    flipY: !!sliceParams.flipY,
+    flipZ: !!sliceParams.flipZ,
+    rotationDeg: Number.isFinite(sliceParams.rotationDeg) ? Number(sliceParams.rotationDeg) : 0,
+    scale: Number.isFinite(sliceParams.scale) ? Number(sliceParams.scale) : 1,
+  };
+}
+
 function chooseStableVolumeRenderPlane(_volume: LoadedVolume): SlicePlane {
   return "xy";
 }
@@ -560,6 +594,8 @@ export default function WebGLCanvas({
   onEraseFreehand,
   onSelectedLayerRuntimeInfoChange,
   onAxisSliceStateChange,
+  onCustomSliceParamsChange,
+  onCustomSliceTilt,
   onCanvasElementChange,
   onLocalSceneLoadStateChange,
   localSceneLoadingActive = false,
@@ -594,6 +630,15 @@ export default function WebGLCanvas({
   onAxisSliceStateChange?: (
     layerId: string,
     patch: Partial<NonNullable<LayerItemNode["axisSliceState"]>>
+  ) => void;
+  onCustomSliceParamsChange?: (
+    layerId: string,
+    patch: Partial<Extract<SliceLayerParams, { mode: "oblique" }>>
+  ) => void;
+  onCustomSliceTilt?: (
+    layerId: string,
+    axis: "u" | "v",
+    deltaDeg: number
   ) => void;
   onCanvasElementChange?: (canvas: HTMLCanvasElement | null) => void;
   onLocalSceneLoadStateChange?: (state: { active: boolean; pending: number }) => void;
@@ -638,6 +683,8 @@ export default function WebGLCanvas({
   const onAnnotationSizeChangeRef = useRef<typeof onAnnotationSizeChange>(onAnnotationSizeChange);
   const onCreatePointAnnotationRef = useRef<typeof onCreatePointAnnotation>(onCreatePointAnnotation);
   const onAxisSliceStateChangeRef = useRef<typeof onAxisSliceStateChange>(onAxisSliceStateChange);
+  const onCustomSliceParamsChangeRef = useRef<typeof onCustomSliceParamsChange>(onCustomSliceParamsChange);
+  const onCustomSliceTiltRef = useRef<typeof onCustomSliceTilt>(onCustomSliceTilt);
   const onSelectSceneLayerRef = useRef<typeof onSelectSceneLayer>(onSelectSceneLayer);
   const onSelectSceneLayersRef = useRef<typeof onSelectSceneLayers>(onSelectSceneLayers);
   const onCreateLineAnnotationRef = useRef<typeof onCreateLineAnnotation>(onCreateLineAnnotation);
@@ -736,6 +783,14 @@ export default function WebGLCanvas({
   useEffect(() => {
     onAxisSliceStateChangeRef.current = onAxisSliceStateChange;
   }, [onAxisSliceStateChange]);
+
+  useEffect(() => {
+    onCustomSliceParamsChangeRef.current = onCustomSliceParamsChange;
+  }, [onCustomSliceParamsChange]);
+
+  useEffect(() => {
+    onCustomSliceTiltRef.current = onCustomSliceTilt;
+  }, [onCustomSliceTilt]);
 
   useEffect(() => {
     onSelectSceneLayerRef.current = onSelectSceneLayer;
@@ -1504,6 +1559,8 @@ export default function WebGLCanvas({
         | {
             mode: "oblique";
             normal: { x: number; y: number; z: number };
+            uAxis?: { x: number; y: number; z: number };
+            referencePlane?: SlicePlane;
             offset?: number;
             width?: number;
             height?: number;
@@ -1520,6 +1577,8 @@ export default function WebGLCanvas({
               volume,
               {
                 normal: sliceSpec.normal,
+                uAxis: sliceSpec.uAxis,
+                referencePlane: sliceSpec.referencePlane,
                 offset: sliceSpec.offset,
                 width: sliceSpec.width,
                 height: sliceSpec.height,
@@ -1589,6 +1648,13 @@ export default function WebGLCanvas({
     ): mat4 {
       const model = makeSliceModelMatrix(volume, plane, displayIndex, profile);
       const viewState = getLayerAxisSliceViewTransform(layer, plane);
+      return applyPlanarSliceViewTransform(model, viewState);
+    }
+
+    function applyPlanarSliceViewTransform(
+      model: mat4,
+      viewState: { flipX: boolean; flipY: boolean; rotationDeg: number; scale: number }
+    ): mat4 {
       const safeScale = Math.max(0.25, Math.min(3, viewState.scale || 1));
       mat4.rotateZ(model, model, (viewState.rotationDeg * Math.PI) / 180);
       mat4.scale(model, model, [
@@ -1597,6 +1663,30 @@ export default function WebGLCanvas({
         1,
       ]);
       return model;
+    }
+
+    function getDisplayedObliqueSliceSpec(
+      sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>
+    ): ObliqueSliceSpec {
+      const viewState = getObliqueSliceViewTransform(sliceParams);
+      return {
+        normal: viewState.flipZ
+          ? {
+              x: -sliceParams.normal.x,
+              y: -sliceParams.normal.y,
+              z: -sliceParams.normal.z,
+            }
+          : {
+              x: sliceParams.normal.x,
+              y: sliceParams.normal.y,
+              z: sliceParams.normal.z,
+            },
+        offset: viewState.flipZ ? -(sliceParams.offset ?? 0) : (sliceParams.offset ?? 0),
+        uAxis: sliceParams.uAxis,
+        referencePlane: sliceParams.referencePlane,
+        width: sliceParams.width ?? 256,
+        height: sliceParams.height ?? 256,
+      };
     }
 
     function maxAbsPlaneExtentForObliqueWorld(
@@ -1656,6 +1746,20 @@ export default function WebGLCanvas({
       );
 
       return model;
+    }
+
+    function makeInteractiveObliqueSliceModelMatrix(
+      volume: LoadedVolume,
+      sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>,
+      profile: ViewerOrientationProfile = ALLEN_CUSTOM_SLICE_PROFILE
+    ): mat4 {
+      const model = makeObliqueSliceModelMatrix(
+        volume,
+        getDisplayedObliqueSliceSpec(sliceParams),
+        profile
+      );
+      const viewState = getObliqueSliceViewTransform(sliceParams);
+      return applyPlanarSliceViewTransform(model, viewState);
     }
 
     function getViewProjectionMatrices() {
@@ -1784,6 +1888,60 @@ export default function WebGLCanvas({
 
       return {
         stepIndexDelta,
+        stepScreenDx: adjacentScreen.x - currentScreen.x,
+        stepScreenDy: adjacentScreen.y - currentScreen.y,
+      };
+    }
+
+    function getObliqueSliceDragScreenStep(
+      layerEntry: ResolvedLayerEntry,
+      volume: LoadedVolume,
+      sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>,
+      projection: mat4,
+      view: mat4,
+      profile: ViewerOrientationProfile
+    ): { stepOffsetDelta: number; stepScreenDx: number; stepScreenDy: number } {
+      const currentOffset = sliceParams.offset ?? 0;
+      const adjacentOffset = currentOffset + 1;
+      const currentModel = multiplyModelMatrices(
+        layerEntry.worldMatrix,
+        makeInteractiveObliqueSliceModelMatrix(
+          volume,
+          {
+            ...sliceParams,
+            normal: sliceParams.normal,
+            offset: currentOffset,
+            width: sliceParams.width ?? 256,
+            height: sliceParams.height ?? 256,
+          },
+          profile
+        )
+      );
+      const adjacentModel = multiplyModelMatrices(
+        layerEntry.worldMatrix,
+        makeInteractiveObliqueSliceModelMatrix(
+          volume,
+          {
+            ...sliceParams,
+            normal: sliceParams.normal,
+            offset: adjacentOffset,
+            width: sliceParams.width ?? 256,
+            height: sliceParams.height ?? 256,
+          },
+          profile
+        )
+      );
+      const currentCenter = transformPoint(currentModel, [0, 0, 0]);
+      const adjacentCenter = transformPoint(adjacentModel, [0, 0, 0]);
+      const currentScreen = projectWorldPointToCanvas([currentCenter[0], currentCenter[1], currentCenter[2]], projection, view);
+      const adjacentScreen = projectWorldPointToCanvas([adjacentCenter[0], adjacentCenter[1], adjacentCenter[2]], projection, view);
+
+      if (!currentScreen || !adjacentScreen) {
+        return { stepOffsetDelta: 1, stepScreenDx: 0, stepScreenDy: 0 };
+      }
+
+      return {
+        stepOffsetDelta: 1,
         stepScreenDx: adjacentScreen.x - currentScreen.x,
         stepScreenDy: adjacentScreen.y - currentScreen.y,
       };
@@ -2080,7 +2238,7 @@ export default function WebGLCanvas({
           let model: mat4 | null = null;
           const isOblique = sliceParams.mode === "oblique" && !!sliceParams.normal;
           if (isOblique) {
-            model = makeObliqueSliceModelMatrix(volume, { normal: sliceParams.normal, offset: sliceParams.offset ?? 0, width: sliceParams.width ?? 256, height: sliceParams.height ?? 256 }, profile);
+            model = makeInteractiveObliqueSliceModelMatrix(volume, sliceParams, profile);
           } else if (isAxisAlignedSliceParams(sliceParams)) {
             model = makeSliceModelMatrix(volume, sliceParams.plane, clampSliceIndex(volume, sliceParams.plane, sliceParams.index), profile);
           }
@@ -2142,8 +2300,12 @@ export default function WebGLCanvas({
         activeToolRef.current === "slice" && selectedNodeIdRef.current
           ? findNodeById(layerTreeRef.current, selectedNodeIdRef.current)
           : null;
-      const selectedSliceLayerId =
+      const selectedCanonicalSliceLayerId =
         selectedSliceLayer && selectedSliceLayer.kind === "layer" && isCanonicalSliceBrowsableLayer(selectedSliceLayer)
+          ? selectedSliceLayer.id
+          : null;
+      const selectedCustomSliceLayerId =
+        selectedSliceLayer && selectedSliceLayer.kind === "layer" && isCustomSliceLayer(selectedSliceLayer)
           ? selectedSliceLayer.id
           : null;
       let bestHit: ScenePointerHit | null = null;
@@ -2193,9 +2355,16 @@ export default function WebGLCanvas({
         if (loadedVolumeEntry) {
           if (
             activeToolRef.current === "slice" &&
-            selectedSliceLayerId &&
+            selectedCustomSliceLayerId
+          ) {
+            continue;
+          }
+
+          if (
+            activeToolRef.current === "slice" &&
+            selectedCanonicalSliceLayerId &&
             layer.renderMode === "slices" &&
-            layer.id !== selectedSliceLayerId
+            layer.id !== selectedCanonicalSliceLayerId
           ) {
             continue;
           }
@@ -2227,6 +2396,20 @@ export default function WebGLCanvas({
         }
 
         if (layer.type === "custom-slice") {
+          if (
+            activeToolRef.current === "slice" &&
+            selectedCanonicalSliceLayerId
+          ) {
+            continue;
+          }
+          if (
+            activeToolRef.current === "slice" &&
+            selectedCustomSliceLayerId &&
+            layer.id !== selectedCustomSliceLayerId
+          ) {
+            continue;
+          }
+
           const volumeLayerId = hasVolumeLayerId(layer.source) ? layer.source.volumeLayerId : null;
           const sliceParams = layer.sliceParams;
           if (!volumeLayerId || !sliceParams) continue;
@@ -2249,16 +2432,7 @@ export default function WebGLCanvas({
             typeof sliceParams.normal.z === "number";
 
           if (isOblique) {
-            model = makeObliqueSliceModelMatrix(volume, {
-              normal: {
-                x: sliceParams.normal.x,
-                y: sliceParams.normal.y,
-                z: sliceParams.normal.z,
-              },
-              offset: sliceParams.offset ?? 0,
-              width: sliceParams.width ?? 256,
-              height: sliceParams.height ?? 256,
-            }, profile);
+            model = makeInteractiveObliqueSliceModelMatrix(volume, sliceParams, profile);
           } else if (isAxisAlignedSliceParams(sliceParams)) {
             const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
             model = makeSliceModelMatrix(volume, sliceParams.plane, safeIndex, profile);
@@ -2972,12 +3146,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           typeof sliceParams.normal.y === "number" &&
           typeof sliceParams.normal.z === "number"
         ) {
-          model = makeObliqueSliceModelMatrix(volume, {
-            normal: { x: sliceParams.normal.x, y: sliceParams.normal.y, z: sliceParams.normal.z },
-            offset: sliceParams.offset ?? 0,
-            width: sliceParams.width ?? 256,
-            height: sliceParams.height ?? 256,
-          }, profile);
+          model = makeInteractiveObliqueSliceModelMatrix(volume, sliceParams, profile);
         } else if (isAxisAlignedSliceParams(sliceParams)) {
           model = makeSliceModelMatrix(volume, sliceParams.plane, clampSliceIndex(volume, sliceParams.plane, sliceParams.index), profile);
         }
@@ -3375,12 +3544,14 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             typeof sliceParams.normal.z === "number";
 
           if (isOblique) {
-            const nx = sliceParams.normal.x;
-            const ny = sliceParams.normal.y;
-            const nz = sliceParams.normal.z;
-            const offset = sliceParams.offset ?? 0;
-            const width = sliceParams.width ?? 256;
-            const height = sliceParams.height ?? 256;
+            const displayedSpec = getDisplayedObliqueSliceSpec(sliceParams);
+            const nx = displayedSpec.normal.x;
+            const ny = displayedSpec.normal.y;
+            const nz = displayedSpec.normal.z;
+            const offset = displayedSpec.offset ?? 0;
+            const width = displayedSpec.width ?? 256;
+            const height = displayedSpec.height ?? 256;
+            const uAxis = displayedSpec.uAxis ?? null;
 
             const cacheKey = [
               volumeKey,
@@ -3391,22 +3562,25 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
               offset.toFixed(2),
               String(width),
               String(height),
+              uAxis ? uAxis.x.toFixed(4) : "nou",
+              uAxis ? uAxis.y.toFixed(4) : "nov",
+              uAxis ? uAxis.z.toFixed(4) : "now",
+              displayedSpec.referencePlane ?? "free",
             ].join("|");
 
             sliceTex = createCustomSliceTexture(cacheKey, volume, {
               mode: "oblique",
               normal: { x: nx, y: ny, z: nz },
+              uAxis: uAxis
+                ? { x: uAxis.x, y: uAxis.y, z: uAxis.z }
+                : undefined,
+              referencePlane: displayedSpec.referencePlane,
               offset,
               width,
               height,
             }, profile);
 
-            model = makeObliqueSliceModelMatrix(volume, {
-              normal: { x: nx, y: ny, z: nz },
-              offset,
-              width,
-              height,
-            }, profile);
+            model = makeInteractiveObliqueSliceModelMatrix(volume, sliceParams, profile);
           } else if (isAxisAlignedSliceParams(sliceParams)) {
             const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
             const cacheKey = `${volumeKey}|${sliceParams.plane}|${safeIndex}`;
@@ -3755,17 +3929,51 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
         publishHoveredSceneHit(hit);
 
-        if (e.button !== 0 || !hit?.plane) {
+        if (e.button !== 0 || !hit) {
           return;
         }
 
         const targetNode = findNodeById(layerTreeRef.current, hit.layerId);
-        const loadedVolumeEntry =
-          targetNode && targetNode.kind === "layer"
-            ? getLoadedVolumeForLayer(targetNode)
-            : null;
+        if (!targetNode || targetNode.kind !== "layer") {
+          return;
+        }
 
-        if (!targetNode || targetNode.kind !== "layer" || !loadedVolumeEntry || targetNode.renderMode !== "slices") {
+        if (isCustomSliceLayer(targetNode) && isObliqueSliceParams(targetNode.sliceParams)) {
+          const volumeLayerId = hasVolumeLayerId(targetNode.source) ? targetNode.source.volumeLayerId : null;
+          const volumeNode = volumeLayerId ? findNodeById(layerTreeRef.current, volumeLayerId) : null;
+          const loadedVolumeEntry =
+            volumeNode && volumeNode.kind === "layer"
+              ? getLoadedVolumeForLayer(volumeNode)
+              : null;
+          const resolvedLayerEntry =
+            collectResolvedVisibleLayers(layerTreeRef.current, true).find((entry) => entry.layer.id === targetNode.id) ?? null;
+          if (!loadedVolumeEntry || !resolvedLayerEntry) {
+            return;
+          }
+          const { projection, view } = getViewProjectionMatrices();
+          const dragScreenStep = getObliqueSliceDragScreenStep(
+            resolvedLayerEntry,
+            loadedVolumeEntry.volume,
+            targetNode.sliceParams,
+            projection,
+            view,
+            loadedVolumeEntry.profile
+          );
+          sliceDrag = {
+            kind: "oblique",
+            layerId: targetNode.id,
+            startOffset: targetNode.sliceParams.offset ?? 0,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            stepOffsetDelta: dragScreenStep.stepOffsetDelta,
+            stepScreenDx: dragScreenStep.stepScreenDx,
+            stepScreenDy: dragScreenStep.stepScreenDy,
+          };
+          return;
+        }
+
+        const loadedVolumeEntry = getLoadedVolumeForLayer(targetNode);
+        if (!loadedVolumeEntry || targetNode.renderMode !== "slices" || !hit.plane) {
           return;
         }
 
@@ -3786,6 +3994,7 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
             )
           : { stepIndexDelta: 0, stepScreenDx: 0, stepScreenDy: 0 };
         sliceDrag = {
+          kind: "axis",
           layerId: targetNode.id,
           plane: hit.plane,
           startIndex,
@@ -3988,18 +4197,30 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           const stepLengthSq =
             sliceDrag.stepScreenDx * sliceDrag.stepScreenDx +
             sliceDrag.stepScreenDy * sliceDrag.stepScreenDy;
-          const deltaIndex =
-            Math.abs(sliceDrag.stepIndexDelta) > 0 && stepLengthSq > 1
-              ? Math.round(
-                  ((deltaX * sliceDrag.stepScreenDx + deltaY * sliceDrag.stepScreenDy) / stepLengthSq) *
-                    sliceDrag.stepIndexDelta
-                )
-              : Math.round((Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY) / 6);
-          const nextIndex = clamp(sliceDrag.startIndex + deltaIndex, 0, sliceDrag.maxIndex);
-          onAxisSliceStateChangeRef.current?.(sliceDrag.layerId, {
-            [sliceDrag.plane]: nextIndex,
-            activePlane: sliceDrag.plane,
-          });
+          if (sliceDrag.kind === "axis") {
+            const deltaIndex =
+              Math.abs(sliceDrag.stepIndexDelta) > 0 && stepLengthSq > 1
+                ? Math.round(
+                    ((deltaX * sliceDrag.stepScreenDx + deltaY * sliceDrag.stepScreenDy) / stepLengthSq) *
+                      sliceDrag.stepIndexDelta
+                  )
+                : Math.round((Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY) / 6);
+            const nextIndex = clamp(sliceDrag.startIndex + deltaIndex, 0, sliceDrag.maxIndex);
+            onAxisSliceStateChangeRef.current?.(sliceDrag.layerId, {
+              [sliceDrag.plane]: nextIndex,
+              activePlane: sliceDrag.plane,
+            });
+          } else {
+            const deltaOffset =
+              Math.abs(sliceDrag.stepOffsetDelta) > 0 && stepLengthSq > 1
+                ? ((deltaX * sliceDrag.stepScreenDx + deltaY * sliceDrag.stepScreenDy) / stepLengthSq) *
+                  sliceDrag.stepOffsetDelta
+                : (Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY) / 6;
+            const nextOffset = Math.round((sliceDrag.startOffset + deltaOffset) * 1000) / 1000;
+            onCustomSliceParamsChangeRef.current?.(sliceDrag.layerId, {
+              offset: nextOffset,
+            });
+          }
         } else {
           const hit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
           publishHoveredSceneHit(hit);
@@ -4086,25 +4307,53 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       if (activeToolRef.current === "slice") {
         const hoveredHit = getCurrentHoveredOrSnappedHit(e.clientX, e.clientY);
         publishHoveredSceneHit(hoveredHit);
-        if (hoveredHit?.plane) {
+        if (hoveredHit) {
           const targetNode = findNodeById(layerTreeRef.current, hoveredHit.layerId);
-          const loadedVolumeEntry =
-            targetNode && targetNode.kind === "layer"
-              ? getLoadedVolumeForLayer(targetNode)
-              : null;
-          if (targetNode && targetNode.kind === "layer" && loadedVolumeEntry && targetNode.renderMode === "slices") {
+          if (
+            targetNode &&
+            targetNode.kind === "layer" &&
+            isCustomSliceLayer(targetNode) &&
+            isObliqueSliceParams(targetNode.sliceParams)
+          ) {
             e.preventDefault();
-            const currentIndex = getLayerAxisSliceDisplayIndex(targetNode, loadedVolumeEntry.volume, hoveredHit.plane);
-            const nextIndex = clamp(
-              currentIndex + (e.deltaY < 0 ? 1 : -1),
-              0,
-              Math.max(0, getPlaneSliceCount(loadedVolumeEntry.volume, hoveredHit.plane) - 1)
-            );
-            onAxisSliceStateChangeRef.current?.(targetNode.id, {
-              [hoveredHit.plane]: nextIndex,
-              activePlane: hoveredHit.plane,
+            if (e.shiftKey || e.ctrlKey || e.metaKey) {
+              const axis = e.shiftKey ? "u" : "v";
+              onCustomSliceTiltRef.current?.(
+                targetNode.id,
+                axis,
+                e.deltaY < 0 ? 5 : -5
+              );
+              return;
+            }
+            const direction = getObliqueSliceViewTransform(targetNode.sliceParams).flipZ ? -1 : 1;
+            onCustomSliceParamsChangeRef.current?.(targetNode.id, {
+              offset:
+                Math.round(
+                  ((targetNode.sliceParams.offset ?? 0) + (e.deltaY < 0 ? 1 : -1) * direction) * 1000
+                ) / 1000,
             });
             return;
+          }
+
+          if (hoveredHit.plane) {
+            const loadedVolumeEntry =
+              targetNode && targetNode.kind === "layer"
+                ? getLoadedVolumeForLayer(targetNode)
+                : null;
+            if (targetNode && targetNode.kind === "layer" && loadedVolumeEntry && targetNode.renderMode === "slices") {
+              e.preventDefault();
+              const currentIndex = getLayerAxisSliceDisplayIndex(targetNode, loadedVolumeEntry.volume, hoveredHit.plane);
+              const nextIndex = clamp(
+                currentIndex + (e.deltaY < 0 ? 1 : -1),
+                0,
+                Math.max(0, getPlaneSliceCount(loadedVolumeEntry.volume, hoveredHit.plane) - 1)
+              );
+              onAxisSliceStateChangeRef.current?.(targetNode.id, {
+                [hoveredHit.plane]: nextIndex,
+                activePlane: hoveredHit.plane,
+              });
+              return;
+            }
           }
         }
       }

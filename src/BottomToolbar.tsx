@@ -871,6 +871,7 @@ function SliceToolPanelLegacy({
 void SliceToolPanelLegacy;
 
 function SliceToolPanel({
+  mode,
   selectedLayerName,
   targetPlane,
   hoveredPlane,
@@ -885,13 +886,20 @@ function SliceToolPanel({
   visibilityXY,
   visibilityXZ,
   visibilityYZ,
+  canCreateFreeSlice,
+  freeSliceOffset: _freeSliceOffset,
   onToggleVisibility,
   onResetSliceView,
   onToggleFlip,
   onResetToCenter,
   onRotate,
   onScale,
+  onCreateFreeSlice,
+  onNudgeFreeOffset: _onNudgeFreeOffset,
+  onTiltFreeSlice,
+  onSnapFreeSlice: _onSnapFreeSlice,
 }: {
+  mode: "canonical" | "free";
   selectedLayerName: string | null;
   targetPlane: SlicePlane | null;
   hoveredPlane: SlicePlane | null;
@@ -906,20 +914,34 @@ function SliceToolPanel({
   visibilityXY: boolean;
   visibilityXZ: boolean;
   visibilityYZ: boolean;
+  canCreateFreeSlice: boolean;
+  freeSliceOffset: number;
   onToggleVisibility: (plane: SlicePlane) => void;
   onResetSliceView: () => void;
   onToggleFlip: (axis: "x" | "y" | "z") => void;
   onResetToCenter: () => void;
   onRotate: (deltaDeg: number) => void;
   onScale: (delta: number) => void;
+  onCreateFreeSlice: () => void;
+  onNudgeFreeOffset: (delta: number) => void;
+  onTiltFreeSlice: (axis: "u" | "v", deltaDeg: number) => void;
+  onSnapFreeSlice: (plane: SlicePlane) => void;
 }) {
   const activePlane = targetPlane ?? hoveredPlane;
-  const summaryTitle = activePlane ? getCanonicalSlicePlaneLabel(activePlane) : "Slice explorer";
-  const summaryHint = !hasSelectedLayer
+  const isFreeSlice = mode === "free";
+  const summaryTitle = isFreeSlice
+    ? "Free slice"
+    : activePlane
+      ? getCanonicalSlicePlaneLabel(activePlane)
+      : "Slice explorer";
+  const summaryHint = isFreeSlice
+    ? "Drag or use the wheel in the scene to move this slice. Use the same transform controls plus tilt."
+    : !hasSelectedLayer
     ? "Select a slice-rendered layer to browse and adjust its canonical planes."
     : !targetPlane
       ? "Hover a canonical plane in the scene to choose which one to adjust."
       : null;
+  const showTransformControls = hasSelectedLayer && (isFreeSlice || !!targetPlane);
   const rowLabelStyle = {
     display: "inline-flex",
     alignItems: "center",
@@ -1013,8 +1035,27 @@ function SliceToolPanel({
           </button>
         </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-          {activePlane ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          {isFreeSlice ? (
+            <>
+              <span
+                data-theme-text="strong"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  minHeight: 26,
+                  padding: "0 9px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(120,200,255,0.28)",
+                  background: "rgba(120,200,255,0.10)",
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                OBLIQUE
+              </span>
+            </>
+          ) : activePlane ? (
             <span
               data-theme-text="strong"
               style={{
@@ -1032,7 +1073,7 @@ function SliceToolPanel({
               {getCanonicalSlicePlaneCompactLabel(activePlane)}
             </span>
           ) : null}
-          {hasSelectedLayer && targetPlane ? (
+          {showTransformControls ? (
             <>
               <span
                 data-theme-text="default"
@@ -1076,7 +1117,7 @@ function SliceToolPanel({
         ) : null}
       </div>
 
-      {hasSelectedLayer && targetPlane ? (
+      {showTransformControls ? (
         <div
           style={{
             display: "grid",
@@ -1116,36 +1157,38 @@ function SliceToolPanel({
           </div>
 
           <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={rowLabelStyle}>
-                <SlicePanelIcon>
-                  <VisibilityIcon />
-                </SlicePanelIcon>
-                Visibility
-              </span>
-              {([
-                ["xy", "XY", visibilityXY],
-                ["xz", "XZ", visibilityXZ],
-                ["yz", "YZ", visibilityYZ],
-              ] as const).map(([planeId, label, isVisible]) => (
-                <button
-                  key={planeId}
-                  type="button"
-                  onClick={() => onToggleVisibility(planeId)}
-                  style={{
-                    ...actionButtonStyle,
-                    minWidth: 42,
-                    background: isVisible ? "rgba(80,160,255,0.18)" : "rgba(255,255,255,0.05)",
-                    cursor: "pointer",
-                    opacity: 1,
-                  }}
-                  title={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
-                  aria-label={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            {!isFreeSlice ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={rowLabelStyle}>
+                  <SlicePanelIcon>
+                    <VisibilityIcon />
+                  </SlicePanelIcon>
+                  Visibility
+                </span>
+                {([
+                  ["xy", "XY", visibilityXY],
+                  ["xz", "XZ", visibilityXZ],
+                  ["yz", "YZ", visibilityYZ],
+                ] as const).map(([planeId, label, isVisible]) => (
+                  <button
+                    key={planeId}
+                    type="button"
+                    onClick={() => onToggleVisibility(planeId)}
+                    style={{
+                      ...actionButtonStyle,
+                      minWidth: 42,
+                      background: isVisible ? "rgba(80,160,255,0.18)" : "rgba(255,255,255,0.05)",
+                      cursor: "pointer",
+                      opacity: 1,
+                    }}
+                    title={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
+                    aria-label={isVisible ? `Hide ${label} slice` : `Show ${label} slice`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={rowLabelStyle}>
@@ -1226,6 +1269,84 @@ function SliceToolPanel({
                 </button>
               ))}
             </div>
+            {isFreeSlice ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={rowLabelStyle}>
+                    <SlicePanelIcon>
+                      <RotateIcon />
+                    </SlicePanelIcon>
+                    Tilt horiz
+                  </span>
+                  {[-5, 5].map((step) => (
+                    <button
+                      key={`u-${step}`}
+                      type="button"
+                      onClick={() => onTiltFreeSlice("u", step)}
+                      style={{ ...actionButtonStyle, cursor: "pointer" }}
+                    >
+                      {step > 0 ? `+${step}` : step} deg
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={rowLabelStyle}>
+                    <SlicePanelIcon>
+                      <FlipIcon />
+                    </SlicePanelIcon>
+                    Tilt vert
+                  </span>
+                  {[-5, 5].map((step) => (
+                    <button
+                      key={`v-${step}`}
+                      type="button"
+                      onClick={() => onTiltFreeSlice("v", step)}
+                      style={{ ...actionButtonStyle, cursor: "pointer" }}
+                    >
+                      {step > 0 ? `+${step}` : step} deg
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {!isFreeSlice && canCreateFreeSlice ? (
+        <div
+          style={{
+            display: "grid",
+            gap: 8,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.08)",
+            background: "rgba(255,255,255,0.03)",
+            padding: 10,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div style={{ display: "grid", gap: 3 }}>
+              <div data-theme-text="strong" style={{ fontSize: 12, fontWeight: 700 }}>
+                Free slice
+              </div>
+              <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72, lineHeight: 1.35 }}>
+                Create an independent slice from the current plane, then tilt it to any orientation.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onCreateFreeSlice}
+              style={{
+                ...actionButtonStyle,
+                cursor: "pointer",
+                background: "rgba(120,190,255,0.14)",
+                border: "1px solid rgba(120,190,255,0.26)",
+                flexShrink: 0,
+              }}
+            >
+              Create free slice
+            </button>
           </div>
         </div>
       ) : null}
@@ -1237,6 +1358,7 @@ function SliceToolButton({
   active,
   onClick,
   onHoverLockChange,
+  mode,
   selectedLayerName,
   targetPlane,
   hoveredPlane,
@@ -1251,16 +1373,23 @@ function SliceToolButton({
   visibilityXY,
   visibilityXZ,
   visibilityYZ,
+  canCreateFreeSlice,
+  freeSliceOffset,
   onToggleVisibility,
   onResetSliceView,
   onToggleFlip,
   onResetToCenter,
   onRotate,
   onScale,
+  onCreateFreeSlice,
+  onNudgeFreeOffset,
+  onTiltFreeSlice,
+  onSnapFreeSlice,
 }: {
   active: boolean;
   onClick: () => void;
   onHoverLockChange?: (locked: boolean) => void;
+  mode: "canonical" | "free";
   selectedLayerName: string | null;
   targetPlane: SlicePlane | null;
   hoveredPlane: SlicePlane | null;
@@ -1275,12 +1404,18 @@ function SliceToolButton({
   visibilityXY: boolean;
   visibilityXZ: boolean;
   visibilityYZ: boolean;
+  canCreateFreeSlice: boolean;
+  freeSliceOffset: number;
   onToggleVisibility: (plane: SlicePlane) => void;
   onResetSliceView: () => void;
   onToggleFlip: (axis: "x" | "y" | "z") => void;
   onResetToCenter: () => void;
   onRotate: (deltaDeg: number) => void;
   onScale: (delta: number) => void;
+  onCreateFreeSlice: () => void;
+  onNudgeFreeOffset: (delta: number) => void;
+  onTiltFreeSlice: (axis: "u" | "v", deltaDeg: number) => void;
+  onSnapFreeSlice: (plane: SlicePlane) => void;
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const showMenu = isHovered;
@@ -1331,6 +1466,7 @@ function SliceToolButton({
           }}
         >
           <SliceToolPanel
+            mode={mode}
             selectedLayerName={selectedLayerName}
             targetPlane={targetPlane}
             hoveredPlane={hoveredPlane}
@@ -1345,12 +1481,18 @@ function SliceToolButton({
             visibilityXY={visibilityXY}
             visibilityXZ={visibilityXZ}
             visibilityYZ={visibilityYZ}
+            canCreateFreeSlice={canCreateFreeSlice}
+            freeSliceOffset={freeSliceOffset}
             onToggleVisibility={onToggleVisibility}
             onResetSliceView={onResetSliceView}
             onToggleFlip={onToggleFlip}
             onResetToCenter={onResetToCenter}
             onRotate={onRotate}
             onScale={onScale}
+            onCreateFreeSlice={onCreateFreeSlice}
+            onNudgeFreeOffset={onNudgeFreeOffset}
+            onTiltFreeSlice={onTiltFreeSlice}
+            onSnapFreeSlice={onSnapFreeSlice}
           />
         </div>
       </div>
@@ -1995,6 +2137,7 @@ export default function BottomToolbar({
   onRequestCloseStatePopover,
   accountPopoverOpen = false,
   shareBlockedLayerNames = [],
+  sliceMode = "canonical",
   sliceSelectedLayerName = null,
   sliceTargetPlane = null,
   sliceHoveredPlane = null,
@@ -2007,6 +2150,8 @@ export default function BottomToolbar({
   sliceVisibilityXY = true,
   sliceVisibilityXZ = true,
   sliceVisibilityYZ = true,
+  sliceCanCreateFreeSlice = false,
+  sliceFreeSliceOffset = 0,
   onSliceHoverLockChange,
   onSliceToggleVisibility = () => {},
   onSliceResetView,
@@ -2014,6 +2159,10 @@ export default function BottomToolbar({
   onSliceResetToCenter,
   onSliceRotate,
   onSliceScale,
+  onSliceCreateFreeSlice,
+  onSliceNudgeFreeOffset,
+  onSliceTiltFreeSlice,
+  onSliceSnapFreeSlice,
   annotationShape,
   annotationColor,
   annotationOpacity,
@@ -2049,6 +2198,7 @@ export default function BottomToolbar({
   saveNoticeOpen?: boolean;
   saveNoticeContent?: ReactNode;
   onRequestCloseSaveNotice?: () => void;
+  sliceMode?: "canonical" | "free";
   sliceSelectedLayerName?: string | null;
   sliceTargetPlane?: SlicePlane | null;
   sliceHoveredPlane?: SlicePlane | null;
@@ -2061,6 +2211,8 @@ export default function BottomToolbar({
   sliceVisibilityXY?: boolean;
   sliceVisibilityXZ?: boolean;
   sliceVisibilityYZ?: boolean;
+  sliceCanCreateFreeSlice?: boolean;
+  sliceFreeSliceOffset?: number;
   onSliceHoverLockChange?: (locked: boolean) => void;
   onSliceToggleVisibility?: (plane: SlicePlane) => void;
   onSliceResetView?: () => void;
@@ -2068,6 +2220,10 @@ export default function BottomToolbar({
   onSliceResetToCenter?: () => void;
   onSliceRotate?: (deltaDeg: number) => void;
   onSliceScale?: (delta: number) => void;
+  onSliceCreateFreeSlice?: () => void;
+  onSliceNudgeFreeOffset?: (delta: number) => void;
+  onSliceTiltFreeSlice?: (axis: "u" | "v", deltaDeg: number) => void;
+  onSliceSnapFreeSlice?: (plane: SlicePlane) => void;
   statePopoverOpen?: boolean;
   statePopoverContent?: ReactNode;
   onRequestCloseStatePopover?: () => void;
@@ -2177,12 +2333,13 @@ export default function BottomToolbar({
               active={activeTool === "slice"}
               onClick={() => onToolChange(tool.id)}
               onHoverLockChange={onSliceHoverLockChange}
+              mode={sliceMode}
               selectedLayerName={sliceSelectedLayerName}
               targetPlane={sliceTargetPlane}
               hoveredPlane={sliceHoveredPlane}
               hasSelectedLayer={!!sliceSelectedLayerName}
               canResetToCenter={sliceCanResetToCenter}
-              canAdjustView={!!sliceSelectedLayerName && !!sliceTargetPlane}
+              canAdjustView={!!sliceSelectedLayerName && (sliceMode === "free" || !!sliceTargetPlane)}
               rotationDeg={sliceRotationDeg}
               scale={sliceScale}
               flipX={sliceFlipX}
@@ -2191,19 +2348,25 @@ export default function BottomToolbar({
               visibilityXY={sliceVisibilityXY}
               visibilityXZ={sliceVisibilityXZ}
               visibilityYZ={sliceVisibilityYZ}
+              canCreateFreeSlice={sliceCanCreateFreeSlice}
+              freeSliceOffset={sliceFreeSliceOffset}
               onToggleVisibility={onSliceToggleVisibility}
               onResetSliceView={onSliceResetView ?? (() => {})}
               onToggleFlip={onSliceToggleFlip ?? (() => {})}
               onResetToCenter={onSliceResetToCenter ?? (() => {})}
               onRotate={onSliceRotate ?? (() => {})}
               onScale={onSliceScale ?? (() => {})}
+              onCreateFreeSlice={onSliceCreateFreeSlice ?? (() => {})}
+              onNudgeFreeOffset={onSliceNudgeFreeOffset ?? (() => {})}
+              onTiltFreeSlice={onSliceTiltFreeSlice ?? (() => {})}
+              onSnapFreeSlice={onSliceSnapFreeSlice ?? (() => {})}
             />
           );
         }
 
         return <ToolButton key={tool.id} id={tool.id} label={tool.label} active={isActive} onClick={() => onToolChange(tool.id)} />;
       }),
-    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
+    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
   );
 
   return (

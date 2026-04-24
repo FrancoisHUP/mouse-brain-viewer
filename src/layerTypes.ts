@@ -16,10 +16,21 @@ export type ObliqueSliceLayerParams = {
     y: number;
     z: number;
   };
+  uAxis?: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  referencePlane?: SlicePlane;
   offset?: number;
   width?: number;
   height?: number;
   opacity?: number;
+  flipX?: boolean;
+  flipY?: boolean;
+  flipZ?: boolean;
+  rotationDeg?: number;
+  scale?: number;
 };
 
 export type SliceLayerParams =

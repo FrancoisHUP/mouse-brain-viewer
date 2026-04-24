@@ -1,18 +1,11 @@
-wish list {
-  be the center of data for mouse brain 
-  create a data center where all the mouse brain and mouse experiement can be hosted and everything should be easy to view. 
-  use ai to annotate, 
-  export annotation 
-}
 
 [todo] fix the selection on skeleton (right now it select every verticies)
-[todo] what should happen on group selection with the paremeters (opacity)
-[todo] add the tilted slice to the slice explorer.
+
 
 import data {
+  [todo] fix the import so the brain has the right orientation of every slices. 
   [todo] the user should be able to add a personnal (browser hosted data) in the viewer without having to re upload the file.  
   [todo] rewrok the import so I have a panel with all the date (online and local / personnal or shared or built in)
-  [todo] fix the import so the brain has the right orientation of every slices. 
   [todo] rework the data panel. The user should be able to load an imported data into the scene (without having to reupload)
 }
 

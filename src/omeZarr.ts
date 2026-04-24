@@ -54,6 +54,8 @@ export type Vec3 = {
 
 export type ObliqueSliceSpec = {
   normal: Vec3;
+  uAxis?: Vec3;
+  referencePlane?: SlicePlane;
   offset?: number; // in voxel-index units relative to center
   width?: number;
   height?: number;
@@ -408,12 +410,20 @@ function projectVectorOntoPlane(vec: Vec3, normal: Vec3): Vec3 {
   };
 }
 
-export function makePlaneBasis(normal: Vec3): {
+export function makePlaneBasis(normal: Vec3, preferredU?: Vec3): {
   u: Vec3;
   v: Vec3;
   n: Vec3;
 } {
   const n = normalizeVec3(normal);
+  if (preferredU) {
+    const projectedPreferred = projectVectorOntoPlane(preferredU, n);
+    if (vec3Length(projectedPreferred) >= 1e-8) {
+      const u = normalizeVec3(projectedPreferred);
+      const v = normalizeVec3(crossVec3(n, u));
+      return { u, v, n };
+    }
+  }
 
   const eps = 0.999;
 
@@ -471,8 +481,19 @@ export function makePlaneBasis(normal: Vec3): {
 
 function getObliqueProfileTransform(
   viewerNormal: Vec3,
-  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
+  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE,
+  referencePlane?: SlicePlane
 ): SliceTransform {
+  if (referencePlane === "xy") {
+    return profile.xy ?? {};
+  }
+  if (referencePlane === "xz") {
+    return profile.xz ?? {};
+  }
+  if (referencePlane === "yz") {
+    return profile.yz ?? {};
+  }
+
   const n = normalizeVec3(viewerNormal);
 
   const ax = Math.abs(n.x);
@@ -512,17 +533,22 @@ function rotateBasisQuarterTurn(
 
 function getAdjustedPlaneBasis(
   viewerNormal: Vec3,
-  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
+  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE,
+  preferredViewerU?: Vec3,
+  referencePlane?: SlicePlane
 ): { u: Vec3; v: Vec3; n: Vec3 } {
-  const transform = getObliqueProfileTransform(viewerNormal, profile);
+  const transform = getObliqueProfileTransform(viewerNormal, profile, referencePlane);
 
   let dataNormal = mapViewerNormalToDataNormal(viewerNormal, profile);
+  const dataPreferredU = preferredViewerU
+    ? mapViewerNormalToDataNormal(preferredViewerU, profile)
+    : undefined;
 
   if (transform.flipZ || transform.reverseIndex) {
     dataNormal = scaleVec3(dataNormal, -1);
   }
 
-  let { u, v, n } = makePlaneBasis(dataNormal);
+  let { u, v, n } = makePlaneBasis(dataNormal, dataPreferredU);
 
   const rotated = rotateBasisQuarterTurn(u, v, transform.rotate90 ? 1 : 0);
   u = rotated.u;
@@ -536,6 +562,25 @@ function getAdjustedPlaneBasis(
   }
 
   return { u, v, n };
+}
+
+export function getProfileAdjustedPlaneBasis(
+  viewerNormal: Vec3,
+  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE,
+  preferredViewerU?: Vec3,
+  referencePlane?: SlicePlane
+): { u: Vec3; v: Vec3; n: Vec3 } {
+  return getAdjustedPlaneBasis(viewerNormal, profile, preferredViewerU, referencePlane);
+}
+
+function getStableObliquePlaneBasis(
+  spec: ObliqueSliceSpec,
+  profile: ViewerOrientationProfile = ALLEN_VIEWER_PROFILE
+): { u: Vec3; v: Vec3; n: Vec3 } {
+  if (spec.uAxis) {
+    return makePlaneBasis(spec.normal, spec.uAxis);
+  }
+  return getAdjustedPlaneBasis(spec.normal, profile, undefined, spec.referencePlane);
 }
 
 async function loadVolumeByDatasetPath(
@@ -1024,7 +1069,7 @@ export function extractObliqueSlice2D(
   const height = Math.max(8, Math.round(spec.height ?? 256));
   const offset = spec.offset ?? 0;
 
-  const { u, v, n } = getAdjustedPlaneBasis(spec.normal, profile);
+  const { u, v, n } = getStableObliquePlaneBasis(spec, profile);
 
   const center = {
     x: (volume.dims.x - 1) * 0.5,
@@ -1081,7 +1126,7 @@ export function getObliquePlaneFrame(
 } {
   const offset = spec.offset ?? 0;
 
-  const { u, v, n } = getAdjustedPlaneBasis(spec.normal, profile);
+  const { u, v, n } = getStableObliquePlaneBasis(spec, profile);
 
   const center = {
     x: (volume.dims.x - 1) * 0.5,
@@ -1173,4 +1218,3 @@ export function sliceToRgbaBytes(slice: Float32Array): Uint8Array {
 
   return out;
 }
-
