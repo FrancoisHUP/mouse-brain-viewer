@@ -24,7 +24,7 @@ export default function AppMenuPanel({ open, onToggleOpen, onCreateNewViewer, on
           <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><MenuHamburgerIcon /></span>
           <span>Viewer</span>
         </button>
-        <div data-theme-surface="panel" style={{ position: 'absolute', top: 'calc(100% + 10px)', left: 0, width: 292, borderRadius: 18, border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 16px 40px rgba(0,0,0,0.40)', backdropFilter: 'blur(14px)', padding: 12, display: 'grid', gap: 12, opacity: open ? 1 : 0, transform: open ? 'translateY(0) scale(1)' : 'translateY(-8px) scale(0.985)', transformOrigin: 'top left', visibility: open ? 'visible' : 'hidden', pointerEvents: open ? 'auto' : 'none', transition: 'opacity 180ms ease, transform 220ms ease, visibility 180ms ease' }}>
+        <div data-theme-surface="panel" style={{ position: 'absolute', top: 'calc(100% + 10px)', left: 0, zIndex: 60, width: 292, borderRadius: 18, border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 16px 40px rgba(0,0,0,0.40)', backdropFilter: 'blur(14px)', padding: 12, display: 'grid', gap: 12, opacity: open ? 1 : 0, transform: open ? 'translateY(0) scale(1)' : 'translateY(-8px) scale(0.985)', transformOrigin: 'top left', visibility: open ? 'visible' : 'hidden', pointerEvents: open ? 'auto' : 'none', transition: 'opacity 180ms ease, transform 220ms ease, visibility 180ms ease' }}>
           <div style={{ display: 'grid', gap: 6 }}>
             <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.45, textTransform: 'uppercase' }}>Viewer</div>
             <div style={{ display: 'grid', gap: 4 }}>

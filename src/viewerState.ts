@@ -11,11 +11,27 @@ export type SerializableCameraState = {
   fovDeg: number;
 };
 
+export type SerializableFloatingWindowState = {
+  id: string;
+  title: string;
+  subtitle?: string;
+  metadataNodeId?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  zIndex: number;
+  minimized: boolean;
+  maximized: boolean;
+  metadataMode?: "edit" | "preview" | "split";
+};
+
 export type ViewerStateV1 = {
   version: 1;
   layout: {
     layerPanelCollapsed: boolean;
     inspectorCollapsed: boolean;
+    windows?: SerializableFloatingWindowState[];
   };
   camera: SerializableCameraState;
   scene: {
@@ -45,6 +61,39 @@ export const DEFAULT_CAMERA_STATE: SerializableCameraState = {
   pitch: 0,
   fovDeg: 60,
 };
+
+function readFiniteNumber(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function sanitizeFloatingWindows(windows: unknown): SerializableFloatingWindowState[] {
+  if (!Array.isArray(windows)) return [];
+  return windows
+    .map((windowState, index): SerializableFloatingWindowState | null => {
+      if (!windowState || typeof windowState !== "object") return null;
+      const candidate = windowState as Partial<SerializableFloatingWindowState>;
+      if (typeof candidate.id !== "string" || !candidate.id.trim()) return null;
+      if (typeof candidate.title !== "string" || !candidate.title.trim()) return null;
+      return {
+        id: candidate.id,
+        title: candidate.title,
+        subtitle: typeof candidate.subtitle === "string" ? candidate.subtitle : undefined,
+        metadataNodeId: typeof candidate.metadataNodeId === "string" ? candidate.metadataNodeId : undefined,
+        x: readFiniteNumber(candidate.x, 80 + index * 24),
+        y: readFiniteNumber(candidate.y, 80 + index * 24),
+        width: Math.max(260, readFiniteNumber(candidate.width, 640)),
+        height: Math.max(180, readFiniteNumber(candidate.height, 420)),
+        zIndex: Math.max(1, Math.round(readFiniteNumber(candidate.zIndex, index + 1))),
+        minimized: !!candidate.minimized,
+        maximized: !!candidate.maximized,
+        metadataMode:
+          candidate.metadataMode === "preview" || candidate.metadataMode === "edit" || candidate.metadataMode === "split"
+            ? candidate.metadataMode
+            : undefined,
+      };
+    })
+    .filter((windowState): windowState is SerializableFloatingWindowState => !!windowState);
+}
 
 export function isSerializableLayerTree(tree: LayerTreeNode[]): boolean {
   function isSerializableNode(node: LayerTreeNode): boolean {
@@ -98,6 +147,7 @@ export function createViewerState(params: {
   sliceParamsDraft: SliceLayerParams;
   layerPanelCollapsed: boolean;
   inspectorCollapsed: boolean;
+  windows?: SerializableFloatingWindowState[];
   camera: SerializableCameraState;
 }): ViewerStateV1 {
   return {
@@ -105,6 +155,7 @@ export function createViewerState(params: {
     layout: {
       layerPanelCollapsed: params.layerPanelCollapsed,
       inspectorCollapsed: params.inspectorCollapsed,
+      windows: sanitizeFloatingWindows(params.windows ?? []),
     },
     camera: {
       ...DEFAULT_CAMERA_STATE,
@@ -134,6 +185,7 @@ export function mergeViewerState(
     layout: {
       ...base.layout,
       ...(patch.layout ?? {}),
+      windows: sanitizeFloatingWindows(patch.layout?.windows ?? base.layout.windows ?? []),
     },
     camera: {
       ...base.camera,
@@ -179,6 +231,7 @@ export function parseViewerState(raw: string): ViewerStateV1 {
     layout: {
       layerPanelCollapsed: parsed.layout?.layerPanelCollapsed ?? false,
       inspectorCollapsed: parsed.layout?.inspectorCollapsed ?? false,
+      windows: sanitizeFloatingWindows(parsed.layout?.windows ?? []),
     },
     camera: {
       mode: parsed.camera.mode ?? DEFAULT_CAMERA_STATE.mode,

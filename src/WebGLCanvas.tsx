@@ -12,7 +12,6 @@ import {
   isRemoteMeshLayer,
 } from "./layerTypes";
 import {
-  ALLEN_CUSTOM_SLICE_PROFILE,
   ALLEN_VOLUME_PROFILE,
   IDENTITY_PROFILE,
   clampSliceIndex,
@@ -77,8 +76,10 @@ type SliceDragState = {
   startClientY: number;
   maxIndex: number;
   stepIndexDelta: number;
-  stepScreenDx: number;
-  stepScreenDy: number;
+  stepWorldDistance: number;
+  dragWorldOrigin: [number, number, number];
+  dragWorldDirection: [number, number, number];
+  dragPlaneNormal: [number, number, number];
 } | {
   kind: "oblique";
   layerId: string;
@@ -86,8 +87,10 @@ type SliceDragState = {
   startClientX: number;
   startClientY: number;
   stepOffsetDelta: number;
-  stepScreenDx: number;
-  stepScreenDy: number;
+  stepWorldDistance: number;
+  dragWorldOrigin: [number, number, number];
+  dragWorldDirection: [number, number, number];
+  dragPlaneNormal: [number, number, number];
 };
 
 export type ScenePointerHit = {
@@ -1583,7 +1586,7 @@ export default function WebGLCanvas({
                 width: sliceSpec.width,
                 height: sliceSpec.height,
               },
-              ALLEN_CUSTOM_SLICE_PROFILE
+              profile
             )
           : extractOrientedSlice2D(
               volume,
@@ -1665,22 +1668,33 @@ export default function WebGLCanvas({
       return model;
     }
 
+    function getObliquePlaneSpec(
+      sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>
+    ): ObliqueSliceSpec {
+      return {
+        normal: {
+          x: sliceParams.normal.x,
+          y: sliceParams.normal.y,
+          z: sliceParams.normal.z,
+        },
+        offset: sliceParams.offset ?? 0,
+        uAxis: sliceParams.uAxis,
+        referencePlane: sliceParams.referencePlane,
+        width: sliceParams.width ?? 256,
+        height: sliceParams.height ?? 256,
+      };
+    }
+
     function getDisplayedObliqueSliceSpec(
       sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>
     ): ObliqueSliceSpec {
       const viewState = getObliqueSliceViewTransform(sliceParams);
       return {
-        normal: viewState.flipZ
-          ? {
-              x: -sliceParams.normal.x,
-              y: -sliceParams.normal.y,
-              z: -sliceParams.normal.z,
-            }
-          : {
-              x: sliceParams.normal.x,
-              y: sliceParams.normal.y,
-              z: sliceParams.normal.z,
-            },
+        normal: {
+          x: sliceParams.normal.x,
+          y: sliceParams.normal.y,
+          z: sliceParams.normal.z,
+        },
         offset: viewState.flipZ ? -(sliceParams.offset ?? 0) : (sliceParams.offset ?? 0),
         uAxis: sliceParams.uAxis,
         referencePlane: sliceParams.referencePlane,
@@ -1715,7 +1729,7 @@ export default function WebGLCanvas({
     function makeObliqueSliceModelMatrix(
       volume: LoadedVolume,
       spec: ObliqueSliceSpec,
-      profile: ViewerOrientationProfile = ALLEN_CUSTOM_SLICE_PROFILE
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
     ): mat4 {
       const model = mat4.create();
 
@@ -1751,11 +1765,11 @@ export default function WebGLCanvas({
     function makeInteractiveObliqueSliceModelMatrix(
       volume: LoadedVolume,
       sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>,
-      profile: ViewerOrientationProfile = ALLEN_CUSTOM_SLICE_PROFILE
+      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
     ): mat4 {
       const model = makeObliqueSliceModelMatrix(
         volume,
-        getDisplayedObliqueSliceSpec(sliceParams),
+        getObliquePlaneSpec(sliceParams),
         profile
       );
       const viewState = getObliqueSliceViewTransform(sliceParams);
@@ -1850,22 +1864,20 @@ export default function WebGLCanvas({
       };
     }
 
-    function getSliceDragScreenStep(
+    function getSliceDragWorldStep(
       layerEntry: ResolvedLayerEntry,
       layer: LayerItemNode,
       volume: LoadedVolume,
       plane: SlicePlane,
       displayIndex: number,
-      projection: mat4,
-      view: mat4,
       profile: ViewerOrientationProfile
-    ): { stepIndexDelta: number; stepScreenDx: number; stepScreenDy: number } {
+    ): { stepIndexDelta: number; stepWorldDistance: number; dragWorldDirection: [number, number, number] } {
       const maxIndex = Math.max(0, getPlaneSliceCount(volume, plane) - 1);
       const adjacentIndex =
         displayIndex < maxIndex ? displayIndex + 1 : displayIndex > 0 ? displayIndex - 1 : displayIndex;
       const stepIndexDelta = adjacentIndex - displayIndex;
       if (stepIndexDelta === 0) {
-        return { stepIndexDelta: 0, stepScreenDx: 0, stepScreenDy: 0 };
+        return { stepIndexDelta: 0, stepWorldDistance: 0, dragWorldDirection: [0, 0, 1] };
       }
 
       const currentModel = multiplyModelMatrices(
@@ -1879,28 +1891,29 @@ export default function WebGLCanvas({
 
       const currentCenter = transformPoint(currentModel, [0, 0, 0]);
       const adjacentCenter = transformPoint(adjacentModel, [0, 0, 0]);
-      const currentScreen = projectWorldPointToCanvas([currentCenter[0], currentCenter[1], currentCenter[2]], projection, view);
-      const adjacentScreen = projectWorldPointToCanvas([adjacentCenter[0], adjacentCenter[1], adjacentCenter[2]], projection, view);
-
-      if (!currentScreen || !adjacentScreen) {
-        return { stepIndexDelta, stepScreenDx: 0, stepScreenDy: 0 };
+      const worldStep = vec3.fromValues(
+        adjacentCenter[0] - currentCenter[0],
+        adjacentCenter[1] - currentCenter[1],
+        adjacentCenter[2] - currentCenter[2]
+      );
+      const stepWorldDistance = vec3.length(worldStep);
+      if (stepWorldDistance <= 1e-8) {
+        return { stepIndexDelta, stepWorldDistance: 0, dragWorldDirection: [0, 0, 1] };
       }
-
+      vec3.scale(worldStep, worldStep, 1 / stepWorldDistance);
       return {
         stepIndexDelta,
-        stepScreenDx: adjacentScreen.x - currentScreen.x,
-        stepScreenDy: adjacentScreen.y - currentScreen.y,
+        stepWorldDistance,
+        dragWorldDirection: [worldStep[0], worldStep[1], worldStep[2]],
       };
     }
 
-    function getObliqueSliceDragScreenStep(
+    function getObliqueSliceDragWorldStep(
       layerEntry: ResolvedLayerEntry,
       volume: LoadedVolume,
       sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>,
-      projection: mat4,
-      view: mat4,
       profile: ViewerOrientationProfile
-    ): { stepOffsetDelta: number; stepScreenDx: number; stepScreenDy: number } {
+    ): { stepOffsetDelta: number; stepWorldDistance: number; dragWorldDirection: [number, number, number] } {
       const currentOffset = sliceParams.offset ?? 0;
       const adjacentOffset = currentOffset + 1;
       const currentModel = multiplyModelMatrices(
@@ -1933,18 +1946,102 @@ export default function WebGLCanvas({
       );
       const currentCenter = transformPoint(currentModel, [0, 0, 0]);
       const adjacentCenter = transformPoint(adjacentModel, [0, 0, 0]);
-      const currentScreen = projectWorldPointToCanvas([currentCenter[0], currentCenter[1], currentCenter[2]], projection, view);
-      const adjacentScreen = projectWorldPointToCanvas([adjacentCenter[0], adjacentCenter[1], adjacentCenter[2]], projection, view);
-
-      if (!currentScreen || !adjacentScreen) {
-        return { stepOffsetDelta: 1, stepScreenDx: 0, stepScreenDy: 0 };
+      const worldStep = vec3.fromValues(
+        adjacentCenter[0] - currentCenter[0],
+        adjacentCenter[1] - currentCenter[1],
+        adjacentCenter[2] - currentCenter[2]
+      );
+      const stepWorldDistance = vec3.length(worldStep);
+      if (stepWorldDistance <= 1e-8) {
+        return { stepOffsetDelta: 1, stepWorldDistance: 0, dragWorldDirection: [0, 0, 1] };
       }
-
+      vec3.scale(worldStep, worldStep, 1 / stepWorldDistance);
       return {
         stepOffsetDelta: 1,
-        stepScreenDx: adjacentScreen.x - currentScreen.x,
-        stepScreenDy: adjacentScreen.y - currentScreen.y,
+        stepWorldDistance,
+        dragWorldDirection: [worldStep[0], worldStep[1], worldStep[2]],
       };
+    }
+
+    function getSliceDragPlaneNormal(
+      lineDirection: [number, number, number],
+      cameraForward: vec3
+    ): [number, number, number] {
+      const lineDir = vec3.fromValues(lineDirection[0], lineDirection[1], lineDirection[2]);
+      if (vec3.length(lineDir) <= 1e-8) {
+        return [0, 0, 1];
+      }
+      vec3.normalize(lineDir, lineDir);
+
+      const candidates: vec3[] = [
+        vec3.clone(cameraForward),
+        vec3.fromValues(0, 1, 0),
+        vec3.fromValues(1, 0, 0),
+        vec3.fromValues(0, 0, 1),
+      ];
+
+      let bestNormal = vec3.fromValues(0, 0, 1);
+      let bestLength = 0;
+      for (const candidate of candidates) {
+        const projected = vec3.clone(candidate);
+        vec3.scaleAndAdd(projected, projected, lineDir, -vec3.dot(projected, lineDir));
+        const projectedLength = vec3.length(projected);
+        if (projectedLength > bestLength) {
+          bestLength = projectedLength;
+          bestNormal = projected;
+        }
+      }
+
+      if (bestLength <= 1e-8) {
+        return [0, 0, 1];
+      }
+      vec3.scale(bestNormal, bestNormal, 1 / bestLength);
+      return [bestNormal[0], bestNormal[1], bestNormal[2]];
+    }
+
+    function getDragLineOffsetAtClientPosition(
+      lineOrigin: [number, number, number],
+      lineDirection: [number, number, number],
+      planeNormal: [number, number, number],
+      clientX: number,
+      clientY: number,
+      projection: mat4,
+      view: mat4
+    ): number | null {
+      const ray = createRayFromScreen({
+        canvas,
+        clientX,
+        clientY,
+        projection,
+        view,
+      });
+      if (!ray) return null;
+
+      const linePoint = vec3.fromValues(lineOrigin[0], lineOrigin[1], lineOrigin[2]);
+      const lineDir = vec3.fromValues(lineDirection[0], lineDirection[1], lineDirection[2]);
+      const dragPlaneNormal = vec3.fromValues(planeNormal[0], planeNormal[1], planeNormal[2]);
+      if (vec3.length(lineDir) <= 1e-8) return null;
+      if (vec3.length(dragPlaneNormal) <= 1e-8) return null;
+      vec3.normalize(lineDir, lineDir);
+      vec3.normalize(dragPlaneNormal, dragPlaneNormal);
+
+      const denominator = vec3.dot(ray.direction, dragPlaneNormal);
+      if (Math.abs(denominator) <= 1e-8) {
+        return null;
+      }
+
+      const rayToPlane = vec3.create();
+      vec3.subtract(rayToPlane, linePoint, ray.origin);
+      const rayDistance = vec3.dot(rayToPlane, dragPlaneNormal) / denominator;
+      if (rayDistance < 0) {
+        return null;
+      }
+
+      const hitPoint = vec3.create();
+      vec3.scaleAndAdd(hitPoint, ray.origin, ray.direction, rayDistance);
+      const hitOffset = vec3.create();
+      vec3.subtract(hitOffset, hitPoint, linePoint);
+      return vec3.dot(hitOffset, lineDir);
     }
 
     function getDistanceToScreenSegment(
@@ -3950,24 +4047,24 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           if (!loadedVolumeEntry || !resolvedLayerEntry) {
             return;
           }
-          const { projection, view } = getViewProjectionMatrices();
-          const dragScreenStep = getObliqueSliceDragScreenStep(
+          const dragWorldStep = getObliqueSliceDragWorldStep(
             resolvedLayerEntry,
             loadedVolumeEntry.volume,
             targetNode.sliceParams,
-            projection,
-            view,
             loadedVolumeEntry.profile
           );
+          const { forward } = getViewProjectionMatrices();
           sliceDrag = {
             kind: "oblique",
             layerId: targetNode.id,
             startOffset: targetNode.sliceParams.offset ?? 0,
             startClientX: e.clientX,
             startClientY: e.clientY,
-            stepOffsetDelta: dragScreenStep.stepOffsetDelta,
-            stepScreenDx: dragScreenStep.stepScreenDx,
-            stepScreenDy: dragScreenStep.stepScreenDy,
+            stepOffsetDelta: dragWorldStep.stepOffsetDelta,
+            stepWorldDistance: dragWorldStep.stepWorldDistance,
+            dragWorldOrigin: [hit.position[0], hit.position[1], hit.position[2]],
+            dragWorldDirection: dragWorldStep.dragWorldDirection,
+            dragPlaneNormal: getSliceDragPlaneNormal(dragWorldStep.dragWorldDirection, forward),
           };
           return;
         }
@@ -3980,19 +4077,17 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
         const resolvedLayerEntry =
           collectResolvedVisibleLayers(layerTreeRef.current, true).find((entry) => entry.layer.id === targetNode.id) ?? null;
         const startIndex = getLayerAxisSliceDisplayIndex(targetNode, loadedVolumeEntry.volume, hit.plane);
-        const { projection, view } = getViewProjectionMatrices();
-        const dragScreenStep = resolvedLayerEntry
-          ? getSliceDragScreenStep(
+        const dragWorldStep = resolvedLayerEntry
+          ? getSliceDragWorldStep(
               resolvedLayerEntry,
               targetNode,
               loadedVolumeEntry.volume,
               hit.plane,
               startIndex,
-              projection,
-              view,
               loadedVolumeEntry.profile
             )
-          : { stepIndexDelta: 0, stepScreenDx: 0, stepScreenDy: 0 };
+          : { stepIndexDelta: 0, stepWorldDistance: 0, dragWorldDirection: [0, 0, 1] as [number, number, number] };
+        const { forward } = getViewProjectionMatrices();
         sliceDrag = {
           kind: "axis",
           layerId: targetNode.id,
@@ -4001,9 +4096,11 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
           startClientX: e.clientX,
           startClientY: e.clientY,
           maxIndex: Math.max(0, getPlaneSliceCount(loadedVolumeEntry.volume, hit.plane) - 1),
-          stepIndexDelta: dragScreenStep.stepIndexDelta,
-          stepScreenDx: dragScreenStep.stepScreenDx,
-          stepScreenDy: dragScreenStep.stepScreenDy,
+          stepIndexDelta: dragWorldStep.stepIndexDelta,
+          stepWorldDistance: dragWorldStep.stepWorldDistance,
+          dragWorldOrigin: [hit.position[0], hit.position[1], hit.position[2]],
+          dragWorldDirection: dragWorldStep.dragWorldDirection,
+          dragPlaneNormal: getSliceDragPlaneNormal(dragWorldStep.dragWorldDirection, forward),
         };
         onAxisSliceStateChangeRef.current?.(targetNode.id, {
           activePlane: hit.plane,
@@ -4192,30 +4289,33 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
       if (activeToolRef.current === "slice") {
         if (sliceDrag) {
           publishHoveredSceneHit(null);
-          const deltaX = e.clientX - sliceDrag.startClientX;
-          const deltaY = e.clientY - sliceDrag.startClientY;
-          const stepLengthSq =
-            sliceDrag.stepScreenDx * sliceDrag.stepScreenDx +
-            sliceDrag.stepScreenDy * sliceDrag.stepScreenDy;
+          const { projection, view } = getViewProjectionMatrices();
+          const lineOffset = getDragLineOffsetAtClientPosition(
+            sliceDrag.dragWorldOrigin,
+            sliceDrag.dragWorldDirection,
+            sliceDrag.dragPlaneNormal,
+            e.clientX,
+            e.clientY,
+            projection,
+            view
+          );
           if (sliceDrag.kind === "axis") {
+            if (lineOffset == null || sliceDrag.stepWorldDistance <= 1e-8) {
+              return;
+            }
             const deltaIndex =
-              Math.abs(sliceDrag.stepIndexDelta) > 0 && stepLengthSq > 1
-                ? Math.round(
-                    ((deltaX * sliceDrag.stepScreenDx + deltaY * sliceDrag.stepScreenDy) / stepLengthSq) *
-                      sliceDrag.stepIndexDelta
-                  )
-                : Math.round((Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY) / 6);
+              Math.round((lineOffset / sliceDrag.stepWorldDistance) * sliceDrag.stepIndexDelta);
             const nextIndex = clamp(sliceDrag.startIndex + deltaIndex, 0, sliceDrag.maxIndex);
             onAxisSliceStateChangeRef.current?.(sliceDrag.layerId, {
               [sliceDrag.plane]: nextIndex,
               activePlane: sliceDrag.plane,
             });
           } else {
+            if (lineOffset == null || sliceDrag.stepWorldDistance <= 1e-8) {
+              return;
+            }
             const deltaOffset =
-              Math.abs(sliceDrag.stepOffsetDelta) > 0 && stepLengthSq > 1
-                ? ((deltaX * sliceDrag.stepScreenDx + deltaY * sliceDrag.stepScreenDy) / stepLengthSq) *
-                  sliceDrag.stepOffsetDelta
-                : (Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY) / 6;
+              (lineOffset / sliceDrag.stepWorldDistance) * sliceDrag.stepOffsetDelta;
             const nextOffset = Math.round((sliceDrag.startOffset + deltaOffset) * 1000) / 1000;
             onCustomSliceParamsChangeRef.current?.(sliceDrag.layerId, {
               offset: nextOffset,
@@ -4325,11 +4425,10 @@ function drawColorCylinder(mvp: mat4, color: [number, number, number, number]) {
               );
               return;
             }
-            const direction = getObliqueSliceViewTransform(targetNode.sliceParams).flipZ ? -1 : 1;
             onCustomSliceParamsChangeRef.current?.(targetNode.id, {
               offset:
                 Math.round(
-                  ((targetNode.sliceParams.offset ?? 0) + (e.deltaY < 0 ? 1 : -1) * direction) * 1000
+                  ((targetNode.sliceParams.offset ?? 0) + (e.deltaY < 0 ? 1 : -1)) * 1000
                 ) / 1000,
             });
             return;

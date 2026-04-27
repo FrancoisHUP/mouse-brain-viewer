@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { LayerItemNode, LayerTreeNode, AnnotationShape, NodeTransform } from '../../layerTypes';
 import type { SelectedLayerRuntimeInfo } from '../../WebGLCanvas';
+import { MetadataRichContent } from './MetadataRichContent';
 
 type AnnotationDraftSettings = {
   shape: AnnotationShape;
@@ -265,6 +266,7 @@ export default function LayerInspectorPanel({
   onUpdateSelectedNodeTransform,
   onResetSelectedNodeTransform,
   onUpdateSelectedAnnotationLayer,
+  onOpenMetadataWindow,
 }: {
   selectedNode: LayerTreeNode | null;
   selectedAnnotation: LayerItemNode['annotation'] | null;
@@ -277,11 +279,13 @@ export default function LayerInspectorPanel({
   onUpdateSelectedNodeTransform: (patch: Partial<NodeTransform>) => void;
   onResetSelectedNodeTransform: () => void;
   onUpdateSelectedAnnotationLayer: (patch: Partial<NonNullable<LayerItemNode['annotation']>>) => void;
+  onOpenMetadataWindow: () => void;
 }) {
   const selectedAnnotationLayer =
     selectedNode && selectedNode.kind === 'layer' && selectedNode.type === 'annotation'
       ? selectedNode
       : null;
+  const isNoteAnnotation = selectedAnnotation?.shape === 'note';
 
   const selectedOpacity = Math.max(0, Math.min(1, selectedNode?.opacity ?? 1));
 
@@ -347,49 +351,52 @@ export default function LayerInspectorPanel({
             />
 
             {selectedAnnotationLayer ? (
-              <Section title="Annotation style">
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                    Color
-                  </span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input
-                      type="color"
-                      value={selectedAnnotation?.color ?? annotationDraft.color}
-                      onChange={(event) => onUpdateSelectedAnnotationLayer({ color: event.target.value })}
-                      style={{
-                        width: 40,
-                        height: 34,
-                        padding: 0,
-                        border: 'none',
-                        background: 'transparent',
-                        cursor: 'pointer',
-                      }}
-                    />
-                    {selectedAnnotation?.shape !== 'freehand' ? (
-                      <>
-                        <input
-                          type="range"
-                          min={0}
-                          max={1}
-                          step={0.01}
-                          value={selectedAnnotation?.opacity ?? annotationDraft.opacity}
-                          onChange={(event) => onUpdateSelectedAnnotationLayer({ opacity: Number(event.target.value) })}
-                          style={{ flex: 1 }}
-                        />
-                        <span style={{ fontSize: 11, minWidth: 36, textAlign: 'right', opacity: 0.72 }}>
-                          {Math.round((selectedAnnotation?.opacity ?? annotationDraft.opacity) * 100)}%
+              <Section title={isNoteAnnotation ? 'Note' : 'Annotation style'}>
+                {!isNoteAnnotation ? (
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                      Color
+                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="color"
+                        value={selectedAnnotation?.color ?? annotationDraft.color}
+                        onChange={(event) => onUpdateSelectedAnnotationLayer({ color: event.target.value })}
+                        style={{
+                          width: 40,
+                          height: 34,
+                          padding: 0,
+                          border: 'none',
+                          background: 'transparent',
+                          cursor: 'pointer',
+                        }}
+                      />
+                      {selectedAnnotation?.shape !== 'freehand' ? (
+                        <>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={selectedAnnotation?.opacity ?? annotationDraft.opacity}
+                            onChange={(event) => onUpdateSelectedAnnotationLayer({ opacity: Number(event.target.value) })}
+                            style={{ flex: 1 }}
+                          />
+                          <span style={{ fontSize: 11, minWidth: 36, textAlign: 'right', opacity: 0.72 }}>
+                            {Math.round((selectedAnnotation?.opacity ?? annotationDraft.opacity) * 100)}%
+                          </span>
+                        </>
+                      ) : (
+                        <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>
+                          This layer keeps all strokes in one color.
                         </span>
-                      </>
-                    ) : (
-                      <span data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>
-                        This layer keeps all strokes in one color.
-                      </span>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
+                ) : null}
 
-                {selectedAnnotation?.shape !== 'rectangle' &&
+                {!isNoteAnnotation &&
+                selectedAnnotation?.shape !== 'rectangle' &&
                 selectedAnnotation?.shape !== 'circle' &&
                 selectedAnnotation?.shape !== 'freehand' ? (
                   <label style={{ display: 'grid', gap: 6, minWidth: 0 }}>
@@ -413,10 +420,29 @@ export default function LayerInspectorPanel({
                   </label>
                 ) : null}
 
-                <label style={{ display: 'grid', gap: 6, minWidth: 0 }}>
-                  <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                    Metadata
-                  </span>
+                <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                    <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                      Metadata
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onOpenMetadataWindow}
+                      style={{
+                        height: 30,
+                        padding: '0 10px',
+                        borderRadius: 8,
+                        border: '1px solid rgba(160,220,255,0.22)',
+                        background: 'rgba(120,190,255,0.10)',
+                        color: 'inherit',
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Open editor
+                    </button>
+                  </div>
                   <textarea
                     value={selectedAnnotation?.metadata ?? ''}
                     onChange={(event) => onUpdateSelectedAnnotationLayer({ metadata: event.target.value })}
@@ -429,9 +455,25 @@ export default function LayerInspectorPanel({
                       border: '1px solid rgba(255,255,255,0.10)',
                       background: 'rgba(255,255,255,0.04)',
                       color: 'inherit',
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                      fontSize: 12,
+                      lineHeight: 1.45,
                     }}
                   />
-                </label>
+                  <div
+                    data-theme-surface="soft"
+                    style={{
+                      maxHeight: 180,
+                      overflow: 'auto',
+                      borderRadius: 10,
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      padding: 10,
+                      background: 'rgba(255,255,255,0.035)',
+                    }}
+                  >
+                    <MetadataRichContent value={selectedAnnotation?.metadata ?? ''} />
+                  </div>
+                </div>
               </Section>
             ) : selectedNode.kind === 'layer' ? (
               <div style={{ display: 'grid', gap: 10 }}>

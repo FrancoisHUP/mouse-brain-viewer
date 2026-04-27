@@ -15,6 +15,8 @@ import AboutDialog from "./components/app/AboutDialog";
 import ShareDialog from "./components/app/ShareDialog";
 import StateDialog from "./components/app/StateDialog";
 import ClearHistoryDialog from "./components/app/ClearHistoryDialog";
+import FloatingWindowManager, { type FloatingWindowState } from "./components/app/FloatingWindowManager";
+import { MetadataEditor } from "./components/app/MetadataRichContent";
 import {
   createId,
   loadRecentAnnotationColors,
@@ -45,11 +47,12 @@ import {
   hasLocalOnlyLayers,
   isSerializableLayerTree,
   mergeViewerState,
-  parseViewerState,
-  type SerializableCameraState,
+	  parseViewerState,
+	  type SerializableFloatingWindowState,
+	  type SerializableCameraState,
   type ViewerStatePatchV1,
   type ViewerStateV1,
-} from "./viewerState";
+	} from "./viewerState";
 import { buildViewerShareUrl, readViewerStateFromHash } from "./viewerShare";
 import {
   SHORTCUT_DEFINITIONS,
@@ -439,6 +442,44 @@ function getSliceOrientationProfileForLayer(layer: LayerItemNode) {
   return layer.type === "file" ? IDENTITY_PROFILE : ALLEN_VOLUME_PROFILE;
 }
 
+function getMaxFloatingWindowZ(windows: Array<{ zIndex: number }>) {
+  return windows.reduce(
+    (maxZ, windowState) =>
+      Number.isFinite(windowState.zIndex) ? Math.max(maxZ, windowState.zIndex) : maxZ,
+    1
+  );
+}
+
+function applyPlanarViewTransformToBasis(
+  basis: { u: SliceVec3; v: SliceVec3; n: SliceVec3 },
+  viewTransform?: {
+    flipX?: boolean;
+    flipY?: boolean;
+    rotationDeg?: number;
+  }
+): { u: SliceVec3; v: SliceVec3; n: SliceVec3 } {
+  let u = normalizeSliceVec3(basis.u);
+  let v = normalizeSliceVec3(basis.v);
+  const n = normalizeSliceVec3(basis.n);
+
+  if (viewTransform?.flipX) {
+    u = { x: -u.x, y: -u.y, z: -u.z };
+  }
+  if (viewTransform?.flipY) {
+    v = { x: -v.x, y: -v.y, z: -v.z };
+  }
+
+  const rotationDeg = Number.isFinite(viewTransform?.rotationDeg)
+    ? Number(viewTransform?.rotationDeg)
+    : 0;
+  if (Math.abs(rotationDeg) > 1e-6) {
+    u = rotateSliceVec3AroundAxis(u, n, rotationDeg);
+    v = rotateSliceVec3AroundAxis(v, n, rotationDeg);
+  }
+
+  return { u, v, n };
+}
+
 function getPlaneReverseIndex(
   plane: SlicePlane,
   profile: typeof ALLEN_VOLUME_PROFILE
@@ -465,26 +506,34 @@ function buildObliqueSliceFromCanonicalPlane(
   const maxIndex =
     plane === "xy" ? Math.max(0, dims.z - 1) : plane === "xz" ? Math.max(0, dims.y - 1) : Math.max(0, dims.x - 1);
   const safeDisplayIndex = Math.max(0, Math.min(maxIndex, Math.round(displayIndex)));
-  const dataIndex = getPlaneReverseIndex(plane, profile)
+  const sourceIndex = viewTransform?.flipZ
     ? maxIndex - safeDisplayIndex
     : safeDisplayIndex;
+  const dataIndex = getPlaneReverseIndex(plane, profile)
+    ? maxIndex - sourceIndex
+    : sourceIndex;
   const { width, height } = getAxisSliceSizeForPlane(dims, plane);
-  const normal = getCanonicalPlaneNormal(plane);
-  const basis = getProfileAdjustedPlaneBasis(normal, profile, undefined, plane);
+  const canonicalBasis = getProfileAdjustedPlaneBasis(
+    getCanonicalPlaneNormal(plane),
+    profile,
+    undefined,
+    plane
+  );
+  const basis = applyPlanarViewTransformToBasis(canonicalBasis, viewTransform);
 
   return {
     mode: "oblique",
-    normal,
+    normal: basis.n,
     uAxis: basis.u,
     referencePlane: plane,
     offset: dataIndex - getPlaneCenterCoordinate(dims, plane),
     width,
     height,
     opacity: 0.92,
-    flipX: !!viewTransform?.flipX,
-    flipY: !!viewTransform?.flipY,
-    flipZ: !!viewTransform?.flipZ,
-    rotationDeg: Number.isFinite(viewTransform?.rotationDeg) ? Number(viewTransform?.rotationDeg) : 0,
+    flipX: true,
+    flipY: false,
+    flipZ: true,
+    rotationDeg: 0,
     scale: Number.isFinite(viewTransform?.scale) ? Number(viewTransform?.scale) : 1,
   };
 }
@@ -519,6 +568,7 @@ const DEFAULT_ANNOTATION_SHAPE_SIZES: AnnotationShapeSizeMap = {
   line: 0.06,
   rectangle: 0.06,
   circle: 0.06,
+  note: 0.06,
   freehand: 0.06,
   eraser: 0.06,
 };
@@ -820,6 +870,8 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [annotationRecentColors, setAnnotationRecentColors] = useState<string[]>(() => loadRecentAnnotationColors());
   const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
   const [selectedLayerRuntimeInfo, setSelectedLayerRuntimeInfo] = useState<SelectedLayerRuntimeInfo | null>(null);
+  const [floatingWindows, setFloatingWindows] = useState<FloatingWindowState[]>([]);
+  const nextFloatingWindowZRef = useRef(1);
 
   const [localSceneLoadState, setLocalSceneLoadState] = useState<{ active: boolean; pending: number }>({ active: false, pending: 0 });
   const [dismissLocalSceneLoadNotice, setDismissLocalSceneLoadNotice] = useState(false);
@@ -905,6 +957,56 @@ export default function App({ startupSlices = [] }: AppProps) {
       : null;
 
   const selectedAnnotation = selectedAnnotationLayer?.annotation ?? null;
+
+  const openMetadataWindowForLayer = useCallback((annotationLayer: LayerItemNode) => {
+    const nextZ = nextFloatingWindowZRef.current + 1;
+    nextFloatingWindowZRef.current = nextZ;
+    const offset = floatingWindows.length * 26;
+    const width = Math.min(760, Math.max(460, Math.round(window.innerWidth * 0.42)));
+    const height = Math.min(620, Math.max(360, Math.round(window.innerHeight * 0.58)));
+    const isNote = annotationLayer.annotation?.shape === "note";
+    setFloatingWindows((prev) => [
+      ...prev,
+      {
+        id: createId(),
+        title: isNote ? "Note" : "Metadata",
+        subtitle: annotationLayer.name,
+        metadataNodeId: annotationLayer.id,
+        x: Math.max(16, Math.round((window.innerWidth - width) * 0.5) + offset),
+        y: Math.max(16, Math.round((window.innerHeight - height) * 0.5) + offset),
+        width,
+        height,
+        zIndex: nextZ,
+        minimized: false,
+        maximized: false,
+        metadataMode: "edit",
+      },
+    ]);
+  }, [floatingWindows.length]);
+
+  const openMetadataWindow = useCallback(() => {
+    if (!selectedAnnotationLayer) return;
+    openMetadataWindowForLayer(selectedAnnotationLayer);
+  }, [openMetadataWindowForLayer, selectedAnnotationLayer]);
+
+	  useEffect(() => {
+	    const targetNodeId = selectedAnnotationLayer?.id;
+	    if (!targetNodeId) return;
+	    const nextZ = nextFloatingWindowZRef.current + 1;
+	    nextFloatingWindowZRef.current = nextZ;
+	    setFloatingWindows((prev) =>
+	      prev.map((windowState) => {
+	        if (windowState.metadataNodeId !== targetNodeId || windowState.minimized) {
+	          return windowState;
+	        }
+	        const maxZ = getMaxFloatingWindowZ(prev);
+	        if (windowState.zIndex >= maxZ) {
+	          return windowState;
+	        }
+	        return { ...windowState, zIndex: nextZ };
+	      })
+	    );
+	  }, [selectedAnnotationLayer?.id]);
 
   const canShowGlobalDropOverlay =
     isGlobalFileDragActive &&
@@ -1511,6 +1613,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
         onResetSelectedNodeTransform={resetSelectedNodeTransform}
         onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
+        onOpenMetadataWindow={openMetadataWindow}
       />
    </div>
   );
@@ -1524,10 +1627,24 @@ export default function App({ startupSlices = [] }: AppProps) {
         sliceVolumeLayerId,
         sliceName,
         sliceParamsDraft,
-        layerPanelCollapsed: isLayerPanelCollapsed,
-        inspectorCollapsed: isInspectorCollapsed,
-        camera: cameraState,
-      }),
+	        layerPanelCollapsed: isLayerPanelCollapsed,
+	        inspectorCollapsed: isInspectorCollapsed,
+	        windows: floatingWindows.map((windowState): SerializableFloatingWindowState => ({
+	          id: windowState.id,
+	          title: windowState.title,
+	          subtitle: windowState.subtitle,
+	          metadataNodeId: windowState.metadataNodeId,
+	          x: windowState.x,
+	          y: windowState.y,
+	          width: windowState.width,
+	          height: windowState.height,
+	          zIndex: windowState.zIndex,
+	          minimized: windowState.minimized,
+	          maximized: windowState.maximized,
+	          metadataMode: windowState.metadataMode,
+	        })),
+	        camera: cameraState,
+	      }),
     [
       activeTool,
       selectedNodeId,
@@ -1535,10 +1652,11 @@ export default function App({ startupSlices = [] }: AppProps) {
       sliceVolumeLayerId,
       sliceName,
       sliceParamsDraft,
-      isLayerPanelCollapsed,
-      isInspectorCollapsed,
-      cameraState,
-    ]
+	      isLayerPanelCollapsed,
+	      isInspectorCollapsed,
+	      floatingWindows,
+	      cameraState,
+	    ]
   );
 
   const currentViewerHash = useMemo(
@@ -1763,10 +1881,12 @@ export default function App({ startupSlices = [] }: AppProps) {
     setLayerTree(nextState.scene.layerTree);
     setSliceVolumeLayerId(nextState.ui.sliceVolumeLayerId ?? "");
     setSliceName(nextState.ui.sliceName ?? "");
-    setSliceParamsDraft(nextState.ui.sliceParamsDraft);
-    setIsLayerPanelCollapsed(nextState.layout.layerPanelCollapsed);
-    setIsInspectorCollapsed(nextState.layout.inspectorCollapsed ?? false);
-    setCameraState(nextState.camera);
+	    setSliceParamsDraft(nextState.ui.sliceParamsDraft);
+	    setIsLayerPanelCollapsed(nextState.layout.layerPanelCollapsed);
+	    setIsInspectorCollapsed(nextState.layout.inspectorCollapsed ?? false);
+	    setFloatingWindows(nextState.layout.windows ?? []);
+	    nextFloatingWindowZRef.current = getMaxFloatingWindowZ(nextState.layout.windows ?? []);
+	    setCameraState(nextState.camera);
     if (options?.syncCamera !== false) {
       setCameraSyncKey((value) => value + 1);
     }
@@ -3404,6 +3524,32 @@ export default function App({ startupSlices = [] }: AppProps) {
     setIsImportPanelOpen(false);
   }
 
+  function handleCreateNoteAnnotation() {
+    const id = createId();
+    const name = `Note ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+    const noteLayer: LayerItemNode = {
+      id,
+      kind: "layer",
+      name,
+      type: "annotation",
+      visible: true,
+      source: "drawing-layer",
+      sourceKind: "drawing",
+      description: "Written note annotation",
+      annotation: {
+        shape: "note",
+        color: annotationDraft.color,
+        opacity: annotationDraft.opacity,
+        size: annotationDraft.size,
+        metadata: "",
+      },
+    };
+
+    addNodeAtBestLocation(noteLayer);
+    setSelectedNodeId(id);
+    openMetadataWindowForLayer(noteLayer);
+  }
+
   function updateSelectedAnnotationLayer(patch: Partial<NonNullable<LayerItemNode["annotation"]>>) {
     if (!selectedNodeId) return;
 
@@ -3413,6 +3559,34 @@ export default function App({ startupSlices = [] }: AppProps) {
 
     setLayerTree((prev) =>
       updateNodeById(prev, selectedNodeId, (node) => {
+        if (node.kind !== "layer" || node.type !== "annotation") return node;
+        return {
+          ...node,
+          annotation: {
+            shape: node.annotation?.shape ?? annotationDraft.shape,
+            color: node.annotation?.color ?? annotationDraft.color,
+            opacity: node.annotation?.opacity ?? annotationDraft.opacity,
+            size: node.annotation?.size ?? annotationDraft.size,
+            brushDepth: node.annotation?.brushDepth ?? annotationDraft.depth,
+            metadata: node.annotation?.metadata ?? "",
+            ...node.annotation,
+            ...patch,
+          },
+        };
+      })
+    );
+  }
+
+  function updateAnnotationLayerById(
+    nodeId: string,
+    patch: Partial<NonNullable<LayerItemNode["annotation"]>>
+  ) {
+    if (patch.color) {
+      pushRecentAnnotationColor(patch.color);
+    }
+
+    setLayerTree((prev) =>
+      updateNodeById(prev, nodeId, (node) => {
         if (node.kind !== "layer" || node.type !== "annotation") return node;
         return {
           ...node,
@@ -4054,6 +4228,45 @@ export default function App({ startupSlices = [] }: AppProps) {
     setCameraSyncKey((prev) => prev + 1);
   }
 
+  function updateFloatingWindow(id: string, patch: Partial<FloatingWindowState>) {
+    setFloatingWindows((prev) =>
+      prev.map((windowState) =>
+        windowState.id === id ? { ...windowState, ...patch } : windowState
+      )
+    );
+  }
+
+  function focusFloatingWindow(id: string) {
+    const nextZ = nextFloatingWindowZRef.current + 1;
+    nextFloatingWindowZRef.current = nextZ;
+    updateFloatingWindow(id, { zIndex: nextZ });
+  }
+
+  function closeFloatingWindow(id: string) {
+    setFloatingWindows((prev) => prev.filter((windowState) => windowState.id !== id));
+  }
+
+  function renderFloatingWindowContent(windowState: FloatingWindowState) {
+    if (!windowState.metadataNodeId) return null;
+    const node = findNodeById(layerTree, windowState.metadataNodeId);
+    if (!node || node.kind !== "layer" || node.type !== "annotation") {
+      return (
+        <div data-theme-text="muted" style={{ fontSize: 13, lineHeight: 1.5, opacity: 0.74 }}>
+          The annotation layer for this metadata window is no longer available.
+        </div>
+      );
+    }
+
+    return (
+      <MetadataEditor
+        value={node.annotation?.metadata ?? ""}
+        onChange={(metadata) => updateAnnotationLayerById(node.id, { metadata })}
+        mode={windowState.metadataMode ?? "edit"}
+        onModeChange={(metadataMode) => updateFloatingWindow(windowState.id, { metadataMode })}
+      />
+    );
+  }
+
   return (
     <div
       data-app-theme={appPreferences.theme}
@@ -4316,6 +4529,14 @@ export default function App({ startupSlices = [] }: AppProps) {
         theme={appPreferences.theme}
       />
 
+      <FloatingWindowManager
+        windows={floatingWindows}
+        onUpdateWindow={updateFloatingWindow}
+        onFocusWindow={focusFloatingWindow}
+        onCloseWindow={closeFloatingWindow}
+        renderWindowContent={renderFloatingWindowContent}
+      />
+
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
@@ -4378,13 +4599,18 @@ export default function App({ startupSlices = [] }: AppProps) {
         onSliceResetView={sliceToolMode === "free" ? handleResetObliqueSliceView : handleResetCanonicalSliceView}
         onSliceToggleFlip={sliceToolMode === "free" ? handleToggleObliqueSliceFlip : handleToggleCanonicalSliceFlip}
         onSliceResetToCenter={sliceToolMode === "free" ? handleResetObliqueSliceToCenter : handleCenterCanonicalSlices}
-        onSliceRotate={sliceToolMode === "free" ? handleRotateObliqueSlice : handleRotateCanonicalSlice}
-        onSliceScale={sliceToolMode === "free" ? handleScaleObliqueSlice : handleScaleCanonicalSlice}
-        onSliceCreateFreeSlice={handleCreateFreeSliceFromCanonical}
-        onSliceNudgeFreeOffset={handleNudgeObliqueSliceOffset}
-        onSliceTiltFreeSlice={handleTiltObliqueSlice}
-        onSliceSnapFreeSlice={handleSnapObliqueSliceToPlane}
-      />
+	        onSliceRotate={sliceToolMode === "free" ? handleRotateObliqueSlice : handleRotateCanonicalSlice}
+	        onSliceScale={sliceToolMode === "free" ? handleScaleObliqueSlice : handleScaleCanonicalSlice}
+	        onSliceCreateFreeSlice={handleCreateFreeSliceFromCanonical}
+	        onSliceNudgeFreeOffset={handleNudgeObliqueSliceOffset}
+	        onSliceTiltFreeSlice={handleTiltObliqueSlice}
+	        onSliceSnapFreeSlice={handleSnapObliqueSliceToPlane}
+	        windows={floatingWindows}
+	        onFocusWindow={focusFloatingWindow}
+	        onRestoreWindow={(id) => updateFloatingWindow(id, { minimized: false })}
+	        onCloseWindow={closeFloatingWindow}
+          onCreateNoteAnnotation={handleCreateNoteAnnotation}
+	      />
     </div>
   );
 }

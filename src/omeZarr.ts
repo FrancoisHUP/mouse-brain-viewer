@@ -1096,8 +1096,12 @@ export function extractObliqueSlice2D(
         addVec3(sliceCenter, scaleVec3(u, du)),
         scaleVec3(v, dv)
       );
-
-      out[j * width + i] = sampleTrilinear(volume, p.z, p.y, p.x);
+      out[j * width + i] = sampleTrilinear(
+        volume,
+        p.z,
+        p.y,
+        p.x
+      );
     }
   }
 

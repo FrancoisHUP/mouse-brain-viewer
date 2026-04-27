@@ -1,12 +1,14 @@
-
 [todo] fix the selection on skeleton (right now it select every verticies)
 
-
 import data {
+  in the manage data, the user should be able to click on a single file source and see the import panel setting ?
+  in the + layer, the user should see all the data in a single panel (external and local), then we should have a panel/tab to import a new data. In this import panel, there should have a button or something to manage the existing data. SO the user can add and delete data.  
   [todo] fix the import so the brain has the right orientation of every slices. 
   [todo] the user should be able to add a personnal (browser hosted data) in the viewer without having to re upload the file.  
   [todo] rewrok the import so I have a panel with all the date (online and local / personnal or shared or built in)
   [todo] rework the data panel. The user should be able to load an imported data into the scene (without having to reupload)
+  [todo] import annotations and process the data inside the browser and the meta data / add an intelligent perser to import dataset ?
+  [todo] when a user delete data from the browser, it should notice the user what layer will be affected by the deletyion and if it should remove the layer too.  
 }
 
 
@@ -33,6 +35,7 @@ Extracter {
 *[NTH] add a way for people to push external link (library of external link for users) 
 *[NTH] annotations with AI 3D assistance
 *[NTH] A panel with gpu/cpu/ram/data usage + I could put a compass
+*[NTH] ai for data importation, ai for automatic annotations, ai for automation builder, ai for general question and access tools and docs   
 
 [NTH] screen shot tool, and recording tool?
 [NTH] tutorial how to use.   
@@ -47,9 +50,9 @@ Extracter {
 
 
 --- BUG LIST
+[fix] transparency for all object 
 
 --- Check list
-[bug] when the user click on the open library, it triggers an error. Also this panel needs reworks!
 
 
 

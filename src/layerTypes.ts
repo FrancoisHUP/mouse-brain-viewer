@@ -60,6 +60,7 @@ export type AnnotationShape =
   | "line"
   | "rectangle"
   | "circle"
+  | "note"
   | "freehand"
   | "eraser";
 

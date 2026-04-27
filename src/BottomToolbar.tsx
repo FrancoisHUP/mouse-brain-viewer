@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { CameraControlMode } from "./viewerState";
 import type { AnnotationShape, SlicePlane } from "./layerTypes";
+import type { FloatingWindowState } from "./components/app/FloatingWindowManager";
 
 declare global {
   interface Window {
@@ -205,6 +206,15 @@ function AnnotationModeIcon({ shape }: { shape: AnnotationShape | "shape" }) {
       return <svg {...common}><rect x="5" y="7" width="14" height="10" rx="1.5" /></svg>;
     case "circle":
       return <svg {...common}><circle cx="12" cy="12" r="6.5" /></svg>;
+    case "note":
+      return (
+        <svg {...common}>
+          <path d="M6 4.5h9l3 3V19a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1z" />
+          <path d="M15 4.5V8h3" />
+          <path d="M8 11h8" />
+          <path d="M8 15h6" />
+        </svg>
+      );
     case "freehand":
       return <svg {...common}><path d="M5 16c2-5 4-8 6-8 2.5 0 2.5 6 5 6 1.1 0 2-.8 3-2" /></svg>;
     case "shape":
@@ -324,6 +334,257 @@ function ToolButton({ id, label, active, onClick }: { id: ToolId; label: string;
     >
       <Icon id={id} />
     </button>
+  );
+}
+
+function WindowsIcon() {
+   return (
+     <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="2" y="3" width="20" height="18" rx="2" ry="2" />
+      <line x1="2" y1="9" x2="22" y2="9" />
+      <line x1="6" y1="6" x2="6" y2="6" strokeWidth="3" />
+      <line x1="10" y1="6" x2="10" y2="6" strokeWidth="3" />
+    </svg>
+  );
+}
+
+function CloseSmallIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+      <path d="M6 6l12 12" />
+      <path d="M18 6L6 18" />
+    </svg>
+  );
+}
+
+function WindowManagerToolButton({
+  windows,
+  onFocusWindow,
+  onRestoreWindow,
+  onCloseWindow,
+  onCreateNoteAnnotation,
+}: {
+  windows: FloatingWindowState[];
+  onFocusWindow: (id: string) => void;
+  onRestoreWindow: (id: string) => void;
+  onCloseWindow: (id: string) => void;
+  onCreateNoteAnnotation: () => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const hasWindows = windows.length > 0;
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+      onFocus={() => setIsOpen(true)}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setIsOpen(false);
+      }}
+    >
+      <button
+        type="button"
+        title="Windows"
+        aria-label="Windows"
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 14,
+          border: hasWindows ? "1px solid rgba(120,190,255,0.75)" : "1px solid rgba(255,255,255,0.08)",
+          background: hasWindows ? "rgba(120,190,255,0.18)" : "rgba(255,255,255,0.03)",
+          color: hasWindows ? "#d7eeff" : "rgba(255,255,255,0.82)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "default",
+          transition: "all 160ms ease",
+          position: "relative",
+        }}
+      >
+        <WindowsIcon />
+        {hasWindows ? (
+          <span
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              right: 5,
+              top: 5,
+              minWidth: 16,
+              height: 16,
+              borderRadius: 999,
+              background: "rgba(120,190,255,0.96)",
+              color: "#07111d",
+              fontSize: 10,
+              fontWeight: 900,
+              lineHeight: "16px",
+              textAlign: "center",
+              padding: "0 4px",
+              boxSizing: "border-box",
+            }}
+          >
+            {windows.length}
+          </span>
+        ) : null}
+      </button>
+
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          left: -12,
+          right: -12,
+          bottom: "100%",
+          height: 14,
+          pointerEvents: isOpen ? "auto" : "none",
+        }}
+      />
+      <div
+        data-theme-surface="panel"
+        className="toolbar-window-popover"
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: "calc(100% + 12px)",
+          transform: isOpen ? "translate(-50%, 0)" : "translate(-50%, 8px)",
+          minWidth: hasWindows ? undefined : 180,
+          maxWidth: "min(760px, calc(100vw - 32px))",
+          overflowX: "auto",
+          overflowY: "hidden",
+          borderRadius: 8,
+          border: "1px solid rgba(255,255,255,0.12)",
+          background: "rgba(12,14,18,0.94)",
+          boxShadow: "0 16px 42px rgba(0,0,0,0.42)",
+          backdropFilter: "blur(14px)",
+          padding: 8,
+          opacity: isOpen ? 1 : 0,
+          visibility: isOpen ? "visible" : "hidden",
+          pointerEvents: isOpen ? "auto" : "none",
+          transition: "opacity 150ms ease, transform 170ms ease, visibility 150ms ease",
+        }}
+      >
+        {hasWindows ? (
+          <div style={{ display: "flex", flexDirection: "row", gap: 8, alignItems: "stretch", width: "max-content", maxWidth: "100%" }}>
+            {windows.map((windowState) => (
+              <div
+                key={windowState.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  onFocusWindow(windowState.id);
+                  onRestoreWindow(windowState.id);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  onFocusWindow(windowState.id);
+                  onRestoreWindow(windowState.id);
+                }}
+                style={{
+                  width: 220,
+                  minHeight: 68,
+                  boxSizing: "border-box",
+                  borderRadius: 8,
+                  border: windowState.minimized ? "1px solid rgba(255,255,255,0.10)" : "1px solid rgba(130,190,255,0.28)",
+                  background: windowState.minimized ? "rgba(255,255,255,0.045)" : "rgba(120,190,255,0.12)",
+                  color: "white",
+                  cursor: "pointer",
+                  padding: 10,
+                  textAlign: "left",
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0, 1fr) auto",
+                  gap: 8,
+                  alignItems: "start",
+                  flex: "0 0 auto",
+                }}
+              >
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {windowState.title}
+                  </span>
+                  {windowState.subtitle ? (
+                    <span style={{ display: "block", marginTop: 3, fontSize: 11, opacity: 0.68, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {windowState.subtitle}
+                    </span>
+                  ) : null}
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      display: "block",
+                      height: 18,
+                      marginTop: 8,
+                      borderRadius: 5,
+                      background: "linear-gradient(90deg, rgba(120,190,255,0.20), rgba(255,255,255,0.06))",
+                    }}
+                  />
+                </span>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCloseWindow(windowState.id);
+                  }}
+                  title="Close window"
+                  aria-label="Close window"
+                  role="button"
+                  tabIndex={0}
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                >
+                  <CloseSmallIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onCreateNoteAnnotation}
+            style={{
+              minWidth: 188,
+              height: 38,
+              borderRadius: 8,
+              border: "1px solid rgba(130,190,255,0.28)",
+              background: "rgba(120,190,255,0.12)",
+              color: "white",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              padding: "0 12px",
+              fontSize: 12,
+              fontWeight: 800,
+              whiteSpace: "nowrap",
+            }}
+          >
+            <AnnotationModeIcon shape="note" />
+            Create note
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -2188,6 +2449,11 @@ export default function BottomToolbar({
   redoItems = [],
   onJumpUndo,
   onJumpRedo,
+  windows = [],
+  onFocusWindow,
+  onRestoreWindow,
+  onCloseWindow,
+  onCreateNoteAnnotation,
 }: {
   activeTool: ToolId;
   onToolChange: (tool: ToolId) => void;
@@ -2254,6 +2520,11 @@ export default function BottomToolbar({
   redoItems?: HistoryMenuItem[];
   onJumpUndo?: (steps: number) => void;
   onJumpRedo?: (steps: number) => void;
+  windows?: FloatingWindowState[];
+  onFocusWindow?: (id: string) => void;
+  onRestoreWindow?: (id: string) => void;
+  onCloseWindow?: (id: string) => void;
+  onCreateNoteAnnotation?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -2374,11 +2645,11 @@ export default function BottomToolbar({
       <style>{`
         .history-menu-scroll { scrollbar-width: thin; scrollbar-color: rgba(140, 190, 255, 0.45) rgba(255,255,255,0.06); }
         .history-menu-scroll::-webkit-scrollbar { width: 10px; }
-        .history-menu-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); border-radius: 999px; }
-        .history-menu-scroll::-webkit-scrollbar-thumb { background: linear-gradient(180deg, rgba(140,190,255,0.52), rgba(90,150,230,0.34)); border-radius: 999px; border: 2px solid rgba(12,14,18,0.82); }
-        .history-menu-scroll::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, rgba(160,210,255,0.68), rgba(110,170,245,0.48)); }
-      `}</style>
-      <div ref={rootRef} style={{ position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)", zIndex: 30 }}>
+	        .history-menu-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); border-radius: 999px; }
+	        .history-menu-scroll::-webkit-scrollbar-thumb { background: linear-gradient(180deg, rgba(140,190,255,0.52), rgba(90,150,230,0.34)); border-radius: 999px; border: 2px solid rgba(12,14,18,0.82); }
+	        .history-menu-scroll::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, rgba(160,210,255,0.68), rgba(110,170,245,0.48)); }
+	      `}</style>
+      <div ref={rootRef} style={{ position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)", zIndex: 50 }}>
         <div style={{ position: "absolute", left: "50%", bottom: "calc(100% + 12px)", transform: statePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)", opacity: statePopoverOpen ? 1 : 0, pointerEvents: statePopoverOpen ? "auto" : "none", transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease", visibility: statePopoverOpen ? "visible" : "hidden" }}>
           <div data-theme-surface="panel" style={{ minWidth: 520, maxWidth: 760, borderRadius: 18, background: "rgba(12,14,18,0.94)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
             {shareBlockedLayerNames.length > 0 ? (
@@ -2444,10 +2715,18 @@ export default function BottomToolbar({
 
         <div data-theme-surface="panel" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 18, background: "rgba(12,14,18,0.78)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 10px 30px rgba(0,0,0,0.35)", backdropFilter: "blur(12px)" }}>
           <HistoryButton direction="undo" disabled={!canUndo} onClick={() => onUndo?.()} items={undoItems} onJump={onJumpUndo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
-          <HistoryButton direction="redo" disabled={!canRedo} onClick={() => onRedo?.()} items={redoItems} onJump={onJumpRedo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
-          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
-          {toolbarButtons}
-        </div>
+	          <HistoryButton direction="redo" disabled={!canRedo} onClick={() => onRedo?.()} items={redoItems} onJump={onJumpRedo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
+	          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
+	          {toolbarButtons}
+	          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
+	          <WindowManagerToolButton
+	            windows={windows}
+	            onFocusWindow={onFocusWindow ?? (() => {})}
+	            onRestoreWindow={onRestoreWindow ?? (() => {})}
+	            onCloseWindow={onCloseWindow ?? (() => {})}
+	            onCreateNoteAnnotation={onCreateNoteAnnotation ?? (() => {})}
+	          />
+	        </div>
       </div>
     </>
   );
