@@ -26,21 +26,38 @@ export type LoadingNotice = {
   onDismiss: () => void;
 };
 
+export type TaskNotice = {
+  active: boolean;
+  title: string;
+  message: string;
+  detail?: string | null;
+  progress?: number | null;
+  tone?: SaveToast["tone"];
+  terminal?: boolean;
+  onDismiss: () => void;
+  onCancel?: (() => void) | null;
+  onClick?: (() => void) | null;
+  onHoverChange?: ((isHovered: boolean) => void) | null;
+};
+
 export default function SaveToastStack({
   toasts,
   bottomOffset,
   onDismiss,
   onHoverChange,
   loadingNotice,
+  taskNotice,
 }: {
   toasts: SaveToast[];
   bottomOffset: number;
   onDismiss: (toastId: string) => void;
   onHoverChange: (toastId: string, isHovered: boolean) => void;
   loadingNotice?: LoadingNotice | null;
+  taskNotice?: TaskNotice | null;
 }) {
   const showLoadingNotice = !!loadingNotice?.active;
-  if (!toasts.length && !showLoadingNotice) return null;
+  const showTaskNotice = !!taskNotice?.active;
+  if (!toasts.length && !showLoadingNotice && !showTaskNotice) return null;
 
   function renderLoadingNotice() {
     if (!showLoadingNotice || !loadingNotice) return null;
@@ -145,19 +162,188 @@ export default function SaveToastStack({
     );
   }
 
+  function renderTaskNotice() {
+    if (!showTaskNotice || !taskNotice) return null;
+    const accent = getToneAccent(taskNotice.tone ?? "info");
+    return (
+      <div
+        key="task-notice"
+        style={{
+          pointerEvents: "auto",
+          animation: "toast-panel-in 180ms ease",
+        }}
+      >
+        <div
+          data-theme-surface="panel"
+          onMouseEnter={() => taskNotice.onHoverChange?.(true)}
+          onMouseLeave={() => taskNotice.onHoverChange?.(false)}
+          onClick={() => taskNotice.onClick?.()}
+          style={{
+            position: "relative",
+            borderRadius: 16,
+            border: "1px solid rgba(255,255,255,0.10)",
+            boxShadow: "0 12px 28px rgba(0,0,0,0.30)",
+            padding: "12px 14px 12px 16px",
+            display: "grid",
+            gap: 8,
+            fontFamily: "sans-serif",
+            overflow: "hidden",
+            cursor: taskNotice.onClick ? "pointer" : "default",
+          }}
+        >
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: 4,
+              background: accent,
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, fontFamily: "sans-serif" }}>
+                {taskNotice.title}
+              </div>
+              <div
+                data-theme-text="muted"
+                style={{ fontSize: 12, opacity: 0.82, lineHeight: 1.45, marginTop: 4, fontFamily: "sans-serif" }}
+              >
+                {taskNotice.message}
+              </div>
+              {taskNotice.detail ? (
+                <div
+                  data-theme-text="muted"
+                  style={{
+                    fontSize: 11,
+                    opacity: 0.66,
+                    lineHeight: 1.45,
+                    marginTop: 6,
+                    fontFamily: "sans-serif",
+                  }}
+                >
+                  {taskNotice.detail}
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                taskNotice.onDismiss();
+              }}
+              aria-label={`Dismiss ${taskNotice.title}`}
+              title="Dismiss"
+              style={{
+                width: 28,
+                height: 28,
+                flex: "0 0 auto",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.04)",
+                color: "inherit",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                lineHeight: 1,
+              }}
+            >
+              {"\u00d7"}
+            </button>
+          </div>
+          {taskNotice.onCancel ? (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -2 }}>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  taskNotice.onCancel?.();
+                }}
+                style={{
+                  width: 34,
+                  height: 30,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.04)",
+                  color: "inherit",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                aria-label="Stop export"
+                title="Stop export"
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 2,
+                    background: "currentColor",
+                    display: "inline-block",
+                  }}
+                />
+              </button>
+            </div>
+          ) : null}
+          <div
+            data-theme-surface="soft"
+            style={{
+              height: 7,
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.08)",
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
+            {typeof taskNotice.progress === "number" ? (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: `${Math.max(4, Math.min(100, Math.round(taskNotice.progress * 100)))}%`,
+                  borderRadius: 999,
+                  background: `linear-gradient(90deg, ${accent}, rgba(255,255,255,0.92))`,
+                  transition: "width 180ms ease",
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "34%",
+                  borderRadius: 999,
+                  background:
+                    "linear-gradient(90deg, rgba(120,190,255,0.08), rgba(120,190,255,0.92), rgba(120,190,255,0.08))",
+                  animation: "local-load-indeterminate 1.15s linear infinite",
+                }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
         position: "absolute",
         left: 18,
         bottom: bottomOffset,
-        zIndex: 19,
+        zIndex: 120,
         width: "min(340px, calc(100vw - 40px))",
         display: "grid",
         gap: 10,
         pointerEvents: "none",
       }}
     >
+      {renderTaskNotice()}
       {renderLoadingNotice()}
       {toasts.map((toast) => {
         const accent = getToneAccent(toast.tone);

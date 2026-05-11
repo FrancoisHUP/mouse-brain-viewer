@@ -1,3 +1,9 @@
+import {
+  sanitizeAutomationCustomTools,
+  sanitizeAutomationPipelines,
+  type AutomationCustomTool,
+  type AutomationPipeline,
+} from "./automationTypes";
 import type { ToolId } from "./BottomToolbar";
 import type { LayerTreeNode, SliceLayerParams } from "./layerTypes";
 
@@ -13,9 +19,11 @@ export type SerializableCameraState = {
 
 export type SerializableFloatingWindowState = {
   id: string;
+  kind?: "metadata" | "assistant-chat";
   title: string;
   subtitle?: string;
   metadataNodeId?: string;
+  assistantConversationId?: string;
   x: number;
   y: number;
   width: number;
@@ -44,6 +52,10 @@ export type ViewerStateV1 = {
     sliceName: string;
     sliceParamsDraft: SliceLayerParams;
   };
+  automation: {
+    pipelines: AutomationPipeline[];
+    customTools?: AutomationCustomTool[];
+  };
 };
 
 export type ViewerStatePatchV1 = {
@@ -52,6 +64,7 @@ export type ViewerStatePatchV1 = {
   camera?: Partial<ViewerStateV1["camera"]>;
   scene?: Partial<ViewerStateV1["scene"]>;
   ui?: Partial<ViewerStateV1["ui"]>;
+  automation?: Partial<ViewerStateV1["automation"]>;
 };
 
 export const DEFAULT_CAMERA_STATE: SerializableCameraState = {
@@ -76,9 +89,11 @@ function sanitizeFloatingWindows(windows: unknown): SerializableFloatingWindowSt
       if (typeof candidate.title !== "string" || !candidate.title.trim()) return null;
       return {
         id: candidate.id,
+        kind: candidate.kind === "assistant-chat" ? "assistant-chat" : candidate.kind === "metadata" ? "metadata" : undefined,
         title: candidate.title,
         subtitle: typeof candidate.subtitle === "string" ? candidate.subtitle : undefined,
         metadataNodeId: typeof candidate.metadataNodeId === "string" ? candidate.metadataNodeId : undefined,
+        assistantConversationId: typeof candidate.assistantConversationId === "string" ? candidate.assistantConversationId : undefined,
         x: readFiniteNumber(candidate.x, 80 + index * 24),
         y: readFiniteNumber(candidate.y, 80 + index * 24),
         width: Math.max(260, readFiniteNumber(candidate.width, 640)),
@@ -149,6 +164,8 @@ export function createViewerState(params: {
   inspectorCollapsed: boolean;
   windows?: SerializableFloatingWindowState[];
   camera: SerializableCameraState;
+  automationPipelines?: AutomationPipeline[];
+  automationCustomTools?: AutomationCustomTool[];
 }): ViewerStateV1 {
   return {
     version: 1,
@@ -172,6 +189,10 @@ export function createViewerState(params: {
       sliceVolumeLayerId: params.sliceVolumeLayerId,
       sliceName: params.sliceName,
       sliceParamsDraft: params.sliceParamsDraft,
+    },
+    automation: {
+      pipelines: sanitizeAutomationPipelines(params.automationPipelines ?? []),
+      customTools: sanitizeAutomationCustomTools(params.automationCustomTools ?? []),
     },
   };
 }
@@ -205,6 +226,16 @@ export function mergeViewerState(
       ...(patch.ui ?? {}),
       sliceParamsDraft: patch.ui?.sliceParamsDraft ?? base.ui.sliceParamsDraft,
     },
+    automation: {
+      ...base.automation,
+      ...(patch.automation ?? {}),
+      pipelines: sanitizeAutomationPipelines(
+        patch.automation?.pipelines ?? base.automation?.pipelines ?? []
+      ),
+      customTools: sanitizeAutomationCustomTools(
+        patch.automation?.customTools ?? base.automation?.customTools ?? []
+      ),
+    },
   };
 }
 
@@ -212,6 +243,7 @@ export function parseViewerState(raw: string): ViewerStateV1 {
   const parsed = JSON.parse(raw) as Partial<ViewerStateV1> & {
     camera?: Partial<SerializableCameraState>;
     scene?: Partial<ViewerStateV1["scene"]>;
+    automation?: Partial<ViewerStateV1["automation"]>;
   };
 
   if (!parsed || parsed.version !== 1) {
@@ -241,6 +273,10 @@ export function parseViewerState(raw: string): ViewerStateV1 {
       yaw: parsed.camera.yaw ?? DEFAULT_CAMERA_STATE.yaw,
       pitch: parsed.camera.pitch ?? DEFAULT_CAMERA_STATE.pitch,
       fovDeg: parsed.camera.fovDeg ?? DEFAULT_CAMERA_STATE.fovDeg,
+    },
+    automation: {
+      pipelines: sanitizeAutomationPipelines(parsed.automation?.pipelines ?? []),
+      customTools: sanitizeAutomationCustomTools(parsed.automation?.customTools ?? []),
     },
   };
 }

@@ -95,6 +95,9 @@ const DEMO_STATE: ViewerStateV1 = {
       opacity: 1,
     },
   },
+  automation: {
+    pipelines: [],
+  },
 };
 
 export default function ExampleParentEmbed() {

@@ -17,6 +17,8 @@ export type ToolId =
   | "select"
   | "pencil"
   | "slice"
+  | "pipeline"
+  | "assistant"
   | "data"
   | "search"
   | "library"
@@ -31,6 +33,22 @@ export type HistoryMenuItem = {
   meta?: string;
 };
 
+export type PipelineMenuItem = {
+  id: string;
+  name: string;
+  description?: string;
+  active: boolean;
+};
+
+const PIPELINE_DESCRIPTION_MAX_CHARS = 96;
+
+function getPipelineDescriptionPreview(description?: string): string {
+  const normalized = description?.trim();
+  if (!normalized) return "No description yet.";
+  if (normalized.length <= PIPELINE_DESCRIPTION_MAX_CHARS) return normalized;
+  return `${normalized.slice(0, PIPELINE_DESCRIPTION_MAX_CHARS - 1).trimEnd()}…`;
+}
+
 type ToolDefinition = {
   id: ToolId;
   label: string;
@@ -41,6 +59,7 @@ const TOOLS: ToolDefinition[] = [
   { id: "select", label: "Select" },
   { id: "pencil", label: "Draw" },
   { id: "slice", label: "Browse slices" },
+  { id: "pipeline", label: "Automation pipelines" },
 ];
 
 const CAMERA_MODE_OPTIONS: Array<{
@@ -63,6 +82,7 @@ const ANNOTATION_COLORS = [
   "#f472b6",
   "#ffffff",
 ];
+const UI_FONT_FAMILY = "sans-serif";
 
 const SHAPE_GROUP_FORMS: AnnotationShape[] = ["rectangle", "circle"];
 const PRIMARY_ANNOTATION_TOOLS: Array<AnnotationShape | "shape"> = [
@@ -128,6 +148,26 @@ function Icon({ id }: { id: ToolId }) {
           <path d="M12 11.5v8" />
         </svg>
       );
+    case "pipeline":
+      return (
+        <svg {...common} strokeWidth={1.65}>
+          <circle cx="9" cy="13" r="4.1" />
+          <circle cx="16.4" cy="7.4" r="3" />
+          <circle cx="17.1" cy="17.1" r="2.35" />
+          <path d="M9 8.9v1.3" />
+          <path d="M9 15.8v1.3" />
+          <path d="M4.9 13h1.3" />
+          <path d="M11.8 13h1.3" />
+          <path d="M6.1 10.1l.9.9" />
+          <path d="M11 15l.9.9" />
+          <path d="M11.9 10.1l-.9.9" />
+          <path d="M7 15l-.9.9" />
+          <path d="M16.4 4.4v1" />
+          <path d="M16.4 9.4v1" />
+          <path d="M13.4 7.4h1" />
+          <path d="M18.4 7.4h1" />
+        </svg>
+      );
     case "data":
       return (
         <svg {...common}>
@@ -183,6 +223,137 @@ function Icon({ id }: { id: ToolId }) {
     default:
       return null;
   }
+}
+
+function AssistantToolbarIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />
+      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />
+    </svg>
+  );
+}
+
+function AssistantToolButton({
+  active,
+  onClick,
+  onSubmit,
+}: {
+  active: boolean;
+  onClick: () => void;
+  onSubmit: (prompt: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const closeTimeoutRef = useRef<number | null>(null);
+
+  function showMenu() {
+    if (closeTimeoutRef.current !== null) {
+      window.clearTimeout(closeTimeoutRef.current);
+      closeTimeoutRef.current = null;
+    }
+    setOpen(true);
+  }
+
+  function scheduleClose() {
+    if (closeTimeoutRef.current !== null) window.clearTimeout(closeTimeoutRef.current);
+    closeTimeoutRef.current = window.setTimeout(() => {
+      if (!prompt.trim()) setOpen(false);
+    }, 220);
+  }
+
+  function submit() {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    setPrompt("");
+    setOpen(false);
+    onSubmit(trimmed);
+  }
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={showMenu}
+      onMouseLeave={scheduleClose}
+    >
+      <ToolButton id="assistant" label="Assistant" active={active} onClick={onClick} icon={<AssistantToolbarIcon />} />
+      {open ? (
+        <div
+          data-theme-surface="panel"
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: "calc(100% + 12px)",
+            transform: "translateX(-50%)",
+            width: 340,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(12,14,18,0.96)",
+            color: "white",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
+            backdropFilter: "blur(14px)",
+            padding: 10,
+            display: "grid",
+            gap: 8,
+            fontFamily: UI_FONT_FAMILY,
+            zIndex: 70,
+          }}
+          onMouseEnter={showMenu}
+          onMouseLeave={scheduleClose}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div style={{ fontSize: 12, fontWeight: 900 }}>Ask assistant</div>
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey) return;
+              event.preventDefault();
+              submit();
+            }}
+            placeholder="Ask a quick question..."
+            rows={3}
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "rgba(255,255,255,0.06)",
+              color: "white",
+              padding: "9px 10px",
+              fontSize: 13,
+              lineHeight: 1.35,
+              outline: "none",
+              resize: "none",
+              fontFamily: UI_FONT_FAMILY,
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!prompt.trim()}
+              style={{
+                minHeight: 30,
+                borderRadius: 8,
+                border: "1px solid rgba(120,190,255,0.42)",
+                background: "rgba(120,190,255,0.16)",
+                color: "white",
+                padding: "0 12px",
+                cursor: prompt.trim() ? "pointer" : "not-allowed",
+                opacity: prompt.trim() ? 1 : 0.55,
+                fontSize: 12,
+                fontWeight: 800,
+                fontFamily: UI_FONT_FAMILY,
+              }}
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function AnnotationModeIcon({ shape }: { shape: AnnotationShape | "shape" }) {
@@ -311,7 +482,7 @@ function ResetTransformIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-function ToolButton({ id, label, active, onClick }: { id: ToolId; label: string; active: boolean; onClick: () => void; }) {
+function ToolButton({ id, label, active, onClick, icon }: { id: ToolId; label: string; active: boolean; onClick: () => void; icon?: ReactNode; }) {
   return (
     <button
       type="button"
@@ -332,8 +503,226 @@ function ToolButton({ id, label, active, onClick }: { id: ToolId; label: string;
         transition: "all 160ms ease",
       }}
     >
-      <Icon id={id} />
+      {icon ?? <Icon id={id} />}
     </button>
+  );
+}
+
+function PipelineToolButton({
+  active,
+  pipelines,
+  onClick,
+  onOpenPipeline,
+  onTogglePipeline,
+}: {
+  active: boolean;
+  pipelines: PipelineMenuItem[];
+  onClick: () => void;
+  onOpenPipeline: (pipelineId: string) => void;
+  onTogglePipeline: (pipelineId: string, active: boolean) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const pipelineCount = pipelines.length;
+  const activePipelineCount = pipelines.filter((pipeline) => pipeline.active).length;
+  const hasActive = activePipelineCount > 0;
+  const pipelinePanelWidth = pipelineCount <= 1 ? 240 : pipelineCount === 2 ? 438 : 640;
+  const pipelineGridColumns = pipelineCount <= 1 ? "minmax(0, 220px)" : "repeat(2, minmax(190px, 1fr))";
+  const pipelineGridScrollable = pipelineCount > 4;
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+      onFocus={() => setIsOpen(true)}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setIsOpen(false);
+      }}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        title="Automation pipelines"
+        aria-label="Automation pipelines"
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 14,
+          border: active ? "1px solid rgba(120,190,255,0.75)" : "1px solid rgba(255,255,255,0.08)",
+          background: active ? "rgba(120,190,255,0.18)" : "rgba(255,255,255,0.03)",
+          color: active ? "#d7eeff" : "rgba(255,255,255,0.82)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          transition: "all 160ms ease",
+          position: "relative",
+        }}
+      >
+        <Icon id="pipeline" />
+        {hasActive ? (
+          <span
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              right: 5,
+              top: 5,
+              minWidth: 16,
+              height: 16,
+              borderRadius: 999,
+              background: "rgba(120,190,255,0.96)",
+              color: "#07111d",
+              fontSize: 10,
+              fontWeight: 900,
+              lineHeight: "16px",
+              textAlign: "center",
+              padding: "0 4px",
+              boxSizing: "border-box",
+            }}
+          >
+            {activePipelineCount}
+          </span>
+        ) : null}
+      </button>
+
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          left: -12,
+          right: -12,
+          bottom: "100%",
+          height: 14,
+          pointerEvents: isOpen ? "auto" : "none",
+        }}
+      />
+      <div
+        data-theme-surface="panel"
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: "calc(100% + 12px)",
+          transform: isOpen ? "translate(-50%, 0)" : "translate(-50%, 8px)",
+          width: pipelinePanelWidth,
+          maxWidth: "min(640px, calc(100vw - 32px))",
+          borderRadius: 8,
+          border: "1px solid rgba(255,255,255,0.12)",
+          background: "rgba(12,14,18,0.94)",
+          boxShadow: "0 16px 42px rgba(0,0,0,0.42)",
+          backdropFilter: "blur(14px)",
+          padding: 10,
+          opacity: isOpen ? 1 : 0,
+          visibility: isOpen ? "visible" : "hidden",
+          pointerEvents: isOpen ? "auto" : "none",
+          transition: "opacity 150ms ease, transform 170ms ease, visibility 150ms ease",
+          color: "white",
+          fontFamily: UI_FONT_FAMILY,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 800 }}>Automation</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
+            {activePipelineCount}/{pipelineCount} active
+          </div>
+        </div>
+        <div
+          style={{
+            marginTop: 8,
+            display: "grid",
+            gridTemplateColumns: pipelineGridColumns,
+            gap: 8,
+            maxHeight: pipelineGridScrollable ? 304 : "none",
+            overflowY: pipelineGridScrollable ? "auto" : "visible",
+            overflowX: "hidden",
+            paddingRight: pipelineGridScrollable ? 4 : 0,
+          }}
+        >
+          {pipelines.length > 0 ? (
+            pipelines.map((pipeline) => {
+              const description = getPipelineDescriptionPreview(pipeline.description);
+
+              return (
+                <div
+                  key={pipeline.id}
+                  style={{
+                    position: "relative",
+                    minWidth: 0,
+                    borderRadius: 8,
+                    background: "rgba(255,255,255,0.05)",
+                    padding: "8px 48px 8px 8px",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpenPipeline(pipeline.id)}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "rgba(255,255,255,0.92)",
+                      padding: 0,
+                      textAlign: "left",
+                      fontFamily: UI_FONT_FAMILY,
+                      cursor: "pointer",
+                      minWidth: 0,
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pipeline.name}</div>
+                    <div
+                      title={pipeline.description?.trim() || description}
+                      style={{
+                        marginTop: 4,
+                        minHeight: 30,
+                        color: "rgba(255,255,255,0.58)",
+                        fontSize: 11,
+                        fontWeight: 500,
+                        lineHeight: 1.35,
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {description}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${pipeline.active ? "Disable" : "Enable"} ${pipeline.name}`}
+                    title={pipeline.active ? "Disable automation" : "Enable automation"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onTogglePipeline(pipeline.id, !pipeline.active);
+                    }}
+                    style={{
+                      position: "absolute",
+                      top: 8,
+                      right: 8,
+                      width: 34,
+                      height: 20,
+                      borderRadius: 999,
+                      border: pipeline.active ? "1px solid rgba(120,190,255,0.58)" : "1px solid rgba(255,255,255,0.12)",
+                      background: pipeline.active ? "rgba(120,190,255,0.22)" : "rgba(255,255,255,0.07)",
+                      padding: 2,
+                      cursor: "pointer",
+                      display: "flex",
+                      justifyContent: pipeline.active ? "flex-end" : "flex-start",
+                      fontFamily: UI_FONT_FAMILY,
+                    }}
+                  >
+                    <span style={{ width: 14, height: 14, borderRadius: 999, background: pipeline.active ? "rgba(160,215,255,0.96)" : "rgba(255,255,255,0.42)" }} />
+                  </button>
+                </div>
+              );
+            })
+          ) : (
+            <div style={{ flex: "1 1 auto", borderRadius: 8, background: "rgba(255,255,255,0.05)", padding: "8px 10px", fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+              No pipelines
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2454,6 +2843,12 @@ export default function BottomToolbar({
   onRestoreWindow,
   onCloseWindow,
   onCreateNoteAnnotation,
+  pipelines = [],
+  onOpenPipeline,
+  onTogglePipeline,
+  assistantOpen = false,
+  onToggleAssistant,
+  onQuickAssistantSubmit,
 }: {
   activeTool: ToolId;
   onToolChange: (tool: ToolId) => void;
@@ -2525,6 +2920,12 @@ export default function BottomToolbar({
   onRestoreWindow?: (id: string) => void;
   onCloseWindow?: (id: string) => void;
   onCreateNoteAnnotation?: () => void;
+  pipelines?: PipelineMenuItem[];
+  onOpenPipeline?: (pipelineId: string) => void;
+  onTogglePipeline?: (pipelineId: string, active: boolean) => void;
+  assistantOpen?: boolean;
+  onToggleAssistant?: () => void;
+  onQuickAssistantSubmit?: (prompt: string) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -2635,9 +3036,25 @@ export default function BottomToolbar({
           );
         }
 
+        if (tool.id === "pipeline") {
+          return (
+            <PipelineToolButton
+              key={tool.id}
+              active={activeTool === "pipeline"}
+              pipelines={pipelines}
+              onClick={() => onToolChange(tool.id)}
+              onOpenPipeline={(pipelineId) => {
+                onOpenPipeline?.(pipelineId);
+                onToolChange("pipeline");
+              }}
+              onTogglePipeline={onTogglePipeline ?? (() => {})}
+            />
+          );
+        }
+
         return <ToolButton key={tool.id} id={tool.id} label={tool.label} active={isActive} onClick={() => onToolChange(tool.id)} />;
       }),
-    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen]
+    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen, pipelines, onOpenPipeline, onTogglePipeline]
   );
 
   return (
@@ -2718,6 +3135,11 @@ export default function BottomToolbar({
 	          <HistoryButton direction="redo" disabled={!canRedo} onClick={() => onRedo?.()} items={redoItems} onJump={onJumpRedo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
 	          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
 	          {toolbarButtons}
+            <AssistantToolButton
+              active={assistantOpen}
+              onClick={() => onToggleAssistant?.()}
+              onSubmit={onQuickAssistantSubmit ?? (() => {})}
+            />
 	          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
 	          <WindowManagerToolButton
 	            windows={windows}

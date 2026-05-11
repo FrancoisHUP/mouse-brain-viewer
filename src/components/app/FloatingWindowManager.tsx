@@ -3,9 +3,11 @@ import type { CSSProperties, ReactNode } from "react";
 
 export type FloatingWindowState = {
   id: string;
+  kind?: "metadata" | "assistant-chat";
   title: string;
   subtitle?: string;
   metadataNodeId?: string;
+  assistantConversationId?: string;
   x: number;
   y: number;
   width: number;
@@ -49,7 +51,7 @@ const MIN_WIDTH = 360;
 const MIN_HEIGHT = 260;
 const SNAP_DISTANCE = 28;
 const SNAP_MARGIN = 14;
-const WINDOW_STACK_Z = 35;
+const WINDOW_STACK_Z = 48;
 
 type ResizeEdge = "n" | "e" | "s" | "w";
 

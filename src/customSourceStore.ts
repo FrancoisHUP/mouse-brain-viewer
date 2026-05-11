@@ -273,6 +273,48 @@ export function renameCustomExternalSource(sourceId: string, nextName: string) {
   return updatedSource;
 }
 
+export function updateCustomExternalSource(
+  sourceId: string,
+  patch: {
+    name?: string;
+    url?: string;
+    remoteFormat?: RemoteDataFormat;
+    remoteContentKind?: RemoteContentKind;
+    provider?: CustomExternalSource["provider"];
+    availableScales?: CustomExternalSourceScale[];
+    recommendedResolution?: RemoteOmeResolution;
+    inspectionError?: string | null;
+  }
+) {
+  const data = loadAnonymousUserData();
+  let updatedSource: CustomExternalSource | null = null;
+
+  data.customSources = data.customSources.map((source) => {
+    if (source.id !== sourceId) return source;
+
+    const nextName = typeof patch.name === "string" ? patch.name.trim() : source.name;
+    const nextUrl = typeof patch.url === "string" ? patch.url.trim() : source.url;
+    if (!nextName || !nextUrl) return source;
+
+    updatedSource = {
+      ...source,
+      name: nextName,
+      url: nextUrl,
+      remoteFormat: patch.remoteFormat ?? source.remoteFormat,
+      remoteContentKind: patch.remoteContentKind ?? source.remoteContentKind,
+      provider: patch.provider ?? source.provider,
+      availableScales: patch.availableScales ? [...patch.availableScales] : source.availableScales,
+      recommendedResolution: patch.recommendedResolution ?? source.recommendedResolution,
+      inspectionError: patch.inspectionError ?? source.inspectionError ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+    return updatedSource;
+  });
+
+  saveAnonymousUserData(data);
+  return updatedSource;
+}
+
 export function deleteCustomExternalSource(sourceId: string) {
   const data = loadAnonymousUserData();
   data.customSources = data.customSources.filter((source) => source.id !== sourceId);

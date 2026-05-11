@@ -13,10 +13,11 @@ import {
   type CustomExternalSource,
   type CustomExternalSourceScale,
 } from "./customSourceStore";
-import { probeOmeZarrSource } from "./omeZarr";
-import { createLocalImportPreview, inspectLocalInputEntries, type LocalImportCandidate, type LocalImportPreview, type LocalInputEntry, type LocalInspectionProgress } from "./localDataHandlers";
+import { probeOmeZarrSource, type ProbedOmeZarrSource } from "./omeZarr";
+import { createLocalImportPreview, inspectLocalInputEntries, inspectStoredLocalDatasetById, type LocalImportCandidate, type LocalImportPreview, type LocalInputEntry, type LocalInspectionProgress } from "./localDataHandlers";
+import { listLocalDatasetRecords, type StoredLocalDatasetRecord } from "./localDataStore";
 
-type LayerCreationMode = "external" | "custom";
+type ImportPanelView = "library" | "import-external" | "import-local";
 
 type SourceIconKind =
   | "custom"
@@ -55,23 +56,29 @@ type CustomSourceUiState = {
   remoteResolution: RemoteOmeResolution;
 };
 
-function LinkIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M10 13a5 5 0 007.07 0l2.83-2.83a5 5 0 10-7.07-7.07L11 4" />
-      <path d="M14 11a5 5 0 00-7.07 0L4.1 13.83a5 5 0 107.07 7.07L13 20" />
-    </svg>
-  );
-}
+type LocalSourceUiState = {
+  status: "idle" | "loading" | "ready" | "error";
+  renderMode: Exclude<RemoteRenderMode, "auto">;
+  selectedResolution: string | null;
+  inspection?: LocalImportCandidate["inspection"];
+  error?: string | null;
+};
+
+type ExternalPathSuggestion = {
+  kind: "root" | "parent" | "metadata" | "dataset" | "entered";
+  label: string;
+  url: string;
+  description: string;
+};
+
+type ExternalDraftInspection = {
+  status: "idle" | "inspecting" | "ready" | "error";
+  normalizedUrl: string | null;
+  metadataFile: string | null;
+  probe: ProbedOmeZarrSource | null;
+  suggestions: ExternalPathSuggestion[];
+  message: string | null;
+};
 
 function DataIcon() {
   return (
@@ -106,6 +113,44 @@ function SearchIcon() {
     >
       <circle cx="11" cy="11" r="7" />
       <path d="M20 20l-3.5-3.5" />
+    </svg>
+  );
+}
+
+function ManageSourcesIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M14 5h5v5" />
+      <path d="M10 14 19 5" />
+      <path d="M19 14v4a1 1 0 0 1-1 1h-4" />
+      <path d="M5 10V6a1 1 0 0 1 1-1h4" />
+      <path d="M5 19l5-5" />
+    </svg>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M15 18l-6-6 6-6" />
     </svg>
   );
 }
@@ -155,8 +200,8 @@ function PreviewAxisTile({
     >
       <div
         style={{
-          minHeight: 64,
-          maxHeight: 64,
+          minHeight: 128,
+          maxHeight: 128,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -393,66 +438,6 @@ function SourceIcon({ icon }: { icon: SourceIconKind }) {
   );
 }
 
-function TabButton({
-  active,
-  title,
-  subtitle,
-  icon,
-  onClick,
-}: {
-  active: boolean;
-  title: string;
-  subtitle: string;
-  icon: React.ReactNode;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        flex: 1,
-        minWidth: 0,
-        borderRadius: 14,
-        border: active
-          ? "1px solid rgba(160,220,255,0.75)"
-          : "1px solid rgba(255,255,255,0.10)",
-        background: active
-          ? "rgba(120,190,255,0.16)"
-          : "rgba(255,255,255,0.04)",
-        color: "white",
-        textAlign: "left",
-        padding: 12,
-        cursor: "pointer",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: 9,
-            border: "1px solid rgba(255,255,255,0.10)",
-            background: "rgba(255,255,255,0.05)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
-          {icon}
-        </div>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 700 }}>{title}</div>
-          <div style={{ fontSize: 11, opacity: 0.72, marginTop: 4 }}>
-            {subtitle}
-          </div>
-        </div>
-      </div>
-    </button>
-  );
-}
-
 const ALLEN_URL =
   "https://storage.googleapis.com/sbh-assistant-data/allen_average_template.ome.zarr/";
 
@@ -617,6 +602,120 @@ function deriveSourceName(url: string): string {
   return last || "Custom OME-Zarr Source";
 }
 
+const EXTERNAL_METADATA_FILES = ["zarr.json", ".zattrs", ".zgroup", ".zarray"] as const;
+
+function normalizeExternalDraftUrl(rawUrl: string): { normalizedUrl: string | null; metadataFile: string | null } {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return { normalizedUrl: null, metadataFile: null };
+
+  try {
+    const parsed = new URL(trimmed);
+    let pathname = parsed.pathname.replace(/\/+$/, "");
+    let metadataFile: string | null = null;
+
+    for (const fileName of EXTERNAL_METADATA_FILES) {
+      const suffix = `/${fileName}`;
+      if (pathname.toLowerCase().endsWith(suffix.toLowerCase())) {
+        pathname = pathname.slice(0, -suffix.length);
+        metadataFile = fileName;
+        break;
+      }
+    }
+
+    const rootMatch = pathname.match(/^(.*?\.zarr)(?:\/.*)?$/i);
+    if (rootMatch) {
+      pathname = rootMatch[1];
+    }
+
+    parsed.pathname = pathname || "/";
+    parsed.search = "";
+    parsed.hash = "";
+
+    return {
+      normalizedUrl: parsed.toString().replace(/\/+$/, ""),
+      metadataFile,
+    };
+  } catch {
+    return { normalizedUrl: null, metadataFile: null };
+  }
+}
+
+function describeExternalScale(scale: CustomExternalSourceScale | ProbedOmeZarrSource["scales"][number]) {
+  return `${getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel} · ${scale.dims.z}×${scale.dims.y}×${scale.dims.x}`;
+}
+
+function buildExternalPathSuggestions(
+  rawUrl: string,
+  normalizedUrl: string | null,
+  probe: ProbedOmeZarrSource | null
+): ExternalPathSuggestion[] {
+  const suggestions: ExternalPathSuggestion[] = [];
+  const seen = new Set<string>();
+
+  function pushSuggestion(suggestion: ExternalPathSuggestion) {
+    const key = suggestion.url.trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    suggestions.push(suggestion);
+  }
+
+  const trimmed = rawUrl.trim();
+  if (trimmed) {
+    pushSuggestion({
+      kind: "entered",
+      label: "Typed path",
+      url: trimmed,
+      description: "Keep the exact URL you entered.",
+    });
+  }
+
+  if (normalizedUrl) {
+    pushSuggestion({
+      kind: "root",
+      label: "Detected dataset root",
+      url: normalizedUrl,
+      description: "Use the OME-Zarr root folder for import.",
+    });
+
+    for (const fileName of EXTERNAL_METADATA_FILES) {
+      pushSuggestion({
+        kind: "metadata",
+        label: fileName,
+        url: `${normalizedUrl}/${fileName}`,
+        description: "Jump to a metadata file under the detected root.",
+      });
+    }
+
+    try {
+      const parsed = new URL(normalizedUrl);
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      for (let index = segments.length - 1; index > 0; index -= 1) {
+        const parent = new URL(parsed.origin);
+        parent.pathname = `/${segments.slice(0, index).join("/")}`;
+        pushSuggestion({
+          kind: "parent",
+          label: `Parent ${segments[index - 1]}`,
+          url: parent.toString().replace(/\/+$/, ""),
+          description: "Go up one level from the detected dataset root.",
+        });
+      }
+    } catch {}
+  }
+
+  if (normalizedUrl && probe?.scales?.length) {
+    for (const scale of probe.scales) {
+      pushSuggestion({
+        kind: "dataset",
+        label: scale.datasetPath || ".",
+        url: `${normalizedUrl}/${scale.datasetPath || ""}`.replace(/\/+$/, ""),
+        description: describeExternalScale(scale),
+      });
+    }
+  }
+
+  return suggestions.slice(0, 10);
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -627,6 +726,12 @@ function formatBytes(bytes: number): string {
     unitIndex += 1;
   }
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Unknown";
+  return date.toLocaleString();
 }
 
 function formatVoxelSizeValue(value: number | null | undefined): string {
@@ -699,14 +804,17 @@ function buildCustomLayerName(item: ExternalSourceItem, renderMode: Exclude<Remo
 
 export default function ImportDataPanel({
   open,
+  initialView = "library",
   onClose,
   onAddExternalSources,
-  onAddLocalImports,
+  onImportLocalSources,
+  onAddStoredLocalSources,
   onOpenLocalDatasetManager,
   initialLocalEntries,
   onConsumeInitialLocalEntries,
 }: {
   open: boolean;
+  initialView?: ImportPanelView;
   onClose: () => void;
   onAddDrawingLayer?: (name?: string) => void;
   onAddExternalSources: (
@@ -721,25 +829,35 @@ export default function ImportDataPanel({
       remoteResolution?: RemoteOmeResolution;
     }>
   ) => void;
-  onAddLocalImports: (
+  onImportLocalSources: (
     candidates: LocalImportCandidate[]
+  ) => Promise<{ importedCount: number; importedRecords: StoredLocalDatasetRecord[]; errors: string[] }> | { importedCount: number; importedRecords: StoredLocalDatasetRecord[]; errors: string[] };
+  onAddStoredLocalSources: (
+    entries: Array<{ datasetId: string; renderMode?: Exclude<RemoteRenderMode, "auto">; selectedResolution?: string }>
   ) => Promise<{ addedCount: number; errors: string[] }> | { addedCount: number; errors: string[] };
   onOpenLocalDatasetManager?: () => void;
   initialLocalEntries?: LocalInputEntry[] | null;
   onConsumeInitialLocalEntries?: () => void;
 }) {
-  const [mode, setMode] = useState<LayerCreationMode>("external");
+  const [panelView, setPanelView] = useState<ImportPanelView>(initialView);
   const [isDragging, setIsDragging] = useState(false);
 
   const [externalSources, setExternalSources] = useState<ExternalSourceItem[]>([]);
   const [selectedExternalIds, setSelectedExternalIds] = useState<string[]>([]);
+  const [localDatasetRecords, setLocalDatasetRecords] = useState<StoredLocalDatasetRecord[]>([]);
+  const [selectedLocalDatasetIds, setSelectedLocalDatasetIds] = useState<string[]>([]);
   const [customSourceUiState, setCustomSourceUiState] = useState<Record<string, CustomSourceUiState>>({});
-  const [showAddExternalForm, setShowAddExternalForm] = useState(false);
+  const [localSourceUiState, setLocalSourceUiState] = useState<Record<string, LocalSourceUiState>>({});
   const [newExternalName, setNewExternalName] = useState("");
   const [newExternalUrl, setNewExternalUrl] = useState("");
-  const [inspectError, setInspectError] = useState<string | null>(null);
-  const [isInspectingSource, setIsInspectingSource] = useState(false);
-  const [addSourceSuccessMessage, setAddSourceSuccessMessage] = useState<string | null>(null);
+  const [externalDraftInspection, setExternalDraftInspection] = useState<ExternalDraftInspection>({
+    status: "idle",
+    normalizedUrl: null,
+    metadataFile: null,
+    probe: null,
+    suggestions: [],
+    message: null,
+  });
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -749,6 +867,7 @@ export default function ImportDataPanel({
   const [localImportFeedback, setLocalImportFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [pendingLocalImports, setPendingLocalImports] = useState<LocalImportCandidate[]>([]);
   const [isInspectingLocalImport, setIsInspectingLocalImport] = useState(false);
+  const [isSubmittingSelection, setIsSubmittingSelection] = useState(false);
   const [localInspectionProgress, setLocalInspectionProgress] = useState<LocalInspectionProgress | null>(null);
   const [localImportPreviews, setLocalImportPreviews] = useState<Record<string, { key: string; status: "loading" | "ready" | "error"; preview?: LocalImportPreview; error?: string }>>({});
 
@@ -756,6 +875,13 @@ export default function ImportDataPanel({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const addSourceNameInputRef = useRef<HTMLInputElement | null>(null);
   const localInspectionAbortRef = useRef<AbortController | null>(null);
+  const externalInspectRequestRef = useRef(0);
+
+  async function refreshLocalDatasetRecords() {
+    const records = await listLocalDatasetRecords();
+    setLocalDatasetRecords(records);
+    setSelectedLocalDatasetIds((prev) => prev.filter((id) => records.some((record) => record.id === id)));
+  }
 
   useEffect(() => {
     const customSources = getCustomExternalSources().map(toExternalSourceItem);
@@ -763,8 +889,14 @@ export default function ImportDataPanel({
   }, []);
 
   useEffect(() => {
+    if (!open) return;
+    setPanelView(initialView);
+    void refreshLocalDatasetRecords();
+  }, [initialView, open]);
+
+  useEffect(() => {
     if (!open || !initialLocalEntries?.length) return;
-    setMode("custom");
+    setPanelView("import-local");
     onConsumeInitialLocalEntries?.();
     void handleLocalDropInput(initialLocalEntries);
   }, [open, initialLocalEntries, onConsumeInitialLocalEntries]);
@@ -793,15 +925,21 @@ export default function ImportDataPanel({
 
   useEffect(() => {
     if (!open) {
-      setMode("external");
+      setPanelView(initialView);
       setIsDragging(false);
       setSelectedExternalIds([]);
-      setShowAddExternalForm(false);
+      setSelectedLocalDatasetIds([]);
+      setLocalSourceUiState({});
       setNewExternalName("");
       setNewExternalUrl("");
-      setInspectError(null);
-      setIsInspectingSource(false);
-      setAddSourceSuccessMessage(null);
+      setExternalDraftInspection({
+        status: "idle",
+        normalizedUrl: null,
+        metadataFile: null,
+        probe: null,
+        suggestions: [],
+        message: null,
+      });
       setShowSearch(false);
       setSearchQuery("");
       setEditingCustomSourceId(null);
@@ -812,10 +950,11 @@ export default function ImportDataPanel({
       setLocalImportFeedback(null);
       setPendingLocalImports([]);
       setIsInspectingLocalImport(false);
+      setIsSubmittingSelection(false);
       setLocalInspectionProgress(null);
       setLocalImportPreviews({});
     }
-  }, [open]);
+  }, [initialView, open]);
 
   useEffect(() => {
     if (showSearch) {
@@ -827,13 +966,86 @@ export default function ImportDataPanel({
   }, [showSearch]);
 
   useEffect(() => {
-    if (showAddExternalForm) {
+    if (panelView === "import-external") {
       const id = window.setTimeout(() => {
         addSourceNameInputRef.current?.focus();
       }, 180);
       return () => window.clearTimeout(id);
     }
-  }, [showAddExternalForm]);
+  }, [panelView]);
+
+  useEffect(() => {
+    if (!open || panelView !== "import-external") return;
+
+    const trimmedUrl = newExternalUrl.trim();
+    const normalized = normalizeExternalDraftUrl(trimmedUrl);
+
+    if (!trimmedUrl) {
+      setExternalDraftInspection({
+        status: "idle",
+        normalizedUrl: null,
+        metadataFile: null,
+        probe: null,
+        suggestions: [],
+        message: null,
+      });
+      return;
+    }
+
+    if (!normalized.normalizedUrl) {
+      setExternalDraftInspection({
+        status: "error",
+        normalizedUrl: null,
+        metadataFile: null,
+        probe: null,
+        suggestions: [],
+        message: "Enter a valid public URL to inspect this source.",
+      });
+      return;
+    }
+
+    const requestId = ++externalInspectRequestRef.current;
+    setExternalDraftInspection({
+      status: "inspecting",
+      normalizedUrl: normalized.normalizedUrl,
+      metadataFile: normalized.metadataFile,
+      probe: null,
+      suggestions: buildExternalPathSuggestions(trimmedUrl, normalized.normalizedUrl, null),
+      message: normalized.metadataFile
+        ? `Detected ${normalized.metadataFile}; checking the dataset root automatically.`
+        : "Checking this path for OME-Zarr metadata.",
+    });
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const probe = await probeOmeZarrSource(normalized.normalizedUrl!, "intensity");
+          if (externalInspectRequestRef.current !== requestId) return;
+          setExternalDraftInspection({
+            status: "ready",
+            normalizedUrl: probe.url,
+            metadataFile: normalized.metadataFile,
+            probe,
+            suggestions: buildExternalPathSuggestions(trimmedUrl, probe.url, probe),
+            message: "This path can be saved as a reusable external source.",
+          });
+        } catch (error) {
+          if (externalInspectRequestRef.current !== requestId) return;
+          const message = error instanceof Error ? error.message : "Failed to inspect the external source.";
+          setExternalDraftInspection({
+            status: "error",
+            normalizedUrl: normalized.normalizedUrl,
+            metadataFile: normalized.metadataFile,
+            probe: null,
+            suggestions: buildExternalPathSuggestions(trimmedUrl, normalized.normalizedUrl, null),
+            message,
+          });
+        }
+      })();
+    }, 420);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [newExternalUrl, open, panelView]);
 
   useEffect(() => {
     if (!openCustomSourceMenuId) return;
@@ -937,10 +1149,67 @@ export default function ImportDataPanel({
     });
   }, [groupedExternalSources, searchQuery]);
 
+  const filteredLocalDatasetRecords = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return localDatasetRecords;
+    return localDatasetRecords.filter((record) => {
+      const haystack = [
+        record.fileName,
+        record.kind === "tree" ? "folder dataset" : "single file",
+        record.mimeType ?? "",
+      ].join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [localDatasetRecords, searchQuery]);
+
   const selectedExternalSources = useMemo(
     () => externalSources.filter((item) => selectedExternalIds.includes(item.id)),
     [externalSources, selectedExternalIds]
   );
+
+  useEffect(() => {
+    if (panelView !== "library") return;
+    for (const datasetId of localDatasetRecords.map((record) => record.id)) {
+      const existing = localSourceUiState[datasetId];
+      if (existing?.status === "loading" || existing?.status === "ready") continue;
+      setLocalSourceUiState((prev) => ({
+        ...prev,
+        [datasetId]: {
+          status: "loading",
+          renderMode: prev[datasetId]?.renderMode ?? "slices",
+          selectedResolution: prev[datasetId]?.selectedResolution ?? null,
+          error: null,
+        },
+      }));
+      void inspectStoredLocalDatasetById(datasetId)
+        .then((candidate) => {
+          const availableScales = candidate.inspection.info.availableScales ?? [];
+          const preferredScale = availableScales.find((scale) => scale.canLoad) ?? availableScales[0] ?? null;
+          setLocalSourceUiState((prev) => ({
+            ...prev,
+            [datasetId]: {
+              status: "ready",
+              renderMode: prev[datasetId]?.renderMode ?? "slices",
+              selectedResolution: prev[datasetId]?.selectedResolution ?? candidate.inspection.info.selectedResolution ?? preferredScale?.resolutionLabel ?? null,
+              inspection: candidate.inspection,
+              error: null,
+            },
+          }));
+        })
+        .catch((error) => {
+          setLocalSourceUiState((prev) => ({
+            ...prev,
+            [datasetId]: {
+              status: "error",
+              renderMode: prev[datasetId]?.renderMode ?? "slices",
+              selectedResolution: prev[datasetId]?.selectedResolution ?? null,
+              error: error instanceof Error ? error.message : "Failed to inspect dataset.",
+            },
+          }));
+        });
+    }
+  }, [localDatasetRecords, localSourceUiState, panelView]);
+
   useEffect(() => {
     let cancelled = false;
     const volumeCandidates = pendingLocalImports.filter((candidate) => candidate.inspection.kind === "volume");
@@ -1000,6 +1269,32 @@ export default function ImportDataPanel({
     );
   }
 
+  function toggleLocalDatasetSelection(id: string) {
+    setSelectedLocalDatasetIds((prev) =>
+      prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id]
+    );
+  }
+
+  function setLocalSourceRenderMode(datasetId: string, renderMode: Exclude<RemoteRenderMode, "auto">) {
+    setLocalSourceUiState((prev) => ({
+      ...prev,
+      [datasetId]: {
+        ...(prev[datasetId] ?? { status: "idle", selectedResolution: null, renderMode }),
+        renderMode,
+      },
+    }));
+  }
+
+  function setLocalSourceResolution(datasetId: string, selectedResolution: string) {
+    setLocalSourceUiState((prev) => ({
+      ...prev,
+      [datasetId]: {
+        ...(prev[datasetId] ?? { status: "idle", selectedResolution, renderMode: "slices" }),
+        selectedResolution,
+      },
+    }));
+  }
+
   function toggleGroupedExternalDefault(group: ExternalSourceGroup) {
     const selectedItem = group.items.find((item) => selectedExternalIds.includes(item.id));
 
@@ -1029,61 +1324,63 @@ export default function ImportDataPanel({
     });
   }
 
-  async function handleInspectAndAddCustomExternalSource() {
-    const url = newExternalUrl.trim();
-    const name = newExternalName.trim() || deriveSourceName(url);
-    if (!url) return;
+  function handleApplyExternalUrlSuggestion(url: string) {
+    setNewExternalUrl(url);
+  }
 
-    setIsInspectingSource(true);
-    setInspectError(null);
-
-    try {
-      const probe = await probeOmeZarrSource(url, "intensity");
-      const newSource = addCustomExternalSource({
-        name,
-        url,
-        remoteFormat: "ome-zarr",
-        remoteContentKind: "intensity",
-        provider: inferProvider(url),
-        availableScales: probe.scales.map((scale) => ({
-          datasetIndex: scale.datasetIndex,
-          datasetPath: scale.datasetPath,
-          resolutionUm: scale.resolutionUm,
-          resolutionLabel: scale.resolutionLabel,
-          voxelSizeUm: scale.voxelSizeUm,
-          rawShape: scale.rawShape,
-          dims: scale.dims,
-          estimatedBytes: scale.estimatedBytes,
-          estimatedMemoryBytes: scale.estimatedMemoryBytes,
-          canLoad: scale.canLoad,
-        })),
-        recommendedResolution: probe.recommendedScale?.resolutionLabel,
-      });
-
-      const externalItem = toExternalSourceItem(newSource);
-      setExternalSources((prev) => [externalItem, ...prev]);
-      setCustomSourceUiState((prev) => ({
-        ...prev,
-        [externalItem.id]: {
-          renderMode: "volume",
-          remoteResolution: getDefaultCustomResolution(externalItem),
-        },
-      }));
-      setSelectedExternalIds((prev) => [...prev, externalItem.id]);
-      setAddSourceSuccessMessage("Successfully added");
-      setNewExternalName("");
-      setNewExternalUrl("");
-      setSearchQuery("");
-      window.setTimeout(() => {
-        setAddSourceSuccessMessage(null);
-        setShowAddExternalForm(false);
-      }, 3200);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to inspect the external source.";
-      setInspectError(message);
-    } finally {
-      setIsInspectingSource(false);
+  function handleSaveExternalDraftSource() {
+    if (externalDraftInspection.status !== "ready" || !externalDraftInspection.probe || !externalDraftInspection.normalizedUrl) {
+      return;
     }
+
+    const url = externalDraftInspection.normalizedUrl;
+    const probe = externalDraftInspection.probe;
+    const name = newExternalName.trim() || deriveSourceName(url);
+
+    const newSource = addCustomExternalSource({
+      name,
+      url,
+      remoteFormat: "ome-zarr",
+      remoteContentKind: "intensity",
+      provider: inferProvider(url),
+      availableScales: probe.scales.map((scale) => ({
+        datasetIndex: scale.datasetIndex,
+        datasetPath: scale.datasetPath,
+        resolutionUm: scale.resolutionUm,
+        resolutionLabel: scale.resolutionLabel,
+        voxelSizeUm: scale.voxelSizeUm,
+        rawShape: scale.rawShape,
+        dims: scale.dims,
+        estimatedBytes: scale.estimatedBytes,
+        estimatedMemoryBytes: scale.estimatedMemoryBytes,
+        canLoad: scale.canLoad,
+      })),
+      recommendedResolution: probe.recommendedScale?.resolutionLabel,
+    });
+
+    const externalItem = toExternalSourceItem(newSource);
+    setExternalSources((prev) => [externalItem, ...prev]);
+    setCustomSourceUiState((prev) => ({
+      ...prev,
+      [externalItem.id]: {
+        renderMode: "volume",
+        remoteResolution: getDefaultCustomResolution(externalItem),
+      },
+    }));
+    setSelectedExternalIds([externalItem.id]);
+    setSearchQuery("");
+    setShowSearch(false);
+    setPanelView("library");
+    setNewExternalName("");
+    setNewExternalUrl("");
+    setExternalDraftInspection({
+      status: "idle",
+      normalizedUrl: null,
+      metadataFile: null,
+      probe: null,
+      suggestions: [],
+      message: null,
+    });
   }
 
   function handleStartRenameCustomSource(item: ExternalSourceItem) {
@@ -1150,10 +1447,10 @@ export default function ImportDataPanel({
     }));
   }
 
-  function handleSubmit() {
-    if (mode !== "external") return;
-    if (!selectedExternalSources.length) return;
-
+  async function handleAddSelectedSources() {
+    if (isSubmittingSelection) return;
+    if (!selectedExternalSources.length && !selectedLocalDatasetIds.length) return;
+    setIsSubmittingSelection(true);
     const sourcesToAdd: Array<{
       id: string;
       name: string;
@@ -1198,15 +1495,23 @@ export default function ImportDataPanel({
       }];
     });
 
-    if (!sourcesToAdd.length) return;
-    onAddExternalSources(sourcesToAdd);
-  }
+    if (sourcesToAdd.length) {
+      onAddExternalSources(sourcesToAdd);
+    }
 
-  function setPendingImportRenderMode(importId: string, renderMode: Exclude<RemoteRenderMode, "auto">) {
-    setPendingLocalImports((prev) => prev.map((candidate) => candidate.id !== importId ? candidate : ({
-      ...candidate,
-      inspection: { ...candidate.inspection, renderMode },
-    })));
+    if (selectedLocalDatasetIds.length) {
+      try {
+        void onAddStoredLocalSources(selectedLocalDatasetIds.map((datasetId) => ({
+          datasetId,
+          renderMode: localSourceUiState[datasetId]?.inspection?.kind === "volume"
+            ? localSourceUiState[datasetId]?.renderMode ?? "slices"
+            : undefined,
+          selectedResolution: localSourceUiState[datasetId]?.selectedResolution ?? undefined,
+        })));
+      } catch {}
+    }
+
+    onClose();
   }
 
   function setPendingImportResolution(importId: string, resolutionLabel: string) {
@@ -1330,21 +1635,20 @@ export default function ImportDataPanel({
       setLocalImportFeedback(null);
     }
     try {
-      const candidates = await inspectLocalInputEntries(entries, {
-        signal: controller.signal,
-        onProgress: (progress) => setLocalInspectionProgress(progress),
-      });
-      if (controller.signal.aborted) return;
-      setPendingLocalImports(candidates.map((candidate) => {
-        const preferredScale = candidate.inspection.info.availableScales?.find((scale) => scale.canLoad) ?? candidate.inspection.info.availableScales?.[0] ?? null;
-        return {
-          ...candidate,
-          inspection: {
-            ...candidate.inspection,
-            renderMode: candidate.inspection.kind === "volume" ? (candidate.inspection.renderMode ?? "slices") : candidate.inspection.renderMode,
-            info: {
-              ...candidate.inspection.info,
-              selectedResolution: candidate.inspection.info.selectedResolution ?? preferredScale?.resolutionLabel ?? null,
+        const candidates = await inspectLocalInputEntries(entries, {
+          signal: controller.signal,
+          onProgress: (progress) => setLocalInspectionProgress(progress),
+        });
+        if (controller.signal.aborted) return;
+        setPendingLocalImports(candidates.map((candidate) => {
+          const preferredScale = candidate.inspection.info.availableScales?.find((scale) => scale.canLoad) ?? candidate.inspection.info.availableScales?.[0] ?? null;
+          return {
+            ...candidate,
+            inspection: {
+              ...candidate.inspection,
+              info: {
+                ...candidate.inspection.info,
+                selectedResolution: candidate.inspection.info.selectedResolution ?? preferredScale?.resolutionLabel ?? null,
               selectedDatasetPath: candidate.inspection.info.selectedDatasetPath ?? preferredScale?.datasetPath ?? null,
               dims: preferredScale?.dims ?? candidate.inspection.info.dims,
               rawShape: preferredScale?.rawShape ?? candidate.inspection.info.rawShape,
@@ -1355,7 +1659,7 @@ export default function ImportDataPanel({
       }));
       setLocalImportFeedback({
         tone: "success",
-        message: `${entries.length} file${entries.length > 1 ? "s" : ""} inspected. Choose what to add to the scene.`,
+        message: `${entries.length} file${entries.length > 1 ? "s" : ""} inspected. Import it to browser storage, then choose how to display it from Add layer.`,
       });
     } catch (error) {
       if (isAbortError(error)) {
@@ -1374,11 +1678,18 @@ export default function ImportDataPanel({
 
   async function handleConfirmLocalImports() {
     if (!pendingLocalImports.length) return;
-    const result = await onAddLocalImports(pendingLocalImports);
-    if (result.addedCount > 0 && result.errors.length === 0) {
-      setLocalImportFeedback({ tone: "success", message: `${result.addedCount} dataset${result.addedCount > 1 ? "s" : ""} imported locally.` });
+    const result = await onImportLocalSources(pendingLocalImports);
+    if (result.importedCount > 0) {
+      await refreshLocalDatasetRecords();
+      setSelectedLocalDatasetIds(result.importedRecords.map((record) => record.id));
+      setLocalImportFeedback({
+        tone: result.errors.length ? "error" : "success",
+        message: result.errors.length
+          ? result.errors.join(" ")
+          : `${result.importedCount} dataset${result.importedCount > 1 ? "s" : ""} imported locally.`,
+      });
       setPendingLocalImports([]);
-      window.setTimeout(() => { onClose(); }, 900);
+      setPanelView("library");
       return;
     }
     setLocalImportFeedback({ tone: "error", message: result.errors.join(" ") || "No supported local dataset could be imported." });
@@ -1432,7 +1743,7 @@ export default function ImportDataPanel({
           padding: 18,
         }}
       >
-        <style>{`@keyframes custom-source-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } @keyframes preview-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }`}</style>
+        <style>{`@keyframes custom-source-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } @keyframes preview-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } } @keyframes panel-swap-in { 0% { opacity: 0; transform: translateY(10px) scale(0.99); } 100% { opacity: 1; transform: translateY(0) scale(1); } } @keyframes import-status-pulse { 0% { opacity: 0.52; } 50% { opacity: 1; } 100% { opacity: 0.52; } }`}</style>
 
         <div
           style={{
@@ -1444,9 +1755,19 @@ export default function ImportDataPanel({
           }}
         >
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>Add layer</div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>
+              {panelView === "library"
+                ? "Add layer"
+                : panelView === "import-external"
+                ? "Add external source"
+                : "Import personal data"}
+            </div>
             <div data-theme-text="muted" style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
-              Choose a data source to add to the viewer.
+              {panelView === "library"
+                ? "Choose a data source to add to the viewer."
+                : panelView === "import-external"
+                ? "Save a hosted source first, then add it from the shared source library."
+                : "Import data into this browser first, then add it from the shared source library."}
             </div>
           </div>
 
@@ -1468,32 +1789,210 @@ export default function ImportDataPanel({
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
-          <TabButton
-            active={mode === "external"}
-            title="External source"
-            subtitle="Select one or more hosted sources"
-            icon={<LinkIcon />}
-            onClick={() => setMode("external")}
-          />
-          <TabButton
-            active={mode === "custom"}
-            title="Personnal data"
-            subtitle="Upload your own files"
-            icon={<DataIcon />}
-            onClick={() => setMode("custom")}
-          />
-        </div>
+        {panelView === "library" ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => onOpenLocalDatasetManager?.()}
+              style={{
+                height: 38,
+                padding: "0 12px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                color: "white",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <ManageSourcesIcon />
+              <span>Manage data sources</span>
+            </button>
 
-        <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-        {mode === "external" && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setPanelView("import-external")}
+                title="Add external source"
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "white",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <AddSourceIcon />
+              </button>
+              <button
+                type="button"
+                onClick={() => setPanelView("import-local")}
+                title="Add personal data"
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "white",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <DataIcon />
+              </button>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  height: 38,
+                  borderRadius: 10,
+                  border: showSearch
+                    ? "1px solid rgba(160,220,255,0.28)"
+                    : "1px solid rgba(255,255,255,0.10)",
+                  background: showSearch
+                    ? "rgba(120,190,255,0.08)"
+                    : "rgba(255,255,255,0.05)",
+                  overflow: "hidden",
+                  width: showSearch ? 240 : 38,
+                  transition: "width 180ms ease, background 180ms ease, border-color 180ms ease",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (showSearch && searchQuery) {
+                      setSearchQuery("");
+                      searchInputRef.current?.focus();
+                      return;
+                    }
+                    setShowSearch(true);
+                  }}
+                  title="Search sources"
+                  style={{
+                    width: 38,
+                    minWidth: 38,
+                    height: 38,
+                    border: "none",
+                    background: "transparent",
+                    color: "white",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <SearchIcon />
+                </button>
+
+                {showSearch ? (
+                  <>
+                    <input
+                      ref={searchInputRef}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onBlur={handleSearchBlur}
+                      placeholder="Search sources..."
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        height: 38,
+                        border: "none",
+                        background: "transparent",
+                        color: "white",
+                        outline: "none",
+                        padding: "0 8px 0 0",
+                        fontSize: 12,
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (searchQuery.trim()) {
+                          setSearchQuery("");
+                          searchInputRef.current?.focus();
+                        } else {
+                          setShowSearch(false);
+                        }
+                      }}
+                      title="Clear search"
+                      style={{
+                        width: 30,
+                        minWidth: 30,
+                        height: 38,
+                        border: "none",
+                        background: "transparent",
+                        color: "rgba(255,255,255,0.7)",
+                        cursor: "pointer",
+                        fontSize: 16,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: 0,
+                        flexShrink: 0,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
+            <button
+              type="button"
+              onClick={() => setPanelView("library")}
+              title="Back to sources"
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.05)",
+                color: "white",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <BackIcon />
+            </button>
+          </div>
+        )}
+
+        <div
+          key={panelView}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            animation: "panel-swap-in 220ms cubic-bezier(0.22, 1, 0.36, 1)",
+          }}
+        >
+        {panelView !== "import-local" && (
           <div
-            data-theme-surface="soft"
             style={{
-              borderRadius: 16,
-              border: "1px solid rgba(255,255,255,0.10)",
-              background: "rgba(255,255,255,0.03)",
-              padding: 16,
+              borderRadius: panelView === "import-external" ? 0 : 16,
+              border: panelView === "import-external" ? "none" : "1px solid rgba(255,255,255,0.10)",
+              background: panelView === "import-external" ? "transparent" : "rgba(255,255,255,0.03)",
+              padding: panelView === "import-external" ? 0 : 16,
               display: "flex",
               flexDirection: "column",
               minHeight: 0,
@@ -1502,7 +2001,7 @@ export default function ImportDataPanel({
           >
             <div
               style={{
-                display: "flex",
+                display: "none",
                 justifyContent: "space-between",
                 alignItems: "flex-start",
                 gap: 12,
@@ -1626,46 +2125,17 @@ export default function ImportDataPanel({
                   )}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddExternalForm((prev) => !prev);
-                    setInspectError(null);
-                  }}
-                  title={showAddExternalForm ? "Close custom source form" : "Add custom source"}
-                  style={{
-                    height: 38,
-                    minWidth: 38,
-                    padding: "0 11px",
-                    borderRadius: 10,
-                    border: showAddExternalForm
-                      ? "1px solid rgba(160,220,255,0.28)"
-                      : "1px solid rgba(255,255,255,0.10)",
-                    background: showAddExternalForm
-                      ? "rgba(120,190,255,0.10)"
-                      : "rgba(255,255,255,0.05)",
-                    color: "white",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transition:
-                      "background 180ms ease, border-color 180ms ease, transform 180ms ease",
-                  }}
-                >
-                  <AddSourceIcon />
-                </button>
               </div>
             </div>
 
             <div
               style={{
-                marginBottom: showAddExternalForm ? 14 : 0,
-                maxHeight: showAddExternalForm ? (addSourceSuccessMessage ? 84 : 178) : 0,
-                opacity: showAddExternalForm ? 1 : 0,
-                transform: showAddExternalForm ? "translateY(0)" : "translateY(-6px)",
+                marginBottom: panelView === "import-external" ? 14 : 0,
+                maxHeight: panelView === "import-external" ? 1000 : 0,
+                opacity: panelView === "import-external" ? 1 : 0,
+                transform: panelView === "import-external" ? "translateY(0)" : "translateY(-6px)",
                 overflow: "hidden",
-                pointerEvents: showAddExternalForm ? "auto" : "none",
+                pointerEvents: panelView === "import-external" ? "auto" : "none",
                 transition:
                   "max-height 240ms ease, opacity 180ms ease, transform 180ms ease, margin-bottom 240ms ease",
               }}
@@ -1679,181 +2149,223 @@ export default function ImportDataPanel({
                   padding: 14,
                 }}
               >
-                <div
-                  style={{
-                    position: "relative",
-                    minHeight: addSourceSuccessMessage ? 42 : 0,
-                  }}
-                >
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>
+                    Add custom external OME-Zarr source
+                  </div>
+
                   <div
+                    data-theme-text="muted"
                     style={{
-                      position: addSourceSuccessMessage ? "absolute" : "relative",
-                      inset: addSourceSuccessMessage ? 0 : "auto",
-                      opacity: addSourceSuccessMessage ? 0 : 1,
-                      transform: addSourceSuccessMessage ? "translateY(-6px)" : "translateY(0)",
-                      transition: "opacity 220ms ease, transform 220ms ease",
-                      pointerEvents: addSourceSuccessMessage ? "none" : "auto",
+                      fontSize: 11,
+                      opacity: 0.74,
+                      lineHeight: 1.45,
                     }}
                   >
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>
-                      Add custom external OME-Zarr source
-                    </div>
+                    Paste a public OME-Zarr URL. The panel checks the path, normalizes metadata-file links back to the dataset root, and shows nearby paths you can jump to while you validate the source.
+                  </div>
 
-                    <div
-                      data-theme-text="muted"
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1.6fr",
+                      gap: 10,
+                    }}
+                  >
+                    <input
+                      ref={addSourceNameInputRef}
+                      value={newExternalName}
+                      onChange={(e) => setNewExternalName(e.target.value)}
+                      placeholder="Source name (optional)"
                       style={{
-                        fontSize: 11,
-                        opacity: 0.74,
-                        marginTop: 6,
-                        marginBottom: 10,
-                        lineHeight: 1.45,
+                        width: "100%",
+                        height: 40,
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        background: "rgba(255,255,255,0.05)",
+                        color: "white",
+                        padding: "0 12px",
+                        boxSizing: "border-box",
+                        outline: "none",
                       }}
-                    >
-                      Paste a public OME-Zarr link to add your own dataset to the viewer.
-                    </div>
+                    />
 
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1.5fr auto",
-                        gap: 10,
-                      }}
-                    >
-                      <input
-                        ref={addSourceNameInputRef}
-                        value={newExternalName}
-                        onChange={(e) => setNewExternalName(e.target.value)}
-                        placeholder="Source name (optional)"
-                        style={{
-                          width: "100%",
-                          height: 40,
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.12)",
-                          background: "rgba(255,255,255,0.05)",
-                          color: "white",
-                          padding: "0 12px",
-                          boxSizing: "border-box",
-                          outline: "none",
-                        }}
-                      />
-
+                    <div style={{ position: "relative" }}>
                       <input
                         value={newExternalUrl}
                         onChange={(e) => setNewExternalUrl(e.target.value)}
-                        placeholder="https://.../dataset.ome.zarr/"
+                        placeholder="https://.../dataset.ome.zarr/.zattrs"
                         style={{
                           width: "100%",
                           height: 40,
                           borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.12)",
+                          border:
+                            externalDraftInspection.status === "ready"
+                              ? "1px solid rgba(120,220,150,0.35)"
+                              : externalDraftInspection.status === "error"
+                              ? "1px solid rgba(255,120,120,0.28)"
+                              : "1px solid rgba(255,255,255,0.12)",
                           background: "rgba(255,255,255,0.05)",
                           color: "white",
-                          padding: "0 12px",
+                          padding: "0 38px 0 12px",
                           boxSizing: "border-box",
                           outline: "none",
                         }}
                       />
 
-                      <button
-                        type="button"
-                        onClick={handleInspectAndAddCustomExternalSource}
-                        disabled={!newExternalUrl.trim() || isInspectingSource}
-                        style={{
-                          height: 40,
-                          padding: "0 14px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(160,220,255,0.35)",
-                          background: "rgba(120,190,255,0.18)",
-                          color: "white",
-                          cursor: "pointer",
-                          opacity: !newExternalUrl.trim() || isInspectingSource ? 0.5 : 1,
-                        }}
-                      >
-                        <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
-                          {isInspectingSource ? (
-                            <>
-                              <span
-                                style={{
-                                  width: 14,
-                                  height: 14,
-                                  borderRadius: 999,
-                                  border: "2px solid rgba(255,255,255,0.28)",
-                                  borderTopColor: "white",
-                                  display: "inline-block",
-                                  animation: "custom-source-spin 0.9s linear infinite",
-                                }}
-                              />
-                              Connecting
-                            </>
-                          ) : (
-                            <>
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M8 12h8" />
-                                <path d="M12 8v8" />
-                                <path d="M21 12a9 9 0 10-3.2 6.9" />
-                              </svg>
-                              Connect
-                            </>
-                          )}
-                        </span>
-                      </button>
-                    </div>
-
-                    {inspectError ? (
                       <div
                         style={{
-                          marginTop: 10,
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,120,120,0.22)",
-                          background: "rgba(255,80,80,0.08)",
-                          color: "#ffd0d0",
-                          padding: "10px 12px",
-                          fontSize: 12,
-                          lineHeight: 1.45,
-                          overflowWrap: "anywhere",
-                          wordBreak: "break-word",
-                          maxWidth: "100%",
+                          position: "absolute",
+                          top: "50%",
+                          right: 12,
+                          transform: "translateY(-50%)",
+                          width: 10,
+                          height: 10,
+                          borderRadius: 999,
+                          background:
+                            externalDraftInspection.status === "ready"
+                              ? "#67e8a5"
+                              : externalDraftInspection.status === "error"
+                              ? "#f87171"
+                              : externalDraftInspection.status === "inspecting"
+                              ? "#93c5fd"
+                              : "rgba(255,255,255,0.22)",
+                          boxShadow:
+                            externalDraftInspection.status === "inspecting"
+                              ? "0 0 0 4px rgba(147,197,253,0.12)"
+                              : "none",
                         }}
-                      >
-                        {inspectError}
-                      </div>
-                    ) : null}
+                      />
+                    </div>
                   </div>
 
-                  <div
-                    style={{
-                      position: addSourceSuccessMessage ? "relative" : "absolute",
-                      inset: addSourceSuccessMessage ? "auto" : 0,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      opacity: addSourceSuccessMessage ? 1 : 0,
-                      transform: addSourceSuccessMessage ? "translateY(0)" : "translateY(6px)",
-                      transition: "opacity 220ms ease, transform 220ms ease",
-                      pointerEvents: addSourceSuccessMessage ? "auto" : "none",
-                    }}
-                  >
+                  {externalDraftInspection.suggestions.length > 0 ? (
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.68 }}>
+                        Path suggestions
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {externalDraftInspection.suggestions.map((suggestion) => (
+                          <button
+                            key={`${suggestion.kind}-${suggestion.url}`}
+                            type="button"
+                            onClick={() => handleApplyExternalUrlSuggestion(suggestion.url)}
+                            title={suggestion.url}
+                            style={{
+                              maxWidth: "100%",
+                              height: 30,
+                              padding: "0 10px",
+                              borderRadius: 999,
+                              border: "1px solid rgba(255,255,255,0.12)",
+                              background: "rgba(255,255,255,0.05)",
+                              color: "white",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: 11,
+                            }}
+                          >
+                            <span style={{ fontWeight: 700 }}>{suggestion.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {externalDraftInspection.status !== "idle" ? (
                     <div
                       style={{
                         borderRadius: 12,
-                        border: "1px solid rgba(120,220,150,0.22)",
-                        background: "rgba(70,180,100,0.12)",
-                        color: "#d7ffe2",
-                        padding: "10px 12px",
-                        display: "inline-flex",
-                        alignItems: "center",
+                        border:
+                          externalDraftInspection.status === "ready"
+                            ? "1px solid rgba(120,220,150,0.24)"
+                            : externalDraftInspection.status === "error"
+                            ? "1px solid rgba(255,120,120,0.22)"
+                            : "1px solid rgba(160,220,255,0.22)",
+                        background:
+                          externalDraftInspection.status === "ready"
+                            ? "rgba(70,180,100,0.10)"
+                            : externalDraftInspection.status === "error"
+                            ? "rgba(255,80,80,0.08)"
+                            : "rgba(120,190,255,0.08)",
+                        padding: "12px 14px",
+                        display: "grid",
                         gap: 8,
-                        lineHeight: 1.35,
-                        fontSize: 11,
-                        fontWeight: 700,
                       }}
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "0 0 auto" }}>
-                        <path d="M20 6L9 17l-5-5" />
-                      </svg>
-                      <span>{addSourceSuccessMessage ?? ""}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span
+                          style={{
+                            height: 22,
+                            padding: "0 8px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(255,255,255,0.14)",
+                            background: "rgba(255,255,255,0.08)",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            fontSize: 10,
+                            fontWeight: 800,
+                            letterSpacing: "0.04em",
+                          }}
+                        >
+                          {externalDraftInspection.status === "ready"
+                            ? "IMPORTABLE"
+                            : externalDraftInspection.status === "error"
+                            ? "NOT READY"
+                            : "CHECKING"}
+                        </span>
+                        <span style={{ fontSize: 12, fontWeight: 700 }}>
+                          {externalDraftInspection.message}
+                        </span>
+                      </div>
+
+                      {externalDraftInspection.normalizedUrl ? (
+                        <div style={{ fontSize: 11, opacity: 0.8, overflowWrap: "anywhere", wordBreak: "break-word" }}>
+                          Root: {externalDraftInspection.normalizedUrl}
+                        </div>
+                      ) : null}
+
+                      {externalDraftInspection.metadataFile ? (
+                        <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>
+                          Entered metadata file: {externalDraftInspection.metadataFile}
+                        </div>
+                      ) : null}
+
+                      {externalDraftInspection.probe ? (
+                        <div style={{ display: "grid", gap: 8 }}>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 11 }}>
+                            <span><strong>{externalDraftInspection.probe.scales.length}</strong> scale{externalDraftInspection.probe.scales.length === 1 ? "" : "s"}</span>
+                            {externalDraftInspection.probe.recommendedScale ? (
+                              <span>
+                                <strong>{getResolutionLabel(externalDraftInspection.probe.recommendedScale.resolutionLabel) || externalDraftInspection.probe.recommendedScale.resolutionLabel}</strong> recommended
+                              </span>
+                            ) : null}
+                          </div>
+                          <div style={{ display: "grid", gap: 6 }}>
+                            {externalDraftInspection.probe.scales.slice(0, 4).map((scale) => (
+                              <div
+                                key={`${scale.datasetIndex}-${scale.datasetPath}`}
+                                style={{
+                                  borderRadius: 10,
+                                  border: "1px solid rgba(255,255,255,0.10)",
+                                  background: "rgba(255,255,255,0.04)",
+                                  padding: "8px 10px",
+                                  fontSize: 11,
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                <div style={{ fontWeight: 700 }}>{scale.datasetPath || "."}</div>
+                                <div data-theme-text="muted" style={{ opacity: 0.74 }}>
+                                  {describeExternalScale(scale)} · voxel {formatVoxelSizeValue(scale.voxelSizeUm.z)}/{formatVoxelSizeValue(scale.voxelSizeUm.y)}/{formatVoxelSizeValue(scale.voxelSizeUm.x)} µm
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
-                  </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1870,14 +2382,214 @@ export default function ImportDataPanel({
                   "rgba(140, 190, 255, 0.45) rgba(255,255,255,0.06)",
               }}
             >
+              {panelView === "library" ? (
+                <div style={{ display: "none", gap: 12, marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 700 }}>Browser-hosted data</div>
+                      <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>
+                        Imported datasets stay available across viewers in this browser and can be added again anytime.
+                      </div>
+                    </div>
+                    <div style={{ height: 24, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", display: "inline-flex", alignItems: "center", fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", opacity: 0.72 }}>
+                      {filteredLocalDatasetRecords.length} SAVED
+                    </div>
+                  </div>
+
+                  {filteredLocalDatasetRecords.length > 0 ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 12 }}>
+                      {filteredLocalDatasetRecords.map((record) => {
+                        const selected = selectedLocalDatasetIds.includes(record.id);
+                        const entryCount = record.kind === "tree" ? (record.entries?.length ?? 0) : 1;
+                        return (
+                          <button
+                            key={record.id}
+                            type="button"
+                            onClick={() => toggleLocalDatasetSelection(record.id)}
+                            style={{
+                              minHeight: 156,
+                              borderRadius: 16,
+                              border: selected ? "1px solid rgba(160,220,255,0.85)" : "1px solid rgba(255,255,255,0.10)",
+                              background: selected ? "rgba(92,149,230,0.18)" : "rgba(255,255,255,0.04)",
+                              color: "white",
+                              padding: 14,
+                              textAlign: "left",
+                              display: "grid",
+                              gap: 12,
+                              cursor: "pointer",
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                              <SourceIconFrame>
+                                <DataIcon />
+                              </SourceIconFrame>
+                              <div style={{ width: 18, height: 18, borderRadius: 999, border: selected ? "1px solid rgba(160,220,255,0.95)" : "1px solid rgba(255,255,255,0.24)", background: selected ? "rgba(92,149,230,0.92)" : "transparent", flexShrink: 0, marginTop: 2 }} />
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.35 }}>{record.fileName}</div>
+                              <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.68, marginTop: 6, lineHeight: 1.45 }}>
+                                {record.kind === "tree" ? "Folder dataset" : "Single file"} · {formatBytes(record.size)} · {entryCount} item{entryCount === 1 ? "" : "s"}
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                              <span style={{ height: 22, padding: "0 8px", borderRadius: 999, border: "1px solid rgba(255,210,120,0.26)", background: "rgba(255,210,120,0.12)", color: "#ffe4ad", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center" }}>
+                                BROWSER
+                              </span>
+                              <span data-theme-text="muted" style={{ fontSize: 10, opacity: 0.62 }}>
+                                Updated {formatTimestamp(record.updatedAt)}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div
+                      data-theme-surface="soft"
+                      style={{
+                        minHeight: 120,
+                        borderRadius: 14,
+                        border: "1px dashed rgba(255,255,255,0.12)",
+                        background: "rgba(255,255,255,0.02)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        textAlign: "center",
+                        padding: 20,
+                        color: "rgba(255,255,255,0.72)",
+                        fontSize: 13,
+                      }}
+                    >
+                      {searchQuery.trim()
+                        ? `No browser-hosted dataset matches "${searchQuery}".`
+                        : "No browser-hosted dataset is saved yet."}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
               <div
                 style={{
-                  display: "grid",
+                  display: panelView === "import-external" ? "none" : "grid",
                   gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
                   gap: 12,
                   alignItems: "stretch",
                 }}
               >
+                {panelView === "library"
+                  ? filteredLocalDatasetRecords.map((record) => {
+                      const selected = selectedLocalDatasetIds.includes(record.id);
+                      const entryCount = record.kind === "tree" ? (record.entries?.length ?? 0) : 1;
+                      const localUi = localSourceUiState[record.id];
+                      const localInspection = localUi?.inspection;
+                      const localScales = localInspection?.info.availableScales ?? [];
+                      const selectedResolution = localUi?.selectedResolution ?? localInspection?.info.selectedResolution ?? null;
+                      return (
+                        <button
+                          key={record.id}
+                          type="button"
+                          onClick={() => toggleLocalDatasetSelection(record.id)}
+                          style={{
+                            minHeight: 196,
+                            minWidth: 0,
+                            borderRadius: 16,
+                            border: selected ? "1px solid rgba(160,220,255,0.85)" : "1px solid rgba(255,255,255,0.10)",
+                            background: selected ? "rgba(92,149,230,0.18)" : "rgba(255,255,255,0.04)",
+                            color: "white",
+                            padding: 14,
+                            textAlign: "left",
+                            display: "flex",
+                            flexDirection: "column",
+                            justifyContent: "space-between",
+                            gap: 12,
+                            cursor: "pointer",
+                            transition: "border-color 180ms ease, background 180ms ease, box-shadow 220ms ease",
+                          }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", minWidth: 0 }}>
+                          <SourceIconFrame>
+                              <DataIcon />
+                            </SourceIconFrame>
+                            <div style={{ width: 18, height: 18, borderRadius: 999, border: selected ? "1px solid rgba(160,220,255,0.95)" : "1px solid rgba(255,255,255,0.24)", background: selected ? "rgba(92,149,230,0.92)" : "transparent", flexShrink: 0, marginTop: 2 }} />
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              display: "block",
+                              width: "100%",
+                              minWidth: 0,
+                              fontSize: 13,
+                              fontWeight: 700,
+                              lineHeight: 1.35,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                            title={record.fileName}
+                          >
+                            {record.fileName}
+                          </div>
+                          <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.68, marginTop: 6, lineHeight: 1.45 }}>
+                            {record.kind === "tree" ? "Folder dataset" : "Single file"} · {formatBytes(record.size)} · {entryCount} item{entryCount === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        {localInspection?.kind === "volume" ? (
+                          <div style={{ display: "grid", gap: 10 }}>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              <button type="button" onClick={(event) => { event.stopPropagation(); setLocalSourceRenderMode(record.id, "slices"); }} style={{ height: 30, padding: "0 10px", borderRadius: 999, border: selected && localUi?.renderMode === "slices" ? "1px solid rgba(92,149,230,0.88)" : "1px solid rgba(255,255,255,0.14)", background: selected && localUi?.renderMode === "slices" ? "rgba(92,149,230,0.26)" : "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 700, transition: "border-color 180ms ease, background 180ms ease, color 180ms ease" }}>Slices</button>
+                              <button type="button" onClick={(event) => { event.stopPropagation(); setLocalSourceRenderMode(record.id, "volume"); }} style={{ height: 30, padding: "0 10px", borderRadius: 999, border: selected && localUi?.renderMode === "volume" ? "1px solid rgba(92,149,230,0.88)" : "1px solid rgba(255,255,255,0.14)", background: selected && localUi?.renderMode === "volume" ? "rgba(92,149,230,0.26)" : "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 700, transition: "border-color 180ms ease, background 180ms ease, color 180ms ease" }}>Volume</button>
+                            </div>
+                            {localScales.length > 0 ? (
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                {localScales.map((scale) => {
+                                  const active = selected && selectedResolution === scale.resolutionLabel;
+                                  return (
+                                    <button
+                                      key={`${record.id}-${scale.datasetPath}`}
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (scale.canLoad) setLocalSourceResolution(record.id, scale.resolutionLabel);
+                                      }}
+                                      disabled={!scale.canLoad}
+                                      style={{
+                                        height: 30,
+                                        padding: "0 10px",
+                                        borderRadius: 999,
+                                        border: active ? "1px solid rgba(92,149,230,0.88)" : scale.canLoad ? "1px solid rgba(255,255,255,0.14)" : "1px solid rgba(255,255,255,0.10)",
+                                        background: active ? "rgba(92,149,230,0.26)" : scale.canLoad ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.04)",
+                                        color: scale.canLoad ? "white" : "rgba(255,255,255,0.46)",
+                                        cursor: scale.canLoad ? "pointer" : "default",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        transition: "border-color 180ms ease, background 180ms ease, color 180ms ease",
+                                      }}
+                                    >
+                                      {getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : localUi?.status === "loading" ? (
+                          <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.7 }}>Inspecting display options...</div>
+                        ) : localUi?.status === "error" ? (
+                          <div style={{ fontSize: 11, color: "#ffd0d0", lineHeight: 1.45 }}>{localUi.error ?? "Failed to inspect dataset."}</div>
+                        ) : null}
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                          <span style={{ height: 22, padding: "0 8px", borderRadius: 999, border: "1px solid rgba(255,210,120,0.26)", background: "rgba(255,210,120,0.12)", color: "#ffe4ad", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center" }}>
+                            BROWSER
+                            </span>
+                            <span data-theme-text="muted" style={{ fontSize: 10, opacity: 0.62 }}>
+                              Updated {formatTimestamp(record.updatedAt)}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })
+                  : null}
+
                 {filteredGroupedExternalSources.map((group) => {
                   const selectedItem = group.items.find((item) => selectedExternalIds.includes(item.id));
                   const groupSelected = !!selectedItem;
@@ -2087,7 +2799,7 @@ export default function ImportDataPanel({
                               />
                             ) : (
                               <>
-                                <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+                                <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={item.name}>
                                   {item.name}
                                 </div>
                                 <div
@@ -2303,7 +3015,7 @@ export default function ImportDataPanel({
                         </div>
 
                         <div>
-                          <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+                          <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={group.name}>
                             {group.name}
                           </div>
                           <div
@@ -2371,7 +3083,8 @@ export default function ImportDataPanel({
                 })}
               </div>
 
-              {filteredGroupedExternalSources.length === 0 && (
+              {panelView !== "import-external" && (((panelView === "library" && filteredGroupedExternalSources.length === 0 && filteredLocalDatasetRecords.length === 0)
+                || (panelView !== "library" && filteredGroupedExternalSources.length === 0))) && (
                 <div
                   data-theme-surface="soft"
                   style={{
@@ -2389,14 +3102,18 @@ export default function ImportDataPanel({
                     fontSize: 13,
                   }}
                 >
-                  No external source matches "{searchQuery}".
+                  {searchQuery.trim()
+                    ? `No data source matches "${searchQuery}".`
+                    : panelView === "library"
+                    ? "No data source is available yet."
+                    : "No external source is available yet."}
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {mode === "custom" && (
+        {panelView === "import-local" && (
           <div
             data-theme-surface="soft"
             style={{
@@ -2421,24 +3138,6 @@ export default function ImportDataPanel({
                   Drop files, folders, or ZIP archives here. Supports NRRD, NIfTI (.nii/.nii.gz), TIFF, OBJ, OME-Zarr/Zarr, and gzip-compressed variants of supported single files. Local imports stay only in this browser and are not included when sharing the viewer.
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => onOpenLocalDatasetManager?.()}
-                style={{
-                  height: 34,
-                  padding: "0 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.10)",
-                  background: "rgba(255,255,255,0.05)",
-                  color: "white",
-                  cursor: "pointer",
-                  flexShrink: 0,
-                  fontSize: 12,
-                  fontWeight: 700,
-                }}
-              >
-                Manage local data
-              </button>
             </div>
 
             {localImportFeedback ? (
@@ -2510,7 +3209,6 @@ export default function ImportDataPanel({
                   {pendingLocalImports.map((candidate) => {
                     const scales = candidate.inspection.info.availableScales ?? [];
                     const selectableScales = scales.filter((scale) => scale.canLoad);
-                    const renderMode = candidate.inspection.renderMode ?? "slices";
                     const selectedResolution = candidate.inspection.info.selectedResolution ?? selectableScales[0]?.resolutionLabel ?? scales[0]?.resolutionLabel ?? null;
                     const previewState = getPreviewState(candidate);
                     const preview = previewState?.preview;
@@ -2557,60 +3255,50 @@ export default function ImportDataPanel({
                           <DatasetStat label="Voxel size" value={voxelText} />
                         </div>
 
-                        {candidate.inspection.kind === "volume" ? (
+                        {candidate.inspection.kind === "volume" && scales.length > 0 ? (
                           <div style={{ display: "grid", gap: 10 }}>
-                            <SectionLabel>Display mode</SectionLabel>
+                            <SectionLabel>Resolution</SectionLabel>
                             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              <button type="button" onClick={() => setPendingImportRenderMode(candidate.id, "slices")} style={{ height: 32, padding: "0 12px", borderRadius: 999, border: renderMode === "slices" ? "1px solid rgba(92,149,230,0.88)" : "1px solid rgba(255,255,255,0.14)", background: renderMode === "slices" ? "rgba(92,149,230,0.26)" : "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 800 }}>Slices</button>
-                              <button type="button" onClick={() => setPendingImportRenderMode(candidate.id, "volume")} style={{ height: 32, padding: "0 12px", borderRadius: 999, border: renderMode === "volume" ? "1px solid rgba(92,149,230,0.88)" : "1px solid rgba(255,255,255,0.14)", background: renderMode === "volume" ? "rgba(92,149,230,0.26)" : "rgba(255,255,255,0.05)", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 800 }}>Volume</button>
+                              {scales.map((scale) => {
+                                const active = selectedResolution === scale.resolutionLabel;
+                                const reason = formatLocalScaleReason(scale.unsupportedReason);
+                                const recommended = candidate.inspection.info.recommendedResolution === scale.resolutionLabel;
+                                return (
+                                  <button
+                                    key={`${candidate.id}-${scale.datasetPath}`}
+                                    type="button"
+                                    disabled={!scale.canLoad}
+                                    title={reason ?? undefined}
+                                    onClick={() => scale.canLoad && setPendingImportResolution(candidate.id, scale.resolutionLabel)}
+                                    style={{
+                                      height: 34,
+                                      padding: "0 12px",
+                                      borderRadius: 999,
+                                      border: active ? "1px solid rgba(92,149,230,0.88)" : scale.canLoad ? "1px solid rgba(255,255,255,0.14)" : "1px solid rgba(255,255,255,0.10)",
+                                      background: active ? "rgba(92,149,230,0.26)" : scale.canLoad ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.04)",
+                                      color: scale.canLoad ? "white" : "rgba(255,255,255,0.46)",
+                                      cursor: scale.canLoad ? "pointer" : "default",
+                                      fontSize: 11,
+                                      fontWeight: 800,
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 6,
+                                    }}
+                                  >
+                                    <span>{getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel}</span>
+                                    {recommended ? (
+                                      <span style={{ height: 18, padding: "0 6px", borderRadius: 999, background: "rgba(255,255,255,0.10)", display: "inline-flex", alignItems: "center", fontSize: 9, letterSpacing: "0.04em" }}>
+                                        BEST
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                );
+                              })}
                             </div>
-
-                            {scales.length > 0 ? (
-                              <>
-                                <SectionLabel>Resolution</SectionLabel>
-                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                  {scales.map((scale) => {
-                                    const active = selectedResolution === scale.resolutionLabel;
-                                    const reason = formatLocalScaleReason(scale.unsupportedReason);
-                                    const recommended = candidate.inspection.info.recommendedResolution === scale.resolutionLabel;
-                                    return (
-                                      <button
-                                        key={`${candidate.id}-${scale.datasetPath}`}
-                                        type="button"
-                                        disabled={!scale.canLoad}
-                                        title={reason ?? undefined}
-                                        onClick={() => scale.canLoad && setPendingImportResolution(candidate.id, scale.resolutionLabel)}
-                                        style={{
-                                          height: 34,
-                                          padding: "0 12px",
-                                          borderRadius: 999,
-                                          border: active ? "1px solid rgba(92,149,230,0.88)" : scale.canLoad ? "1px solid rgba(255,255,255,0.14)" : "1px solid rgba(255,255,255,0.10)",
-                                          background: active ? "rgba(92,149,230,0.26)" : scale.canLoad ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.04)",
-                                          color: scale.canLoad ? "white" : "rgba(255,255,255,0.46)",
-                                          cursor: scale.canLoad ? "pointer" : "default",
-                                          fontSize: 11,
-                                          fontWeight: 800,
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                        }}
-                                      >
-                                        <span>{getResolutionLabel(scale.resolutionLabel) || scale.resolutionLabel}</span>
-                                        {recommended ? (
-                                          <span style={{ height: 18, padding: "0 6px", borderRadius: 999, background: "rgba(255,255,255,0.10)", display: "inline-flex", alignItems: "center", fontSize: 9, letterSpacing: "0.04em" }}>
-                                            BEST
-                                          </span>
-                                        ) : null}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                                {scales.some((scale) => !scale.canLoad && formatLocalScaleReason(scale.unsupportedReason)) ? (
-                                  <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72, lineHeight: 1.45 }}>
-                                    {formatLocalScaleReason(scales.find((scale) => !scale.canLoad && formatLocalScaleReason(scale.unsupportedReason))?.unsupportedReason)}
-                                  </div>
-                                ) : null}
-                              </>
+                            {scales.some((scale) => !scale.canLoad && formatLocalScaleReason(scale.unsupportedReason)) ? (
+                              <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72, lineHeight: 1.45 }}>
+                                {formatLocalScaleReason(scales.find((scale) => !scale.canLoad && formatLocalScaleReason(scale.unsupportedReason))?.unsupportedReason)}
+                              </div>
                             ) : null}
                           </div>
                         ) : null}
@@ -2658,7 +3346,7 @@ export default function ImportDataPanel({
                 }}
               >
                 <div style={{ width: "min(460px, 100%)", display: "grid", gap: 14 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700 }}>Importing local data…</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, animation: "import-status-pulse 1.2s ease-in-out infinite" }}>Importing local data…</div>
                   <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.78, lineHeight: 1.45 }}>
                     {localInspectionProgress.message}
                   </div>
@@ -2711,9 +3399,15 @@ export default function ImportDataPanel({
           }}
         >
           <div style={{ fontSize: 12, opacity: 0.62 }}>
-            {mode === "external" && selectedExternalSources.length > 0
-              ? `${selectedExternalSources.length} source${selectedExternalSources.length > 1 ? "s" : ""} selected`
-              : mode === "custom"
+            {panelView === "import-external"
+              ? externalDraftInspection.status === "ready"
+                ? "Path validated. Save it to add this reusable source."
+                : externalDraftInspection.status === "inspecting"
+                ? "Checking the external path and loading available metadata"
+                : "Enter a public OME-Zarr path to inspect it before saving"
+              : panelView !== "import-local" && (selectedExternalSources.length > 0 || selectedLocalDatasetIds.length > 0)
+              ? `${selectedExternalSources.length + selectedLocalDatasetIds.length} source${selectedExternalSources.length + selectedLocalDatasetIds.length > 1 ? "s" : ""} selected`
+              : panelView === "import-local"
               ? pendingLocalImports.length > 0
                 ? `${pendingLocalImports.length} local import${pendingLocalImports.length > 1 ? "s" : ""} ready`
                 : "Inspect files, folders, or ZIP archives before adding them"
@@ -2737,7 +3431,7 @@ export default function ImportDataPanel({
               Cancel
             </button>
 
-            {mode === "custom" && pendingLocalImports.length > 0 && (
+            {panelView === "import-local" && pendingLocalImports.length > 0 && (
               <button
                 type="button"
                 onClick={handleConfirmLocalImports}
@@ -2755,11 +3449,11 @@ export default function ImportDataPanel({
               </button>
             )}
 
-            {mode === "external" && (
+            {panelView === "import-external" && (
               <button
                 type="button"
-                onClick={handleSubmit}
-                disabled={selectedExternalSources.length === 0}
+                onClick={handleSaveExternalDraftSource}
+                disabled={externalDraftInspection.status !== "ready"}
                 style={{
                   height: 40,
                   padding: "0 14px",
@@ -2768,7 +3462,27 @@ export default function ImportDataPanel({
                   background: "rgba(120,190,255,0.18)",
                   color: "white",
                   cursor: "pointer",
-                  opacity: selectedExternalSources.length === 0 ? 0.5 : 1,
+                  opacity: externalDraftInspection.status !== "ready" ? 0.5 : 1,
+                }}
+              >
+                Add external data
+              </button>
+            )}
+
+            {panelView === "library" && (
+              <button
+                type="button"
+                onClick={() => { void handleAddSelectedSources(); }}
+                disabled={isSubmittingSelection || (selectedExternalSources.length === 0 && selectedLocalDatasetIds.length === 0)}
+                style={{
+                  height: 40,
+                  padding: "0 14px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(160,220,255,0.35)",
+                  background: "rgba(120,190,255,0.18)",
+                  color: "white",
+                  cursor: "pointer",
+                  opacity: isSubmittingSelection || (selectedExternalSources.length === 0 && selectedLocalDatasetIds.length === 0) ? 0.5 : 1,
                 }}
               >
                 Add layer

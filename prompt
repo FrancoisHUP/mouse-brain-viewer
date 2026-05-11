@@ -1,15 +1,34 @@
+[bug] In the "Data source manager" panel, when a user clikc on the export button, it loads the export format available for this source.  When the user close this panel and re-open in the same session, then the export format dont load back. 
+
+[todo] update panel (i) button, past version update message. Pupop when user is update from a previous version. Have a version maanger where the user can manager the version of the software?  
+
+Automations {
+  chat {
+    add mor llm option (for smaller / bigger computer)
+  }
+  [todo] the user should be able to change the data while the pipeline is running 
+  [todo] the user should be able to pick up an object from the ui to add it to the pipeline.
+
+  [prompt] I want the user to be able to code in python or other language. Since python is a very popular language for biologist, I think it would be better to define python as de default language for custom function. Is it possible to have a python option to code custom function. I dont know if it's possible to set up a python run time in the browser ?!
+
+  add a debugger for the script,
+  add help from an ai to code this script ? should I have a compiler with errors ? An official spec for the language ?
+}
+
+[todo] fix the rotation of the oblique slice STILL HAPPENING!
+[todo] copy paste button should change icon when the user click on the copy button. 
+
 [todo] fix the selection on skeleton (right now it select every verticies)
 
 import data {
-  in the manage data, the user should be able to click on a single file source and see the import panel setting ?
-  in the + layer, the user should see all the data in a single panel (external and local), then we should have a panel/tab to import a new data. In this import panel, there should have a button or something to manage the existing data. SO the user can add and delete data.  
   [todo] fix the import so the brain has the right orientation of every slices. 
-  [todo] the user should be able to add a personnal (browser hosted data) in the viewer without having to re upload the file.  
-  [todo] rewrok the import so I have a panel with all the date (online and local / personnal or shared or built in)
-  [todo] rework the data panel. The user should be able to load an imported data into the scene (without having to reupload)
   [todo] import annotations and process the data inside the browser and the meta data / add an intelligent perser to import dataset ?
-  [todo] when a user delete data from the browser, it should notice the user what layer will be affected by the deletyion and if it should remove the layer too.  
 }
+
+export data {
+  [todo] Unselect row (when user click away).
+  [?] export images 
+} 
 
 
 Export {
@@ -37,21 +56,25 @@ Extracter {
 *[NTH] A panel with gpu/cpu/ram/data usage + I could put a compass
 *[NTH] ai for data importation, ai for automatic annotations, ai for automation builder, ai for general question and access tools and docs   
 
+[todo] tool to mesure distances. 
 [NTH] screen shot tool, and recording tool?
 [NTH] tutorial how to use.   
 [NTH] add a docs route where the user can see all the controls on this web demo. 
 [NTH] neuroglance resolution loader style
 [NTH] streaming data (live operation)
 [NTH] support tablet/phone control (pen and fingers)
+[NTH] coworking session? Browser connect to another browser? This may needs a backend with a commen open session?  
 
 
 --- small fixes
-[fix] 
+[fix] The pipeline icon should not be blue when it's not selected (the number is good, but the icon should not always be highlited) 
+[fix] The assistant should owkr lie the other tool bar button where when the user select another tool, it should close the assitant panel (right now the user nned to click again on the assistant to close it and it does not allow the user to change view when click on a different tool)
 
 
 --- BUG LIST
-[fix] transparency for all object 
-
+[bug] transparency for all object 
+[bug] the saved hook is not in the state, so every time I realod the window I got to save in a new spot. Also the user should be able to save under a saved viewer. Right not it's not possible.
+[bug] When a user import a data source at lower resolution, it import the source at the highest resolution (local hosted data )
 --- Check list
 
 

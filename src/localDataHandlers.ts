@@ -9,7 +9,7 @@ import type {
     LocalDatasetScale,
     RemoteRenderMode,
 } from "./layerTypes";
-import { getLocalDatasetRecord } from "./localDataStore";
+import { getLocalDatasetRecord, type StoredLocalDatasetRecord } from "./localDataStore";
 
 const DEFAULT_BROWSER_VOLUME_BUDGET_BYTES = 1_500_000_000;
 
@@ -44,6 +44,29 @@ export type LocalInspectionOptions = {
     signal?: AbortSignal;
     onProgress?: (progress: LocalInspectionProgress) => void;
 };
+
+function createFileFromBlob(blob: Blob, name: string, type?: string, lastModified?: number): File {
+    return new File([blob], name, {
+        type: type || blob.type || "",
+        lastModified: Number.isFinite(lastModified) ? lastModified : Date.now(),
+    });
+}
+
+function createStoredDatasetEntries(record: StoredLocalDatasetRecord): LocalInputEntry[] {
+    if (record.kind === "blob" && record.blob) {
+        return [{
+            path: record.fileName,
+            file: createFileFromBlob(record.blob, record.fileName, record.mimeType, record.lastModified),
+        }];
+    }
+    if (record.kind === "tree" && record.entries?.length) {
+        return record.entries.map((entry) => ({
+            path: normalizePath(entry.path || entry.fileName),
+            file: createFileFromBlob(entry.blob, entry.fileName, entry.mimeType, record.lastModified),
+        }));
+    }
+    throw new Error("This local dataset is missing from browser storage.");
+}
 
 function throwIfAborted(signal?: AbortSignal) {
     if (signal?.aborted) {
@@ -300,15 +323,39 @@ function findNrrdHeaderLength(bytes: Uint8Array): number {
     throw new Error("Invalid NRRD file: could not find the header terminator.");
 }
 
-function parseNrrdSpaceDirections(raw: string | undefined): { x: number | null; y: number | null; z: number | null } {
+function parseNrrdUnitScale(rawUnits: string | undefined): { x: number; y: number; z: number } {
+    if (!rawUnits) return { x: 1, y: 1, z: 1 };
+    const matches = [...rawUnits.matchAll(/"([^"]+)"/g)].map((match) => match[1].trim().toLowerCase());
+    const toUmScale = (unit: string | undefined) => {
+        if (!unit) return 1;
+        if (unit === "um" || unit === "µm" || unit === "micrometer" || unit === "micrometers" || unit === "micron" || unit === "microns") return 1;
+        if (unit === "mm" || unit === "millimeter" || unit === "millimeters") return 1000;
+        if (unit === "cm" || unit === "centimeter" || unit === "centimeters") return 10_000;
+        if (unit === "m" || unit === "meter" || unit === "meters") return 1_000_000;
+        if (unit === "nm" || unit === "nanometer" || unit === "nanometers") return 0.001;
+        return 1;
+    };
+    return {
+        x: toUmScale(matches[0]),
+        y: toUmScale(matches[1]),
+        z: toUmScale(matches[2]),
+    };
+}
+
+function parseNrrdSpaceDirections(raw: string | undefined, rawUnits?: string | undefined): { x: number | null; y: number | null; z: number | null } {
     if (!raw) return { x: null, y: null, z: null };
     const matches = [...raw.matchAll(/\(([^)]*)\)/g)].map((match) => match[1].split(",").map((part) => Number(part.trim())));
     if (matches.length < 3) return { x: null, y: null, z: null };
+    const unitScale = parseNrrdUnitScale(rawUnits);
     const norms = matches.slice(0, 3).map((vec) => {
         if (vec.some((value) => !Number.isFinite(value))) return null;
         return Math.sqrt(vec.reduce((acc, value) => acc + value * value, 0));
     });
-    return { x: norms[0] ?? null, y: norms[1] ?? null, z: norms[2] ?? null };
+    return {
+        x: norms[0] != null ? norms[0] * unitScale.x : null,
+        y: norms[1] != null ? norms[1] * unitScale.y : null,
+        z: norms[2] != null ? norms[2] * unitScale.z : null,
+    };
 }
 
 async function decompressGzip(data: Uint8Array): Promise<Uint8Array> {
@@ -562,7 +609,7 @@ async function inspectNrrdFile(file: File, displayName?: string): Promise<LocalD
     const sizes = (header["sizes"] ?? "").split(/\s+/).map((value) => Number(value)).filter((value) => Number.isFinite(value));
     if (sizes.length < 3) throw new Error("Unsupported NRRD file: expected at least 3 spatial dimensions.");
     const dims = { x: Math.max(1, sizes[0] ?? 1), y: Math.max(1, sizes[1] ?? 1), z: Math.max(1, sizes[2] ?? 1) };
-    const spacings = parseNrrdSpaceDirections(header["space directions"]);
+    const spacings = parseNrrdSpaceDirections(header["space directions"], header["space units"]);
     return {
         format: "nrrd",
         kind: "volume",
@@ -718,6 +765,26 @@ export async function inspectLocalInputEntries(inputEntries: LocalInputEntry[], 
         percent: 1,
     });
     return candidates;
+}
+
+export async function inspectStoredLocalDatasetRecord(record: StoredLocalDatasetRecord, options?: LocalInspectionOptions): Promise<LocalImportCandidate> {
+    const entries = createStoredDatasetEntries(record);
+    const [candidate] = await inspectLocalInputEntries(entries, options);
+    if (!candidate) {
+        throw new Error(`Failed to inspect ${record.fileName}.`);
+    }
+    return {
+        ...candidate,
+        name: record.fileName,
+    };
+}
+
+export async function inspectStoredLocalDatasetById(datasetId: string, options?: LocalInspectionOptions): Promise<LocalImportCandidate> {
+    const record = await getLocalDatasetRecord(datasetId);
+    if (!record) {
+        throw new Error("This local dataset is missing from browser storage.");
+    }
+    return await inspectStoredLocalDatasetRecord(record, options);
 }
 
 export async function inspectLocalBrowserFile(file: File): Promise<LocalDatasetInspection> {
