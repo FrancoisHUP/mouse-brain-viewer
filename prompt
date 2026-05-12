@@ -1,5 +1,3 @@
-[bug] In the "Data source manager" panel, when a user clikc on the export button, it loads the export format available for this source.  When the user close this panel and re-open in the same session, then the export format dont load back. 
-
 [todo] update panel (i) button, past version update message. Pupop when user is update from a previous version. Have a version maanger where the user can manager the version of the software?  
 
 Automations {

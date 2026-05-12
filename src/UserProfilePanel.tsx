@@ -587,6 +587,70 @@ export default function UserProfilePanel({
             </SectionCard>
 
             <SectionCard
+              title="Resource retention"
+              subtitle="Control how aggressively the browser keeps helper models and hidden layer data in memory."
+              palette={palette}
+            >
+              <div style={{ display: "grid", gap: 16 }}>
+                <label
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "18px minmax(0,1fr)",
+                    gap: 12,
+                    alignItems: "start",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={preferences.keepAssistantModel}
+                    onChange={(event) => {
+                      const next = updateAppPreferences({ keepAssistantModel: event.target.checked });
+                      applyPreferences(next);
+                    }}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: palette.titleColor }}>
+                      Keep assistant model in memory
+                    </div>
+                    <div style={{ fontSize: 12, color: palette.mutedText, marginTop: 4, lineHeight: 1.45 }}>
+                      When enabled, the local assistant stays loaded after you close it. Turn this off to free memory automatically when the assistant is no longer in use.
+                    </div>
+                  </span>
+                </label>
+
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: palette.titleColor }}>
+                    Auto-unload hidden data
+                  </div>
+                  <div style={{ fontSize: 12, color: palette.mutedText, lineHeight: 1.45 }}>
+                    Choose how long hidden layer data can stay cached before it is unloaded automatically. Use Infinite to keep hidden data cached until you clear it manually.
+                  </div>
+                  <select
+                    value={preferences.hiddenDataAutoUnloadMinutes == null ? "infinite" : String(preferences.hiddenDataAutoUnloadMinutes)}
+                    onChange={(event) => {
+                      const rawValue = event.target.value;
+                      const next = updateAppPreferences({
+                        hiddenDataAutoUnloadMinutes:
+                          rawValue === "infinite" ? null : Number(rawValue),
+                      });
+                      applyPreferences(next);
+                    }}
+                    style={{ width: "min(260px, 100%)" }}
+                  >
+                    <option value="1">1 minute</option>
+                    <option value="5">5 minutes</option>
+                    <option value="15">15 minutes</option>
+                    <option value="30">30 minutes</option>
+                    <option value="60">1 hour</option>
+                    <option value="120">2 hours</option>
+                    <option value="infinite">Infinite</option>
+                  </select>
+                </div>
+              </div>
+            </SectionCard>
+
+            <SectionCard
               title="Saved browser data"
               subtitle="Manage the data currently stored locally by this browser for the viewer."
               palette={palette}

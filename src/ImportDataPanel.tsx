@@ -2976,9 +2976,16 @@ export default function ImportDataPanel({
                         gap: 12,
                       }}
                     >
-                      <button
-                        type="button"
+                      <div
+                        role="button"
+                        tabIndex={0}
                         onClick={() => toggleGroupedExternalDefault(group)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleGroupedExternalDefault(group);
+                          }
+                        }}
                         style={{
                           border: "1px solid transparent",
                           background: groupSelected ? "rgba(92,149,230,0.08)" : "transparent",
@@ -3032,7 +3039,7 @@ export default function ImportDataPanel({
                               : ""}
                           </div>
                         </div>
-                      </button>
+                      </div>
 
                       <div
                         style={{

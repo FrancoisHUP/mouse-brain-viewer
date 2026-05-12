@@ -8,6 +8,7 @@ import UserProfilePanel from "./UserProfilePanel";
 import StatePanel from "./StatePanel";
 import AutomationPipelinePanel from "./AutomationPipelinePanel";
 import AppAssistantPanel from "./AppAssistantPanel";
+import ResourceManagerPanel from "./ResourceManagerPanel";
 import SaveToastStack, { type SaveToast, type TaskNotice } from "./components/app/SaveToastStack";
 import VersionBadge from "./components/app/VersionBadge";
 import LayerInspectorPanel from "./components/app/LayerInspectorPanel";
@@ -90,6 +91,7 @@ import {
   savePersistedViewerHistory,
   type ViewerHistoryEntry,
 } from "./viewerHistory";
+import { useBrowserResourceTelemetry } from "./resourceTelemetry";
 import {
   EMPTY_AUTOMATION_DEBUG_SNAPSHOT,
   parseAutomationScript,
@@ -717,6 +719,7 @@ const APP_COMMIT_URL =
     : APP_COMMIT_SHA === "dev"
       ? APP_REPO_URL
       : `${APP_REPO_URL}/commit/${APP_COMMIT_SHA}`;
+const DEFAULT_RESOURCE_SECTION_HEIGHT = 340;
 
 const GENERIC_UNEXPECTED_ERROR_MESSAGE =
   "Unexpected error. Please try again or reload the viewer.";
@@ -862,6 +865,8 @@ async function collectDroppedLocalEntries(
 
 export default function App({ startupSlices = [] }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolId>("mouse");
+  const [resourceSectionHeight, setResourceSectionHeight] = useState(DEFAULT_RESOURCE_SECTION_HEIGHT);
+  const [isResourceManagerOpen, setIsResourceManagerOpen] = useState(false);
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [importPanelView, setImportPanelView] = useState<"library" | "import-external" | "import-local">("library");
   const [isLocalDatasetManagerOpen, setIsLocalDatasetManagerOpen] = useState(false);
@@ -904,6 +909,8 @@ export default function App({ startupSlices = [] }: AppProps) {
   const runtimeErrorFingerprintRef = useRef<Map<string, number>>(new Map());
   const exportTaskNoticeTimeoutRef = useRef<number | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
+  const [cacheClearRequestKey, setCacheClearRequestKey] = useState(0);
+  const [assistantClearRequestKey, setAssistantClearRequestKey] = useState(0);
   const [isClearHistoryConfirmOpen, setIsClearHistoryConfirmOpen] = useState(false);
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
     loadAppPreferences()
@@ -1785,6 +1792,29 @@ export default function App({ startupSlices = [] }: AppProps) {
     () => hashViewerStateForHistory(currentViewerState),
     [currentViewerState]
   );
+  const resourceRefreshToken = useMemo(
+    () => historyRevision * 1_000_000 + profileDataRevision * 1_000 + cacheClearRequestKey,
+    [cacheClearRequestKey, historyRevision, profileDataRevision]
+  );
+  const visibleLayerCount = useMemo(
+    () => allLayers.filter((layer) => layer.visible !== false).length,
+    [allLayers]
+  );
+  const activeAutomationCount = useMemo(
+    () => automationPipelines.filter((pipeline) => pipeline.active).length,
+    [automationPipelines]
+  );
+  const {
+    summary: resourceSummary,
+    samples: resourceHistorySamples,
+    endProcess: endResourceProcess,
+  } = useBrowserResourceTelemetry({
+    viewerState: currentViewerState,
+    activeAutomationCount,
+    visibleLayerCount,
+    localScenePendingCount: localSceneLoadState.pending,
+    refreshToken: resourceRefreshToken,
+  });
 
   useEffect(() => {
     if (!automationPipelines.some((pipeline) => pipeline.id === activeAutomationPipelineId)) {
@@ -3976,6 +4006,59 @@ export default function App({ startupSlices = [] }: AppProps) {
     return baselineEntry.state;
   }
 
+  function handleRequestClearResourceCache() {
+    setCacheClearRequestKey((value) => value + 1);
+  }
+
+  function handleResourceCacheCleared(result: {
+    clearedVolumes: number;
+    clearedMeshes: number;
+    workerReleased: boolean;
+  }) {
+    const clearedItems = result.clearedVolumes + result.clearedMeshes;
+    enqueueToast({
+      tone: "info",
+      title: clearedItems > 0 ? "Cache cleared" : "Cache already lean",
+      message:
+        clearedItems > 0
+          ? `Unloaded ${result.clearedVolumes} hidden volume cache${result.clearedVolumes === 1 ? "" : "s"} and ${result.clearedMeshes} hidden mesh cache${result.clearedMeshes === 1 ? "" : "s"}.`
+          : "No hidden volume or mesh caches were loaded, so there was nothing to evict.",
+      detail: result.workerReleased
+        ? "The idle local data worker was also released."
+        : "The local data worker is still busy, so it was kept alive.",
+    });
+  }
+
+  function handleAssistantCleared(released: boolean) {
+    if (!released) return;
+    enqueueToast({
+      tone: "info",
+      title: "Assistant unloaded",
+      message: "The local assistant model was released from memory.",
+    });
+  }
+
+  function handleRunResourceCleanup(options: {
+    unloadHiddenData: boolean;
+    clearHistory: boolean;
+    unloadAssistant: boolean;
+  }) {
+    if (options.clearHistory) {
+      handleClearViewerHistoryOnly();
+      enqueueToast({
+        tone: "info",
+        title: "History cleared",
+        message: "Undo and redo history were trimmed from browser memory.",
+      });
+    }
+    if (options.unloadHiddenData) {
+      handleRequestClearResourceCache();
+    }
+    if (options.unloadAssistant) {
+      setAssistantClearRequestKey((value) => value + 1);
+    }
+  }
+
   function handleApplyImportedState() {
     try {
       const parsed = parseViewerState(stateTextDraft);
@@ -4361,7 +4444,26 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
 
+  function closeResourceManager() {
+    setResourceSectionHeight(DEFAULT_RESOURCE_SECTION_HEIGHT);
+    setIsResourceManagerOpen(false);
+    setActiveTool((current) => (current === "resources" ? "mouse" : current));
+  }
+
   function handleToolChange(tool: ToolId) {
+    if (tool === "resources") {
+      setIsResourceManagerOpen((current) => {
+        const next = !current;
+        if (!next) {
+          setResourceSectionHeight(DEFAULT_RESOURCE_SECTION_HEIGHT);
+        }
+        return next;
+      });
+      if (activeTool === "resources") {
+        setActiveTool("mouse");
+      }
+      return;
+    }
     setActiveTool(tool);
     if (tool !== "slice") {
       setScenePointerTarget(null);
@@ -4389,6 +4491,12 @@ export default function App({ startupSlices = [] }: AppProps) {
       }
     }
   }
+
+  useEffect(() => {
+    if (activeTool !== "resources") return;
+    setIsResourceManagerOpen(true);
+    setActiveTool("mouse");
+  }, [activeTool]);
 
   function handleToggleVisible(nodeId: string) {
     setLayerTree((prev) => {
@@ -5722,6 +5830,8 @@ export default function App({ startupSlices = [] }: AppProps) {
       style={{
         width: "100vw",
         height: "100vh",
+        display: "flex",
+        flexDirection: "column",
         overflow: "hidden",
         margin: 0,
         position: "relative",
@@ -5746,6 +5856,14 @@ export default function App({ startupSlices = [] }: AppProps) {
           user-select: none;
         }
       `}</style>
+      <div
+        style={{
+          flex: "1 1 auto",
+          minHeight: 0,
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
 
       <WebGLCanvas
         activeTool={activeTool}
@@ -5780,6 +5898,9 @@ export default function App({ startupSlices = [] }: AppProps) {
         onLocalSceneLoadStateChange={handleLocalSceneLoadStateChange}
         localSceneLoadingActive={localSceneLoadState.active}
         focusSelectedLayerRequestKey={focusSelectedLayerRequestKey}
+        cacheClearRequestKey={cacheClearRequestKey}
+        hiddenDataAutoUnloadMinutes={appPreferences.hiddenDataAutoUnloadMinutes}
+        onCacheClearComplete={handleResourceCacheCleared}
       />
 
       <style>{`
@@ -5855,42 +5976,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         onOpenAbout={openAboutDialog}
       />
 
-      <AboutDialog
-        open={isAboutDialogOpen}
-        onClose={() => setIsAboutDialogOpen(false)}
-        version={APP_VERSION}
-        commitShort={APP_COMMIT_SHORT}
-        commitUrl={APP_COMMIT_URL}
-        githubUrl="https://github.com/FrancoisHUP/mouse-brain-viewer"
-        contactEmail="francois.h.marcoux@gmail.com"
-      />
-
-      <ShareDialog
-        open={isShareDialogOpen}
-        shareUrlDraft={shareUrlDraft}
-        localOnlyLayerNames={localOnlyLayerNames}
-        stateError={stateError}
-        stateShareMessage={stateShareMessage}
-        onClose={() => setIsShareDialogOpen(false)}
-        onCopyShareLink={() => void handleShareViewerState()}
-      />
-
-      <StateDialog open={isStateModalOpen} onClose={() => setIsStateDialogOpen(false)}>
-        <StatePanel
-          mode={stateModalMode}
-          stateTextDraft={stateTextDraft}
-          stateError={stateError}
-          stateShareMessage={stateShareMessage}
-          localOnlyLayerNames={localOnlyLayerNames}
-          isSerializable={isCurrentViewerShareSerializable}
-          onStateTextDraftChange={setStateTextDraft}
-          onOpenExport={openExportStateModal}
-          onOpenImport={openImportStateModal}
-          onCopyExportState={handleCopyExportState}
-          onApplyImportedState={handleApplyImportedState}
-        />
-      </StateDialog>
-
       <LayerPanel
         layerTree={layerTree}
         selectedNodeId={selectedNodeId}
@@ -5920,72 +6005,6 @@ export default function App({ startupSlices = [] }: AppProps) {
         onDropNodesIntoGroup={handleDropNodesIntoGroup}
         onDropNodesToRoot={handleDropNodesToRoot}
         onReorderNodesBefore={handleReorderNodesBefore}
-      />
-
-      <ImportDataPanel
-        key={profileDataRevision}
-        open={isImportPanelOpen}
-        initialView={importPanelView}
-        initialLocalEntries={droppedLocalEntries}
-        onConsumeInitialLocalEntries={() => setDroppedLocalEntries(null)}
-        onClose={() => {
-          setIsImportPanelOpen(false);
-          setImportPanelView("library");
-          setDroppedLocalEntries(null);
-        }}
-        onAddDrawingLayer={handleAddDrawingLayer}
-        onAddExternalSources={handleAddExternalSources}
-        onImportLocalSources={handleImportLocalSources}
-        onAddStoredLocalSources={handleAddStoredLocalSources}
-        onOpenLocalDatasetManager={() => {
-          setIsImportPanelOpen(false);
-          setImportPanelView("library");
-          setDroppedLocalEntries(null);
-          setIsLocalDatasetManagerOpen(true);
-        }}
-      />
-
-      <LocalDatasetManagerPanel
-        open={isLocalDatasetManagerOpen}
-        onClose={() => setIsLocalDatasetManagerOpen(false)}
-        onRenameDataset={handleRenameLocalDataset}
-        onDeleteDataset={handleDeleteLocalDataset}
-        activeLayerTree={layerTree}
-        savedViewers={viewerLibrary}
-        onExportNoticeChange={(notice) => {
-          setExportTaskNotice(notice);
-          setIsExportTaskNoticeHovered(false);
-          if (notice) {
-            const nextKey = notice.detail ? `${notice.title}|${notice.message}|${notice.detail}` : `${notice.title}|${notice.message}`;
-            setDismissedExportTaskNoticeKey((prev) => (prev === nextKey ? prev : null));
-          } else {
-            setDismissedExportTaskNoticeKey(null);
-          }
-        }}
-      />
-
-      <UserProfilePanel
-        open={isUserProfilePanelOpen}
-        onClose={() => setIsUserProfilePanelOpen(false)}
-        onPreferencesChange={(next) => {
-          setAppPreferences(next);
-        }}
-        onClearViewerState={handleClearPersistedViewerState}
-        onClearViewerHistory={handleClearViewerHistoryOnly}
-        onResetLocalProfile={handleResetLocalProfileData}
-        onDeleteLocalDataset={handleDeleteLocalDataset}
-        onOpenLocalDatasetManager={() => {
-          setIsUserProfilePanelOpen(false);
-          setIsLocalDatasetManagerOpen(true);
-        }}
-        onDataChanged={notifyProfileDataChanged}
-        shortcutBindings={shortcutBindings}
-        onShortcutBindingChange={handleShortcutBindingChange}
-        onResetShortcutBinding={handleResetSingleShortcut}
-        onResetAllShortcuts={handleResetAllShortcuts}
-        savedViewerStateExists={hasPersistedViewerState || viewerLibrary.length > 0}
-        savedHistoryCount={pastStatesRef.current.length + futureStatesRef.current.length}
-        dataRevision={profileDataRevision}
       />
 
       <ViewerLibraryPanel
@@ -6036,6 +6055,8 @@ export default function App({ startupSlices = [] }: AppProps) {
 
       <AppAssistantPanel
         workspaceOpen={activeTool === "assistant"}
+        keepModelLoaded={appPreferences.keepAssistantModel}
+        assistantClearRequestKey={assistantClearRequestKey}
         quickPrompt={appAssistantQuickPrompt}
         context={appAssistantContext}
         activePipelineId={activeAutomationPipelineId}
@@ -6051,11 +6072,13 @@ export default function App({ startupSlices = [] }: AppProps) {
         onFocusWindow={focusFloatingWindow}
         onCloseWindow={closeFloatingWindow}
         renderWindowContent={renderFloatingWindowContent}
+        onAssistantClearComplete={handleAssistantCleared}
       />
 
       <BottomToolbar
         activeTool={activeTool}
         onToolChange={handleToolChange}
+        resourceManagerOpen={isResourceManagerOpen}
         cameraMode={cameraState.mode}
         onCameraModeChange={handleCameraModeChange}
         onFocusSelectedLayer={handleRequestFocusSelectedLayer}
@@ -6129,6 +6152,8 @@ export default function App({ startupSlices = [] }: AppProps) {
           pipelines={pipelineMenuItems}
           assistantOpen={activeTool === "assistant"}
           onToggleAssistant={() => handleToolChange("assistant")}
+          resourceSummary={resourceSummary}
+          resourceSamples={resourceHistorySamples}
           onQuickAssistantSubmit={(prompt) => {
             setActiveTool((current) => current === "assistant" ? "mouse" : current);
             setAppAssistantQuickPrompt({ id: `quick-${Date.now()}`, prompt });
@@ -6144,6 +6169,123 @@ export default function App({ startupSlices = [] }: AppProps) {
             )
           }
 	      />
+
+      </div>
+
+      <ResourceManagerPanel
+        open={isResourceManagerOpen}
+        height={resourceSectionHeight}
+        summary={resourceSummary}
+        samples={resourceHistorySamples}
+        onHeightChange={setResourceSectionHeight}
+        onClose={closeResourceManager}
+        onEndProcess={(processId) => {
+          void endResourceProcess(processId);
+        }}
+        onRunCleanup={handleRunResourceCleanup}
+      />
+
+      <AboutDialog
+        open={isAboutDialogOpen}
+        onClose={() => setIsAboutDialogOpen(false)}
+        version={APP_VERSION}
+        commitShort={APP_COMMIT_SHORT}
+        commitUrl={APP_COMMIT_URL}
+        githubUrl="https://github.com/FrancoisHUP/mouse-brain-viewer"
+        contactEmail="francois.h.marcoux@gmail.com"
+      />
+
+      <ShareDialog
+        open={isShareDialogOpen}
+        shareUrlDraft={shareUrlDraft}
+        localOnlyLayerNames={localOnlyLayerNames}
+        stateError={stateError}
+        stateShareMessage={stateShareMessage}
+        onClose={() => setIsShareDialogOpen(false)}
+        onCopyShareLink={() => void handleShareViewerState()}
+      />
+
+      <StateDialog open={isStateModalOpen} onClose={() => setIsStateDialogOpen(false)}>
+        <StatePanel
+          mode={stateModalMode}
+          stateTextDraft={stateTextDraft}
+          stateError={stateError}
+          stateShareMessage={stateShareMessage}
+          localOnlyLayerNames={localOnlyLayerNames}
+          isSerializable={isCurrentViewerShareSerializable}
+          onStateTextDraftChange={setStateTextDraft}
+          onOpenExport={openExportStateModal}
+          onOpenImport={openImportStateModal}
+          onCopyExportState={handleCopyExportState}
+          onApplyImportedState={handleApplyImportedState}
+        />
+      </StateDialog>
+
+      <ImportDataPanel
+        key={profileDataRevision}
+        open={isImportPanelOpen}
+        initialView={importPanelView}
+        initialLocalEntries={droppedLocalEntries}
+        onConsumeInitialLocalEntries={() => setDroppedLocalEntries(null)}
+        onClose={() => {
+          setIsImportPanelOpen(false);
+          setImportPanelView("library");
+          setDroppedLocalEntries(null);
+        }}
+        onAddDrawingLayer={handleAddDrawingLayer}
+        onAddExternalSources={handleAddExternalSources}
+        onImportLocalSources={handleImportLocalSources}
+        onAddStoredLocalSources={handleAddStoredLocalSources}
+        onOpenLocalDatasetManager={() => {
+          setIsImportPanelOpen(false);
+          setImportPanelView("library");
+          setDroppedLocalEntries(null);
+          setIsLocalDatasetManagerOpen(true);
+        }}
+      />
+
+      <LocalDatasetManagerPanel
+        open={isLocalDatasetManagerOpen}
+        onClose={() => setIsLocalDatasetManagerOpen(false)}
+        onRenameDataset={handleRenameLocalDataset}
+        onDeleteDataset={handleDeleteLocalDataset}
+        activeLayerTree={layerTree}
+        savedViewers={viewerLibrary}
+        onExportNoticeChange={(notice) => {
+          setExportTaskNotice(notice);
+          setIsExportTaskNoticeHovered(false);
+          if (notice) {
+            const nextKey = notice.detail ? `${notice.title}|${notice.message}|${notice.detail}` : `${notice.title}|${notice.message}`;
+            setDismissedExportTaskNoticeKey((prev) => (prev === nextKey ? prev : null));
+          } else {
+            setDismissedExportTaskNoticeKey(null);
+          }
+        }}
+      />
+
+      <UserProfilePanel
+        open={isUserProfilePanelOpen}
+        onClose={() => setIsUserProfilePanelOpen(false)}
+        onPreferencesChange={(next) => {
+          setAppPreferences(next);
+        }}
+        onClearViewerState={handleClearPersistedViewerState}
+        onClearViewerHistory={handleClearViewerHistoryOnly}
+        onResetLocalProfile={handleResetLocalProfileData}
+        onDeleteLocalDataset={handleDeleteLocalDataset}
+        onOpenLocalDatasetManager={() => {
+          setIsUserProfilePanelOpen(false);
+          setIsLocalDatasetManagerOpen(true);
+        }}
+        onDataChanged={notifyProfileDataChanged}
+        shortcutBindings={shortcutBindings}
+        onShortcutBindingChange={handleShortcutBindingChange}
+        onResetShortcutBinding={handleResetSingleShortcut}
+        onResetAllShortcuts={handleResetAllShortcuts}
+        savedViewerStateExists={hasPersistedViewerState || viewerLibrary.length > 0}
+        savedHistoryCount={pastStatesRef.current.length + futureStatesRef.current.length}
+        dataRevision={profileDataRevision}
+      />
     </div>
   );
 }

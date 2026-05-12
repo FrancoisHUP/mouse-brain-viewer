@@ -57,7 +57,7 @@ export const DEFAULT_SHORTCUT_BINDINGS: ShortcutBindingMap = SHORTCUT_DEFINITION
     {} as ShortcutBindingMap
 );
 
-const STORAGE_KEY = "allen-viewer-shortcuts-v1";
+export const SHORTCUT_BINDINGS_STORAGE_KEY = "allen-viewer-shortcuts-v1";
 
 function normalizeKeyName(key: string): string | null {
     if (!key) return null;
@@ -137,7 +137,7 @@ export function normalizeShortcutCombo(combo: string | null | undefined): string
 export function loadShortcutBindings(): ShortcutBindingMap {
     if (typeof window === "undefined") return { ...DEFAULT_SHORTCUT_BINDINGS };
     try {
-        const raw = window.localStorage.getItem(STORAGE_KEY);
+        const raw = window.localStorage.getItem(SHORTCUT_BINDINGS_STORAGE_KEY);
         if (!raw) return { ...DEFAULT_SHORTCUT_BINDINGS };
         const parsed = JSON.parse(raw) as Partial<Record<ShortcutCommandId, string | null>>;
         const next = { ...DEFAULT_SHORTCUT_BINDINGS };
@@ -153,7 +153,7 @@ export function loadShortcutBindings(): ShortcutBindingMap {
 export function saveShortcutBindings(bindings: ShortcutBindingMap) {
     if (typeof window === "undefined") return;
     try {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(bindings));
+        window.localStorage.setItem(SHORTCUT_BINDINGS_STORAGE_KEY, JSON.stringify(bindings));
     } catch { }
 }
 

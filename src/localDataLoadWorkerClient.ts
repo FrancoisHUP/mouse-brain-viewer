@@ -1,6 +1,11 @@
 import type { LoadedVolume } from "./omeZarr";
 import type { LoadedMesh } from "./allenMesh";
 import type { LocalDatasetInfo } from "./layerTypes";
+import {
+  registerTrackedProcess,
+  removeTrackedProcess,
+  updateTrackedProcess,
+} from "./resourceTelemetry";
 
 type VolumeRequest = {
   type: "load-volume";
@@ -36,6 +41,7 @@ type PendingRequest = {
 
 let worker: Worker | null = null;
 const pending = new Map<string, PendingRequest>();
+const LOCAL_DATA_WORKER_PROCESS_ID = "resource-local-data-worker";
 
 function createId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -47,6 +53,15 @@ function createId() {
 function getWorker() {
   if (!worker) {
     worker = new Worker(new URL("./localDataLoad.worker.ts", import.meta.url), { type: "module" });
+    registerTrackedProcess({
+      id: LOCAL_DATA_WORKER_PROCESS_ID,
+      kind: "worker",
+      name: "Local data worker",
+      badgeLabel: "Root",
+      detail: "Loads local browser datasets in a background worker.",
+      cpuPercent: 8,
+      gpuPercent: 0,
+    });
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const msg = event.data;
       const request = pending.get(msg.requestId);
@@ -57,6 +72,12 @@ function getWorker() {
       } else {
         request.reject(new Error(msg.error || "Worker local data load failed."));
       }
+      if (pending.size === 0) {
+        updateTrackedProcess(LOCAL_DATA_WORKER_PROCESS_ID, {
+          detail: "Background worker is idle.",
+          cpuPercent: 4,
+        });
+      }
     };
     worker.onerror = (event) => {
       const error = event.error ?? new Error(event.message || "Local data worker crashed.");
@@ -64,6 +85,11 @@ function getWorker() {
         request.reject(error);
       }
       pending.clear();
+      updateTrackedProcess(LOCAL_DATA_WORKER_PROCESS_ID, {
+        status: "error",
+        detail: error.message || "Local data worker crashed.",
+        cpuPercent: 0,
+      });
     };
   }
   return worker;
@@ -73,6 +99,12 @@ function postRequest<T>(request: WorkerRequest): Promise<T> {
   const w = getWorker();
   return new Promise<T>((resolve, reject) => {
     pending.set(request.requestId, { resolve, reject });
+    updateTrackedProcess(LOCAL_DATA_WORKER_PROCESS_ID, {
+      status: "running",
+      detail: `${pending.size} local dataset task${pending.size === 1 ? "" : "s"} in progress.`,
+      cpuPercent: Math.min(78, 20 + pending.size * 16),
+      ramBytes: null,
+    });
     w.postMessage(request);
   });
 }
@@ -103,4 +135,5 @@ export function disposeLocalDataLoadWorker() {
     request.reject(new Error("Local data worker was terminated."));
   }
   pending.clear();
+  removeTrackedProcess(LOCAL_DATA_WORKER_PROCESS_ID);
 }

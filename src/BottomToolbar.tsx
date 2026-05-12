@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import type { CameraControlMode } from "./viewerState";
 import type { AnnotationShape, SlicePlane } from "./layerTypes";
 import type { FloatingWindowState } from "./components/app/FloatingWindowManager";
+import type { BrowserResourceSummary, ResourceHistorySample, ResourceMetricId } from "./resourceTelemetry";
+import { formatMetricPercent, getMetricFillColor, getMetricLabel } from "./resourceTelemetry";
 
 declare global {
   interface Window {
@@ -18,6 +20,7 @@ export type ToolId =
   | "pencil"
   | "slice"
   | "pipeline"
+  | "resources"
   | "assistant"
   | "data"
   | "search"
@@ -168,6 +171,8 @@ function Icon({ id }: { id: ToolId }) {
           <path d="M18.4 7.4h1" />
         </svg>
       );
+    case "resources":
+      return <ResourceBarsIcon />;
     case "data":
       return (
         <svg {...common}>
@@ -223,6 +228,184 @@ function Icon({ id }: { id: ToolId }) {
     default:
       return null;
   }
+}
+
+function ResourceBarsIcon({
+  cpuPercent = 0,
+  gpuPercent = 0,
+  ramPercent = 0,
+}: {
+  cpuPercent?: number;
+  gpuPercent?: number;
+  ramPercent?: number;
+}) {
+  const metrics = [
+    { value: cpuPercent, x: 5 },
+    { value: gpuPercent, x: 10 },
+    { value: ramPercent, x: 15 },
+  ];
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      {metrics.map((metric) => {
+        const height = Math.max(3, (Math.max(0, Math.min(100, metric.value)) / 100) * 12);
+        const y = 18 - height;
+        const fill = getMetricFillColor(metric.value);
+        return (
+          <g key={metric.x}>
+            <rect x={metric.x} y={5} width="4" height="13" rx="1.5" stroke="currentColor" strokeWidth="1.2" opacity="0.42" />
+            <rect x={metric.x + 0.8} y={y} width="2.4" height={Math.max(2, height)} rx="1.2" fill={fill} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function ResourceSparkline({
+  samples,
+  metric,
+}: {
+  samples: ResourceHistorySample[];
+  metric: ResourceMetricId;
+}) {
+  const values = samples.map((sample) =>
+    metric === "cpu"
+      ? sample.cpuPercent
+      : metric === "gpu"
+        ? sample.gpuPercent
+        : sample.ramPercent
+  );
+  const accent = getMetricFillColor(values[values.length - 1] ?? 0);
+  const path = values
+    .map((value, index) => {
+      const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * 108;
+      const y = 34 - (Math.max(0, Math.min(100, value)) / 100) * 28;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg width="100%" height="40" viewBox="0 0 108 40" preserveAspectRatio="none">
+      <line x1="0" x2="108" y1="34" y2="34" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+      <path d={path} fill="none" stroke={accent} strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ResourceToolButton({
+  active,
+  summary,
+  samples,
+  onClick,
+}: {
+  active: boolean;
+  summary: BrowserResourceSummary | null;
+  samples: ResourceHistorySample[];
+  onClick: () => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const metrics = [
+    { id: "cpu" as const, value: summary?.cpuPercent ?? 0 },
+    { id: "gpu" as const, value: summary?.gpuPercent ?? 0 },
+    { id: "ram" as const, value: summary?.ramPercent ?? 0 },
+  ];
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+      onFocus={() => setIsOpen(true)}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setIsOpen(false);
+      }}
+    >
+      <ToolButton
+        id="resources"
+        label="Resource manager"
+        active={active}
+        onClick={onClick}
+        icon={
+          <ResourceBarsIcon
+            cpuPercent={summary?.cpuPercent ?? 0}
+            gpuPercent={summary?.gpuPercent ?? 0}
+            ramPercent={summary?.ramPercent ?? 0}
+          />
+        }
+      />
+      <div
+        data-theme-surface="panel"
+        onClick={onClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onClick();
+          }
+        }}
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: "calc(100% + 12px)",
+          transform: isOpen ? "translate(-50%, 0)" : "translate(-50%, 8px)",
+          width: 360,
+          maxWidth: "min(360px, calc(100vw - 32px))",
+          borderRadius: 14,
+          border: "1px solid rgba(255,255,255,0.12)",
+          background: "rgba(12,14,18,0.95)",
+          boxShadow: "0 16px 42px rgba(0,0,0,0.42)",
+          backdropFilter: "blur(14px)",
+          padding: 12,
+          opacity: isOpen ? 1 : 0,
+          visibility: isOpen ? "visible" : "hidden",
+          pointerEvents: isOpen ? "auto" : "none",
+          transition: "opacity 150ms ease, transform 170ms ease, visibility 150ms ease",
+          color: "white",
+          fontFamily: UI_FONT_FAMILY,
+          cursor: "pointer",
+          display: "grid",
+          gap: 10,
+          zIndex: 72,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 800 }}>Resource manager</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
+            {summary?.processCount ?? 0} tasks
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+          {metrics.map((metric) => (
+            <div
+              key={metric.id}
+              style={{
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.04)",
+                padding: 8,
+                display: "grid",
+                gap: 6,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: "rgba(255,255,255,0.70)" }}>
+                  {getMetricLabel(metric.id)}
+                </span>
+                <span style={{ fontSize: 11, fontWeight: 900, color: getMetricFillColor(metric.value) }}>
+                  {formatMetricPercent(metric.value)}
+                </span>
+              </div>
+              <ResourceSparkline samples={samples} metric={metric.id} />
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.58)", lineHeight: 1.45 }}>
+          Click to open the full browser resource panel and manage tracked workers or local assistant tasks.
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AssistantToolbarIcon() {
@@ -2849,6 +3032,9 @@ export default function BottomToolbar({
   assistantOpen = false,
   onToggleAssistant,
   onQuickAssistantSubmit,
+  resourceManagerOpen = false,
+  resourceSummary = null,
+  resourceSamples = [],
 }: {
   activeTool: ToolId;
   onToolChange: (tool: ToolId) => void;
@@ -2926,6 +3112,9 @@ export default function BottomToolbar({
   assistantOpen?: boolean;
   onToggleAssistant?: () => void;
   onQuickAssistantSubmit?: (prompt: string) => void;
+  resourceManagerOpen?: boolean;
+  resourceSummary?: BrowserResourceSummary | null;
+  resourceSamples?: ResourceHistorySample[];
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -3054,7 +3243,7 @@ export default function BottomToolbar({
 
         return <ToolButton key={tool.id} id={tool.id} label={tool.label} active={isActive} onClick={() => onToolChange(tool.id)} />;
       }),
-    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen, pipelines, onOpenPipeline, onTogglePipeline]
+    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen, pipelines, onOpenPipeline, onTogglePipeline, resourceSamples, resourceSummary]
   );
 
   return (
@@ -3134,13 +3323,19 @@ export default function BottomToolbar({
           <HistoryButton direction="undo" disabled={!canUndo} onClick={() => onUndo?.()} items={undoItems} onJump={onJumpUndo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
 	          <HistoryButton direction="redo" disabled={!canRedo} onClick={() => onRedo?.()} items={redoItems} onJump={onJumpRedo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
 	          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
-	          {toolbarButtons}
+		          {toolbarButtons}
             <AssistantToolButton
               active={assistantOpen}
               onClick={() => onToggleAssistant?.()}
               onSubmit={onQuickAssistantSubmit ?? (() => {})}
             />
-	          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
+            <ResourceToolButton
+              active={resourceManagerOpen}
+              summary={resourceSummary ?? null}
+              samples={resourceSamples ?? []}
+              onClick={() => onToolChange("resources")}
+            />
+		          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
 	          <WindowManagerToolButton
 	            windows={windows}
 	            onFocusWindow={onFocusWindow ?? (() => {})}

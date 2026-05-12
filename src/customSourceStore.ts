@@ -38,7 +38,7 @@ type AnonymousUserData = {
   customSources: CustomExternalSource[];
 };
 
-const STORAGE_KEY = "mouse_brain_viewer.anonymous_user_data";
+export const ANONYMOUS_USER_DATA_STORAGE_KEY = "mouse_brain_viewer.anonymous_user_data";
 
 function createId(prefix: string) {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -185,7 +185,7 @@ export function loadAnonymousUserData(): AnonymousUserData {
   }
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(ANONYMOUS_USER_DATA_STORAGE_KEY);
     if (!raw) {
       const empty = createEmptyAnonymousUserData();
       saveAnonymousUserData(empty);
@@ -205,7 +205,7 @@ export function loadAnonymousUserData(): AnonymousUserData {
 
 export function saveAnonymousUserData(data: AnonymousUserData) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  window.localStorage.setItem(ANONYMOUS_USER_DATA_STORAGE_KEY, JSON.stringify(data));
 }
 
 export function getAnonymousUserId() {
@@ -335,5 +335,5 @@ export function clearAllCustomExternalSources() {
 
 export function clearAllAnonymousUserData() {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(ANONYMOUS_USER_DATA_STORAGE_KEY);
 }

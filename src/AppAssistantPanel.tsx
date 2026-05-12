@@ -3,6 +3,7 @@ import {
   createEmptyAssistantConversation,
   createMockAppAssistantModel,
   createWebLLMAppAssistantModel,
+  disposeAppAssistantEngine,
   isWebGPUSupported,
   loadAssistantConversations,
   saveAssistantConversations,
@@ -33,11 +34,18 @@ import {
 } from "./automationCapabilities";
 import type { AutomationPipeline } from "./automationTypes";
 import FloatingWindowManager, { type FloatingWindowState } from "./components/app/FloatingWindowManager";
+import {
+  registerTrackedProcess,
+  removeTrackedProcess,
+  updateTrackedProcess,
+} from "./resourceTelemetry";
 
 const UI_FONT_FAMILY = "inherit";
 
 type Props = {
   workspaceOpen: boolean;
+  keepModelLoaded: boolean;
+  assistantClearRequestKey?: number;
   quickPrompt: { id: string; prompt: string } | null;
   context: AppAssistantContext;
   activePipelineId: string | null;
@@ -53,10 +61,13 @@ type Props = {
   onFocusWindow: (id: string) => void;
   onCloseWindow: (id: string) => void;
   renderWindowContent: (window: FloatingWindowState) => ReactNode;
+  onAssistantClearComplete?: (released: boolean) => void;
 };
 
 export default function AppAssistantPanel({
   workspaceOpen,
+  keepModelLoaded,
+  assistantClearRequestKey = 0,
   quickPrompt,
   context,
   activePipelineId,
@@ -72,9 +83,11 @@ export default function AppAssistantPanel({
   onFocusWindow,
   onCloseWindow,
   renderWindowContent,
+  onAssistantClearComplete,
 }: Props) {
   const stopRequestedRef = useRef(false);
   const quickPromptRef = useRef<string | null>(null);
+  const handledAssistantClearRequestRef = useRef(0);
   const [mode, setMode] = useState<"local" | "mock">("local");
   const [composerDrafts, setComposerDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -105,6 +118,120 @@ export default function AppAssistantPanel({
   useEffect(() => {
     saveAssistantConversations(conversations);
   }, [conversations]);
+
+  useEffect(() => {
+    if (assistantClearRequestKey <= 0) return;
+    if (assistantClearRequestKey === handledAssistantClearRequestRef.current) return;
+    handledAssistantClearRequestRef.current = assistantClearRequestKey;
+
+    if (mode !== "local") {
+      onAssistantClearComplete?.(false);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      await stopAppAssistantGeneration();
+      await disposeAppAssistantEngine();
+      if (cancelled) return;
+      setBusy(false);
+      setStreamingMessageId(null);
+      setPendingProposalRequest(false);
+      setStatus({
+        phase: isWebGPUSupported() ? "idle" : "unsupported",
+        message: isWebGPUSupported()
+          ? "Local assistant was unloaded. It will load again on next use."
+          : "WebGPU is unavailable. Mock mode still works.",
+      });
+      removeTrackedProcess("resource-local-assistant");
+      onAssistantClearComplete?.(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [assistantClearRequestKey, mode, onAssistantClearComplete]);
+
+  useEffect(() => {
+    if (keepModelLoaded) return;
+    if (mode !== "local") return;
+    if (workspaceOpen) return;
+    if (busy || pendingProposalRequest || streamingMessageId) return;
+    if (status.phase !== "ready") return;
+
+    let cancelled = false;
+    void (async () => {
+      await disposeAppAssistantEngine();
+      if (cancelled) return;
+      setStatus({
+        phase: isWebGPUSupported() ? "idle" : "unsupported",
+        message: isWebGPUSupported()
+          ? "Local assistant unloads automatically when closed."
+          : "WebGPU is unavailable. Mock mode still works.",
+      });
+      removeTrackedProcess("resource-local-assistant");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [busy, keepModelLoaded, mode, pendingProposalRequest, status.phase, streamingMessageId, workspaceOpen]);
+
+  useEffect(() => {
+    if (mode !== "local") {
+      removeTrackedProcess("resource-local-assistant");
+      return;
+    }
+
+    const shouldTrack =
+      busy ||
+      status.phase === "loading" ||
+      status.phase === "generating" ||
+      status.phase === "ready" ||
+      status.phase === "error";
+    if (!shouldTrack) {
+      removeTrackedProcess("resource-local-assistant");
+      return;
+    }
+
+    registerTrackedProcess({
+      id: "resource-local-assistant",
+      kind: "assistant",
+      name: "Local assistant",
+      detail:
+        status.phase === "ready" && !busy
+          ? "Local model is loaded and ready."
+          : status.message,
+      status: status.phase === "error" ? "error" : "running",
+      cpuPercent:
+        status.phase === "generating"
+          ? 84
+          : status.phase === "loading"
+            ? 58
+            : status.phase === "ready"
+              ? 14
+              : 8,
+      gpuPercent:
+        status.phase === "generating"
+          ? 88
+          : status.phase === "loading"
+            ? 72
+            : status.phase === "ready"
+              ? 18
+              : 0,
+      end: async () => {
+        await stopAppAssistantGeneration();
+        await disposeAppAssistantEngine();
+        removeTrackedProcess("resource-local-assistant");
+      },
+    });
+
+    if (status.phase === "ready" && !busy) {
+      updateTrackedProcess("resource-local-assistant", {
+        detail: "Local model is loaded and ready.",
+      });
+    }
+  }, [busy, mode, status]);
 
   useEffect(() => {
     if (conversations.some((conversation) => conversation.id === activeConversationId)) return;
@@ -502,12 +629,11 @@ export default function AppAssistantPanel({
 
       {workspaceOpen ? (
         <aside data-theme-surface="panel" style={workspaceStyle}>
-          {!leftPanelOpen ? (
-            <button type="button" onClick={() => setLeftPanelOpen(true)} title="Show chats" aria-label="Show chats" style={{ ...floatingButtonStyle, left: 14, top: 14 }}>
-              <PanelIcon />
-            </button>
-          ) : null}
-          <section style={{ borderRight: "1px solid rgba(255,255,255,0.09)", overflow: "hidden", display: leftPanelOpen ? "grid" : "none", gridTemplateRows: "auto 1fr" }}>
+          <section
+            aria-hidden={!leftPanelOpen}
+            style={getSidebarRailStyle(leftPanelOpen)}
+          >
+            <div style={getSidebarPanelStyle(leftPanelOpen)}>
             <div style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <div>
                 <div style={{ fontSize: 14, fontWeight: 900 }}>Chats</div>
@@ -560,12 +686,27 @@ export default function AppAssistantPanel({
                 </div>
               ))}
             </div>
+            </div>
           </section>
-          <main style={{ minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", background: "#090b10" }}>
+          <main style={workspaceMainStyle}>
             <div style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-              <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                {!leftPanelOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => setLeftPanelOpen(true)}
+                    title="Show chats"
+                    aria-label="Show chats"
+                    aria-pressed={false}
+                    style={iconButtonStyle}
+                  >
+                    <PanelIcon />
+                  </button>
+                ) : null}
+                <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 900 }}>{activeConversation?.title ?? "Assistant"}</div>
                 <div style={{ marginTop: 3, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>{contextLine}</div>
+                </div>
               </div>
               <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                 <button
@@ -1245,22 +1386,44 @@ const workspaceStyle: CSSProperties = {
   zIndex: 44,
   background: "rgba(10,12,16,0.98)",
   color: "white",
-  display: "grid",
-  gridTemplateColumns: "280px minmax(0, 1fr)",
+  display: "flex",
   overflow: "hidden",
   fontFamily: UI_FONT_FAMILY,
 };
 
-const floatingButtonStyle: CSSProperties = {
-  position: "absolute",
-  zIndex: 7,
-  width: 34,
-  height: 34,
-  borderRadius: 8,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background: "rgba(12,14,18,0.82)",
-  color: "white",
-  cursor: "pointer",
+const workspaceMainStyle: CSSProperties = {
+  minWidth: 0,
+  minHeight: 0,
+  flex: "1 1 auto",
+  display: "grid",
+  gridTemplateRows: "auto minmax(0, 1fr)",
+  background: "#090b10",
+};
+
+function getSidebarRailStyle(open: boolean): CSSProperties {
+  return {
+    width: open ? 280 : 0,
+    minWidth: 0,
+    minHeight: 0,
+    flex: "0 0 auto",
+    overflow: "hidden",
+    transition: "width 220ms ease",
+    borderRight: open ? "1px solid rgba(255,255,255,0.09)" : "1px solid rgba(255,255,255,0)",
+  };
+}
+
+function getSidebarPanelStyle(open: boolean): CSSProperties {
+  return {
+    width: 280,
+    height: "100%",
+    display: "grid",
+    gridTemplateRows: "auto minmax(0, 1fr)",
+    opacity: open ? 1 : 0,
+    transform: open ? "translateX(0)" : "translateX(-18px)",
+    transition: "transform 220ms ease, opacity 140ms ease",
+    pointerEvents: open ? "auto" : "none",
+    willChange: "transform, opacity",
+  };
 };
 
 const iconButtonStyle: CSSProperties = {

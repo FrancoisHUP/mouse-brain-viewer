@@ -230,7 +230,7 @@ export type AppAssistantStatus = {
 };
 
 const DEFAULT_WEBLLM_MODEL_ID = "Qwen2.5-1.5B-Instruct-q4f16_1-MLC";
-const APP_ASSISTANT_CONVERSATIONS_STORAGE_KEY = "mouse-brain-viewer:assistant-conversations:v1";
+export const APP_ASSISTANT_CONVERSATIONS_STORAGE_KEY = "mouse-brain-viewer:assistant-conversations:v1";
 
 let appAssistantEnginePromise: Promise<WebLLMEngine> | null = null;
 let appAssistantEngine: WebLLMEngine | null = null;
@@ -524,6 +524,14 @@ export function createWebLLMAppAssistantModel(options?: {
 
 export async function stopAppAssistantGeneration() {
   await appAssistantEngine?.interruptGenerate();
+}
+
+export async function disposeAppAssistantEngine() {
+  try {
+    await appAssistantEngine?.interruptGenerate();
+  } catch {}
+  appAssistantEngine = null;
+  appAssistantEnginePromise = null;
 }
 
 export function isWebGPUSupported() {

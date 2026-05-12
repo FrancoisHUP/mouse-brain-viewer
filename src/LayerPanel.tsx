@@ -361,7 +361,7 @@ export default function LayerPanel({ layerTree, selectedNodeId, selectedNodeIdsE
       setIsDetailsToggleAnimating(false);
     }, 360);
     return () => window.clearTimeout(timeoutId);
-  }, [isDetailsCollapsed, detailsContent]);
+  }, [isDetailsCollapsed, !!detailsContent]);
 
 
   function startRename(row: FlatTreeRow) { setRenamingId(row.id); setRenameDraft(row.name); }

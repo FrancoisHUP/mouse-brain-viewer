@@ -7,9 +7,11 @@ export type AppPreferences = {
     cursorStyle: CursorStyleId;
     sceneBackground: string;
     historyLimit: number;
+    keepAssistantModel: boolean;
+    hiddenDataAutoUnloadMinutes: number | null;
 };
 
-const STORAGE_KEY = "mouse_brain_viewer.app_preferences";
+export const APP_PREFERENCES_STORAGE_KEY = "mouse_brain_viewer.app_preferences";
 
 const DEFAULT_PREFERENCES: AppPreferences = {
     schemaVersion: 1,
@@ -17,11 +19,19 @@ const DEFAULT_PREFERENCES: AppPreferences = {
     cursorStyle: "default",
     sceneBackground: "#0b0f14",
     historyLimit: 80,
+    keepAssistantModel: true,
+    hiddenDataAutoUnloadMinutes: null,
 };
 
 function clampHistoryLimit(value: number) {
     if (!Number.isFinite(value)) return DEFAULT_PREFERENCES.historyLimit;
     return Math.max(5, Math.min(500, Math.round(value)));
+}
+
+function clampHiddenDataAutoUnloadMinutes(value: number | null | undefined) {
+    if (value == null) return null;
+    if (!Number.isFinite(value)) return DEFAULT_PREFERENCES.hiddenDataAutoUnloadMinutes;
+    return Math.max(1, Math.min(240, Math.round(value)));
 }
 
 function normalizePreferences(value: unknown): AppPreferences {
@@ -48,6 +58,13 @@ function normalizePreferences(value: unknown): AppPreferences {
                 ? raw.sceneBackground
                 : DEFAULT_PREFERENCES.sceneBackground,
         historyLimit: clampHistoryLimit(raw.historyLimit ?? DEFAULT_PREFERENCES.historyLimit),
+        keepAssistantModel:
+            typeof raw.keepAssistantModel === "boolean"
+                ? raw.keepAssistantModel
+                : DEFAULT_PREFERENCES.keepAssistantModel,
+        hiddenDataAutoUnloadMinutes: clampHiddenDataAutoUnloadMinutes(
+            raw.hiddenDataAutoUnloadMinutes ?? DEFAULT_PREFERENCES.hiddenDataAutoUnloadMinutes
+        ),
     };
 }
 
@@ -55,7 +72,7 @@ export function loadAppPreferences(): AppPreferences {
     if (typeof window === "undefined") return DEFAULT_PREFERENCES;
 
     try {
-        const raw = window.localStorage.getItem(STORAGE_KEY);
+        const raw = window.localStorage.getItem(APP_PREFERENCES_STORAGE_KEY);
         if (!raw) {
             saveAppPreferences(DEFAULT_PREFERENCES);
             return DEFAULT_PREFERENCES;
@@ -73,7 +90,7 @@ export function loadAppPreferences(): AppPreferences {
 
 export function saveAppPreferences(preferences: AppPreferences) {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    window.localStorage.setItem(APP_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
 }
 
 export function updateAppPreferences(

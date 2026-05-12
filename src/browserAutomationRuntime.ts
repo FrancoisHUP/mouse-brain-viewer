@@ -1,3 +1,9 @@
+import {
+  registerTrackedProcess,
+  removeTrackedProcess,
+  updateTrackedProcess,
+} from "./resourceTelemetry";
+
 export type BrowserAutomationInput = {
   selection?: unknown;
   data?: unknown;
@@ -23,6 +29,7 @@ export function runBrowserAutomationCode(
   }
 
   return new Promise((resolve, reject) => {
+    const processId = `browser-automation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const workerSource = `
       self.onmessage = async (event) => {
         try {
@@ -49,9 +56,23 @@ export function runBrowserAutomationCode(
     const blob = new Blob([workerSource], { type: "text/javascript" });
     const workerUrl = URL.createObjectURL(blob);
     const worker = new Worker(workerUrl);
+    registerTrackedProcess({
+      id: processId,
+      kind: "automation",
+      name: "Browser automation task",
+      detail: "Executes browser-side automation code in a sandboxed worker.",
+      cpuPercent: 52,
+      gpuPercent: 0,
+      end: () => {
+        worker.terminate();
+        URL.revokeObjectURL(workerUrl);
+        removeTrackedProcess(processId);
+      },
+    });
     const timeoutId = window.setTimeout(() => {
       worker.terminate();
       URL.revokeObjectURL(workerUrl);
+      removeTrackedProcess(processId);
       reject(new Error("Code execution timed out."));
     }, timeoutMs);
 
@@ -59,6 +80,7 @@ export function runBrowserAutomationCode(
       window.clearTimeout(timeoutId);
       worker.terminate();
       URL.revokeObjectURL(workerUrl);
+      removeTrackedProcess(processId);
       if (event.data.ok) {
         resolve(event.data.result);
       } else {
@@ -70,9 +92,18 @@ export function runBrowserAutomationCode(
       window.clearTimeout(timeoutId);
       worker.terminate();
       URL.revokeObjectURL(workerUrl);
+      updateTrackedProcess(processId, {
+        status: "error",
+        detail: event.message || "Code execution failed.",
+      });
+      removeTrackedProcess(processId);
       reject(new Error(event.message || "Code execution failed."));
     };
 
+    updateTrackedProcess(processId, {
+      detail: "Running browser automation code.",
+      cpuPercent: 60,
+    });
     worker.postMessage({ code, input });
   });
 }

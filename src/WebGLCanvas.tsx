@@ -43,6 +43,7 @@ import {
   type SceneRay,
 } from "./scenePicking";
 import { disposeLocalDataLoadWorker, loadLocalBrowserMeshInWorker, loadLocalBrowserVolumeInWorker } from "./localDataLoadWorkerClient";
+import { updateTrackedCacheEstimate } from "./resourceTelemetry";
 
 type CameraState = {
   mode: CameraControlMode;
@@ -243,6 +244,14 @@ function getLocalVolumeCacheKey(datasetId: string): string {
 
 function getLocalMeshCacheKey(datasetId: string): string {
   return `local-mesh::${datasetId}`;
+}
+
+function estimateLoadedVolumeBytes(volume: LoadedVolume): number {
+  return Math.max(0, volume.data?.byteLength ?? 0);
+}
+
+function estimateLoadedMeshBytes(mesh: LoadedMesh): number {
+  return Math.max(0, mesh.linePositions?.byteLength ?? 0) + Math.max(0, mesh.trianglePositions?.byteLength ?? 0);
 }
 
 type CustomSliceSourceRef = {
@@ -603,6 +612,9 @@ export default function WebGLCanvas({
   onLocalSceneLoadStateChange,
   localSceneLoadingActive = false,
   focusSelectedLayerRequestKey = 0,
+  cacheClearRequestKey = 0,
+  hiddenDataAutoUnloadMinutes = null,
+  onCacheClearComplete,
 }: {
   activeTool: ToolId;
   layerTree: LayerTreeNode[];
@@ -647,6 +659,9 @@ export default function WebGLCanvas({
   onLocalSceneLoadStateChange?: (state: { active: boolean; pending: number }) => void;
   localSceneLoadingActive?: boolean;
   focusSelectedLayerRequestKey?: number;
+  cacheClearRequestKey?: number;
+  hiddenDataAutoUnloadMinutes?: number | null;
+  onCacheClearComplete?: (result: { clearedVolumes: number; clearedMeshes: number; workerReleased: boolean }) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -673,6 +688,7 @@ export default function WebGLCanvas({
   const flyFocusActiveRef = useRef(false);
   const pendingFocusSelectedLayerRequestRef = useRef(0);
   const handledFocusSelectedLayerRequestRef = useRef(0);
+  const handledCacheClearRequestRef = useRef(0);
 
   const activeToolRef = useRef<ToolId>(activeTool);
   const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
@@ -702,6 +718,8 @@ export default function WebGLCanvas({
   const loadingMeshesRef = useRef<Set<string>>(new Set());
   const hoveredSceneHitRef = useRef<ScenePointerHit | null>(null);
   const lineStartHitRef = useRef<ScenePointerHit | null>(null);
+  const lastVisibleVolumeCacheAtRef = useRef<Map<string, number>>(new Map());
+  const lastVisibleMeshCacheAtRef = useRef<Map<string, number>>(new Map());
   const shapeDragStartHitRef = useRef<ScenePointerHit | null>(null);
   const shapeDragCurrentHitRef = useRef<ScenePointerHit | null>(null);
   const lastPublishedSceneHitRef = useRef<string>("null");
@@ -1172,6 +1190,64 @@ export default function WebGLCanvas({
   );
 
   useEffect(() => {
+    const now = Date.now();
+    for (const item of volumesToLoad) {
+      lastVisibleVolumeCacheAtRef.current.set(item.cacheKey, now);
+    }
+    for (const cacheKey of Array.from(lastVisibleVolumeCacheAtRef.current.keys())) {
+      if (retainedVolumeCacheKeys.has(cacheKey)) continue;
+      lastVisibleVolumeCacheAtRef.current.delete(cacheKey);
+    }
+  }, [retainedVolumeCacheKeys, volumesToLoad]);
+
+  useEffect(() => {
+    const now = Date.now();
+    for (const item of meshesToLoad) {
+      lastVisibleMeshCacheAtRef.current.set(item.cacheKey, now);
+    }
+    for (const cacheKey of Array.from(lastVisibleMeshCacheAtRef.current.keys())) {
+      if (retainedMeshCacheKeys.has(cacheKey)) continue;
+      lastVisibleMeshCacheAtRef.current.delete(cacheKey);
+    }
+  }, [meshesToLoad, retainedMeshCacheKeys]);
+
+  useEffect(() => {
+    const visibleVolumeKeys = new Set(volumesToLoad.map((item) => item.cacheKey));
+    const visibleMeshKeys = new Set(meshesToLoad.map((item) => item.cacheKey));
+    let hiddenVolumeCount = 0;
+    let hiddenMeshCount = 0;
+    let hiddenCacheBytes = 0;
+
+    for (const [cacheKey, volume] of volumeCacheRef.current.entries()) {
+      if (visibleVolumeKeys.has(cacheKey)) continue;
+      hiddenVolumeCount += 1;
+      hiddenCacheBytes += estimateLoadedVolumeBytes(volume);
+    }
+
+    for (const [cacheKey, mesh] of meshCacheRef.current.entries()) {
+      if (visibleMeshKeys.has(cacheKey)) continue;
+      hiddenMeshCount += 1;
+      hiddenCacheBytes += estimateLoadedMeshBytes(mesh);
+    }
+
+    updateTrackedCacheEstimate({
+      hiddenVolumeCount,
+      hiddenMeshCount,
+      hiddenCacheBytes,
+    });
+  }, [loadTick, meshesToLoad, volumesToLoad]);
+
+  useEffect(() => {
+    return () => {
+      updateTrackedCacheEstimate({
+        hiddenVolumeCount: 0,
+        hiddenMeshCount: 0,
+        hiddenCacheBytes: 0,
+      });
+    };
+  }, []);
+
+  useEffect(() => {
     let didEvict = false;
 
     for (const cacheKey of Array.from(volumeCacheRef.current.keys())) {
@@ -1202,6 +1278,86 @@ export default function WebGLCanvas({
       setLoadTick((v) => v + 1);
     }
   }, [retainedMeshCacheKeys]);
+
+  useEffect(() => {
+    if (cacheClearRequestKey <= 0) return;
+    if (cacheClearRequestKey === handledCacheClearRequestRef.current) return;
+    handledCacheClearRequestRef.current = cacheClearRequestKey;
+
+    const visibleVolumeKeys = new Set(volumesToLoad.map((item) => item.cacheKey));
+    const visibleMeshKeys = new Set(meshesToLoad.map((item) => item.cacheKey));
+    let clearedVolumes = 0;
+    let clearedMeshes = 0;
+
+    for (const cacheKey of Array.from(volumeCacheRef.current.keys())) {
+      if (visibleVolumeKeys.has(cacheKey)) continue;
+      volumeCacheRef.current.delete(cacheKey);
+      loadingUrlsRef.current.delete(cacheKey);
+      clearedVolumes += 1;
+    }
+
+    for (const cacheKey of Array.from(meshCacheRef.current.keys())) {
+      if (visibleMeshKeys.has(cacheKey)) continue;
+      meshCacheRef.current.delete(cacheKey);
+      loadingMeshesRef.current.delete(cacheKey);
+      clearedMeshes += 1;
+    }
+
+    const workerReleased = !localSceneLoadingActive;
+    if (workerReleased) {
+      disposeLocalDataLoadWorker();
+    }
+
+    if (clearedVolumes > 0 || clearedMeshes > 0) {
+      setLoadTick((value) => value + 1);
+    }
+    publishLocalLoadState();
+    onCacheClearComplete?.({ clearedVolumes, clearedMeshes, workerReleased });
+  }, [cacheClearRequestKey, localSceneLoadingActive, meshesToLoad, onCacheClearComplete, volumesToLoad]);
+
+  useEffect(() => {
+    if (hiddenDataAutoUnloadMinutes == null) return;
+    const maxIdleMs = hiddenDataAutoUnloadMinutes * 60 * 1000;
+    if (maxIdleMs <= 0) return;
+
+    function evictHiddenCaches() {
+      const now = Date.now();
+      const visibleVolumeKeys = new Set(volumesToLoad.map((item) => item.cacheKey));
+      const visibleMeshKeys = new Set(meshesToLoad.map((item) => item.cacheKey));
+      let didEvict = false;
+
+      for (const cacheKey of Array.from(volumeCacheRef.current.keys())) {
+        if (visibleVolumeKeys.has(cacheKey)) continue;
+        const lastSeenAt = lastVisibleVolumeCacheAtRef.current.get(cacheKey) ?? now;
+        if (now - lastSeenAt < maxIdleMs) continue;
+        volumeCacheRef.current.delete(cacheKey);
+        loadingUrlsRef.current.delete(cacheKey);
+        lastVisibleVolumeCacheAtRef.current.delete(cacheKey);
+        didEvict = true;
+      }
+
+      for (const cacheKey of Array.from(meshCacheRef.current.keys())) {
+        if (visibleMeshKeys.has(cacheKey)) continue;
+        const lastSeenAt = lastVisibleMeshCacheAtRef.current.get(cacheKey) ?? now;
+        if (now - lastSeenAt < maxIdleMs) continue;
+        meshCacheRef.current.delete(cacheKey);
+        loadingMeshesRef.current.delete(cacheKey);
+        lastVisibleMeshCacheAtRef.current.delete(cacheKey);
+        didEvict = true;
+      }
+
+      if (didEvict) {
+        setLoadTick((value) => value + 1);
+        publishLocalLoadState();
+      }
+    }
+
+    evictHiddenCaches();
+    const intervalId = window.setInterval(evictHiddenCaches, 30_000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [hiddenDataAutoUnloadMinutes, meshesToLoad, volumesToLoad]);
 
   useEffect(() => {
     const canvasElement = canvasRef.current;
