@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { CameraControlMode } from "./viewerState";
 import type { AnnotationShape, SlicePlane } from "./layerTypes";
 import type { FloatingWindowState } from "./components/app/FloatingWindowManager";
@@ -17,6 +18,7 @@ declare global {
 export type ToolId =
   | "mouse"
   | "select"
+  | "capture"
   | "pencil"
   | "slice"
   | "pipeline"
@@ -43,6 +45,22 @@ export type PipelineMenuItem = {
   active: boolean;
 };
 
+export type CaptureSequenceMenuItem = {
+  id: string;
+  name: string;
+  sceneCount: number;
+  updatedAt: number;
+  active?: boolean;
+};
+
+export type CaptureStillMenuItem = {
+  id: string;
+  name: string;
+  thumbnailDataUrl?: string;
+  updatedAt: number;
+  active?: boolean;
+};
+
 const PIPELINE_DESCRIPTION_MAX_CHARS = 96;
 
 function getPipelineDescriptionPreview(description?: string): string {
@@ -60,6 +78,7 @@ type ToolDefinition = {
 const TOOLS: ToolDefinition[] = [
   { id: "mouse", label: "Move" },
   { id: "select", label: "Select" },
+  { id: "capture", label: "Capture image" },
   { id: "pencil", label: "Draw" },
   { id: "slice", label: "Browse slices" },
   { id: "pipeline", label: "Automation pipelines" },
@@ -127,6 +146,14 @@ function Icon({ id }: { id: ToolId }) {
           <path d="M11.5 20.5h2" />
           <path d="M20.5 11.5v2" />
           <path d="M14.5 12.5v10.7a.3.3 0 0 0 .5.2l2.95-2.95a.3.3 0 0 1 .21-.09H22a.3.3 0 0 0 .21-.51l-7.2-7.2a.3.3 0 0 0-.51.21Z" />
+        </svg>
+      );
+    case "capture":
+      return (
+        <svg {...common} viewBox="0 0 24 24">
+          <path d="M4.5 8.5h3l1.8-2h6.4l1.8 2h2.5A2.5 2.5 0 0 1 22.5 11v7A2.5 2.5 0 0 1 20 20.5H4A2.5 2.5 0 0 1 1.5 18v-7A2.5 2.5 0 0 1 4 8.5z" />
+          <circle cx="12" cy="14" r="3.8" />
+          <path d="M18.2 11.8h.01" />
         </svg>
       );
     case "pencil":
@@ -905,6 +932,730 @@ function PipelineToolButton({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function CapturePlaybackIcon({ kind }: { kind: "play" | "pause" | "stop" | "loop" }) {
+  if (kind === "play") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M8 6.5v11l9-5.5z" />
+      </svg>
+    );
+  }
+  if (kind === "pause") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="7" y="6" width="3.5" height="12" rx="1" />
+        <rect x="13.5" y="6" width="3.5" height="12" rx="1" />
+      </svg>
+    );
+  }
+  if (kind === "stop") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" rx="2" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+      <path d="M20 4v5h-5" />
+    </svg>
+  );
+}
+
+function CaptureStillIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4.5 8.5h3l1.8-2h6.4l1.8 2h2.5A2.5 2.5 0 0 1 22.5 11v7A2.5 2.5 0 0 1 20 20.5H4A2.5 2.5 0 0 1 1.5 18v-7A2.5 2.5 0 0 1 4 8.5z" />
+      <circle cx="12" cy="14" r="3.8" />
+      <path d="M18.2 11.8h.01" />
+    </svg>
+  );
+}
+
+function CaptureRecordIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3.5" y="6.5" width="13" height="11" rx="2.5" />
+      <path d="M16.5 10.1l4-2.4v8.6l-4-2.4" />
+      <circle cx="9.9" cy="12" r="2.2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function CaptureToolButton({
+  active,
+  onOpenEditor,
+  onCreateSequence,
+  onExportFrame,
+  canExportFrame,
+  exportPending,
+  isPlaybackActive,
+  isPlaybackPaused,
+  onTogglePlayback,
+  onStopPlayback,
+  stills,
+  sequences,
+  onLoadStill,
+  onDownloadStill,
+  onDeleteStill,
+  onLoadSequence,
+  onPlaySequence,
+  onLoopSequence,
+  onRenameSequence,
+  onDeleteSequence,
+}: {
+  active: boolean;
+  onOpenEditor: () => void;
+  onCreateSequence: () => void;
+  onExportFrame: () => void;
+  canExportFrame: boolean;
+  exportPending: boolean;
+  isPlaybackActive: boolean;
+  isPlaybackPaused: boolean;
+  onTogglePlayback: () => void;
+  onStopPlayback: () => void;
+  stills: CaptureStillMenuItem[];
+  sequences: CaptureSequenceMenuItem[];
+  onLoadStill: (stillId: string) => void;
+  onDownloadStill: (stillId: string) => void;
+  onDeleteStill: (stillId: string) => void;
+  onLoadSequence: (sequenceId: string) => void;
+  onPlaySequence: (sequenceId: string) => void;
+  onLoopSequence: (sequenceId: string) => void;
+  onRenameSequence: (sequenceId: string, nextName: string) => void;
+  onDeleteSequence: (sequenceId: string) => void;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [openMenuSequenceId, setOpenMenuSequenceId] = useState<string | null>(null);
+  const [renameSequenceId, setRenameSequenceId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDeleteSequence, setConfirmDeleteSequence] = useState<CaptureSequenceMenuItem | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const buttonLabel = isPlaybackActive ? "Pause animation" : isPlaybackPaused ? "Resume animation" : "Capture image";
+  const keepCaptureMenuOpen = isHovered || openMenuSequenceId !== null || renameSequenceId !== null || confirmDeleteSequence !== null;
+  const buttonIcon = isPlaybackActive ? (
+    <CapturePlaybackIcon kind="pause" />
+  ) : isPlaybackPaused ? (
+    <CapturePlaybackIcon kind="play" />
+  ) : undefined;
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (!target.closest("[data-capture-sequence-menu-container='true']") && !target.closest("[data-capture-sequence-menu-popup='true']")) {
+        setOpenMenuSequenceId(null);
+        setMenuPosition(null);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
+  function handleStartRename(sequence: CaptureSequenceMenuItem) {
+    setOpenMenuSequenceId(null);
+    setRenameSequenceId(sequence.id);
+    setRenameValue(sequence.name);
+    setConfirmDeleteSequence(null);
+    setMenuPosition(null);
+  }
+
+  function handleCommitRename(sequenceId: string) {
+    const nextName = renameValue.trim();
+    if (nextName) {
+      onRenameSequence(sequenceId, nextName);
+    }
+    setRenameSequenceId(null);
+    setOpenMenuSequenceId(null);
+    setConfirmDeleteSequence(null);
+    setMenuPosition(null);
+    setRenameValue("");
+  }
+
+  function handleCancelRename() {
+    setRenameSequenceId(null);
+    setRenameValue("");
+  }
+
+  function handleOpenSequenceMenu(sequenceId: string, button: HTMLButtonElement) {
+    if (openMenuSequenceId === sequenceId) {
+      setOpenMenuSequenceId(null);
+      setMenuPosition(null);
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    const menuWidth = 176;
+    const estimatedMenuHeight = 84;
+    const gap = 6;
+    let left = rect.right - menuWidth;
+    let top = rect.bottom + gap;
+    if (left < 8) left = 8;
+    if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8;
+    if (top + estimatedMenuHeight > window.innerHeight - 8) top = Math.max(8, rect.bottom - estimatedMenuHeight);
+    if (top < 8) top = 8;
+    setOpenMenuSequenceId(sequenceId);
+    setConfirmDeleteSequence(null);
+    setMenuPosition({ top, left });
+  }
+
+  return (
+    <div
+      style={{ position: "relative", paddingTop: 4 }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => {
+        setIsHovered(false);
+      }}
+    >
+      <ToolButton
+        id="capture"
+        label={buttonLabel}
+        active={active}
+        onClick={isPlaybackActive || isPlaybackPaused ? onTogglePlayback : onOpenEditor}
+        icon={buttonIcon}
+      />
+      <div
+        data-theme-surface="panel"
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: "calc(100% - 2px)",
+          transform: keepCaptureMenuOpen ? "translate(-50%, 0)" : "translate(-50%, 8px)",
+          width: 320,
+          borderRadius: 14,
+          border: "1px solid rgba(255,255,255,0.10)",
+          background: "rgba(12,14,18,0.96)",
+          boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
+          backdropFilter: "blur(14px)",
+          padding: 12,
+          color: "white",
+          opacity: keepCaptureMenuOpen ? 1 : 0,
+          visibility: keepCaptureMenuOpen ? "visible" : "hidden",
+          pointerEvents: keepCaptureMenuOpen ? "auto" : "none",
+          transition: "opacity 170ms ease, transform 190ms ease, visibility 170ms ease",
+          zIndex: 70,
+          display: "grid",
+          gap: 8,
+          fontFamily: UI_FONT_FAMILY,
+        }}
+      >
+        {(isPlaybackActive || isPlaybackPaused) ? (
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onStopPlayback();
+              }}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.08)",
+                color: "white",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+              }}
+            >
+              <CapturePlaybackIcon kind="stop" />
+            </button>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onExportFrame();
+          }}
+          disabled={!canExportFrame || exportPending}
+          style={{
+            minHeight: 34,
+            borderRadius: 9,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(255,255,255,0.08)",
+            color: "white",
+            fontSize: 12,
+            fontWeight: 800,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            cursor: !canExportFrame || exportPending ? "not-allowed" : "pointer",
+            opacity: !canExportFrame || exportPending ? 0.58 : 1,
+          }}
+        >
+          <CaptureStillIcon />
+          <span>{exportPending ? "Capturing..." : "Screen shot"}</span>
+        </button>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onCreateSequence();
+          }}
+          style={{
+            minHeight: 34,
+            borderRadius: 9,
+            border: "1px solid rgba(120,190,255,0.28)",
+            background: "rgba(120,190,255,0.18)",
+            color: "white",
+            fontSize: 12,
+            fontWeight: 800,
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+          }}
+        >
+          <CaptureRecordIcon />
+          <span>Record animation</span>
+        </button>
+        {stills.length || sequences.length ? (
+          <div style={{ height: 1, background: "rgba(255,255,255,0.08)" }} />
+        ) : null}
+        {stills.length ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "rgba(255,255,255,0.62)", textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Screen shots
+            </div>
+            <div style={{ display: "grid", gap: 8, maxHeight: 204, overflowY: "auto", paddingRight: 2 }}>
+              {stills.map((still) => (
+                <div
+                  key={still.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "60px minmax(0, 1fr) auto auto",
+                    gap: 8,
+                    alignItems: "center",
+                    borderRadius: 10,
+                    border: still.active ? "1px solid rgba(120,190,255,0.28)" : "1px solid rgba(255,255,255,0.08)",
+                    background: still.active ? "rgba(120,190,255,0.10)" : "rgba(255,255,255,0.04)",
+                    padding: 8,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onLoadStill(still.id);
+                    }}
+                    style={{
+                      width: 60,
+                      height: 42,
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.10)",
+                      background: still.thumbnailDataUrl ? `center / cover no-repeat url(${still.thumbnailDataUrl})` : "rgba(255,255,255,0.08)",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                    aria-label={`Open ${still.name}`}
+                    title="Open saved screen shot"
+                  />
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onLoadStill(still.id);
+                    }}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "white",
+                      textAlign: "left",
+                      display: "grid",
+                      gap: 2,
+                      cursor: "pointer",
+                      minWidth: 0,
+                      padding: 0,
+                    }}
+                  >
+                    <span style={{ fontSize: 12, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {still.name}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDownloadStill(still.id);
+                    }}
+                    title="Download screen shot"
+                    aria-label="Download screen shot"
+                    style={{
+                      width: 30,
+                      height: 30,
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.10)",
+                      background: "rgba(255,255,255,0.08)",
+                      color: "white",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 3v11" />
+                      <path d="M8 10l4 4 4-4" />
+                      <path d="M5 20h14" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDeleteStill(still.id);
+                    }}
+                    title="Delete screen shot"
+                    aria-label="Delete screen shot"
+                    style={{
+                      width: 30,
+                      height: 30,
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.10)",
+                      background: "rgba(255,255,255,0.08)",
+                      color: "rgba(255,160,160,0.92)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 14, lineHeight: 1 }}>✕</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {stills.length && sequences.length ? (
+          <div style={{ height: 1, background: "rgba(255,255,255,0.08)" }} />
+        ) : null}
+        {sequences.length ? (
+          <div style={{ display: "grid", gap: 8, maxHeight: 260, overflowY: "auto", paddingRight: 2 }}>
+            {sequences.map((sequence) => (
+            <div
+              key={sequence.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "auto auto minmax(0, 1fr) auto",
+                gap: 8,
+                alignItems: "center",
+                borderRadius: 10,
+                border: sequence.active ? "1px solid rgba(120,190,255,0.28)" : "1px solid rgba(255,255,255,0.08)",
+                background: sequence.active ? "rgba(120,190,255,0.10)" : "rgba(255,255,255,0.04)",
+                padding: 8,
+                position: "relative",
+              }}
+            >
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onPlaySequence(sequence.id);
+                }}
+                title="Play animation"
+                aria-label="Play animation"
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.08)",
+                  color: "white",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+              >
+                <CapturePlaybackIcon kind="play" />
+              </button>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onLoopSequence(sequence.id);
+                }}
+                title="Loop animation"
+                aria-label="Loop animation"
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.08)",
+                  color: "white",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+              >
+                <CapturePlaybackIcon kind="loop" />
+              </button>
+              {renameSequenceId === sequence.id ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 2,
+                    minWidth: 0,
+                  }}
+                >
+                  <input
+                    autoFocus
+                    data-shortcut-capture="true"
+                    value={renameValue}
+                    onChange={(event) => setRenameValue(event.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    onBlur={() => handleCommitRename(sequence.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        handleCommitRename(sequence.id);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        handleCancelRename();
+                      }
+                    }}
+                    style={{
+                      width: "100%",
+                      height: 32,
+                      borderRadius: 8,
+                      border: "1px solid rgba(160,220,255,0.45)",
+                      background: "rgba(255,255,255,0.07)",
+                      color: "white",
+                      padding: "0 10px",
+                      boxSizing: "border-box",
+                      outline: "none",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  />
+                  <span style={{ fontSize: 10, color: "rgba(255,255,255,0.58)" }}>
+                    {sequence.sceneCount} {sequence.sceneCount === 1 ? "scene" : "scenes"}
+                  </span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onLoadSequence(sequence.id);
+                  }}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "white",
+                    textAlign: "left",
+                    display: "grid",
+                    gap: 2,
+                    cursor: "pointer",
+                    minWidth: 0,
+                    padding: 0,
+                  }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {sequence.name}
+                  </span>
+                  <span style={{ fontSize: 10, color: "rgba(255,255,255,0.58)" }}>
+                    {sequence.sceneCount} {sequence.sceneCount === 1 ? "scene" : "scenes"}
+                  </span>
+                </button>
+              )}
+              <div data-capture-sequence-menu-container="true" style={{ position: "relative" }}>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setRenameSequenceId(null);
+                    setRenameValue(sequence.name);
+                    handleOpenSequenceMenu(sequence.id, event.currentTarget);
+                  }}
+                  title="Animation options"
+                  aria-label="Animation options"
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(255,255,255,0.08)",
+                    color: "white",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ fontSize: 16, lineHeight: 1 }}>⋮</span>
+                </button>
+              </div>
+            </div>
+          ))}
+          </div>
+        ) : null}
+      </div>
+        {openMenuSequenceId && menuPosition && typeof document !== "undefined"
+          ? createPortal(
+            <div
+              data-theme-surface="panel"
+              data-capture-sequence-menu-popup="true"
+              style={{
+                position: "fixed",
+                top: menuPosition.top,
+                left: menuPosition.left,
+                minWidth: 176,
+                borderRadius: 12,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(12,14,18,0.98)",
+                boxShadow: "0 20px 40px rgba(0,0,0,0.42)",
+                padding: 8,
+                display: "grid",
+                gap: 6,
+                zIndex: 9999,
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const sequence = sequences.find((item) => item.id === openMenuSequenceId);
+                  if (sequence) {
+                    handleStartRename(sequence);
+                  }
+                }}
+                style={{
+                  minHeight: 32,
+                  borderRadius: 8,
+                  border: "none",
+                  background: "transparent",
+                  color: "white",
+                  textAlign: "left",
+                  padding: "0 10px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const sequence = sequences.find((item) => item.id === openMenuSequenceId) ?? null;
+                  setConfirmDeleteSequence(sequence);
+                  setOpenMenuSequenceId(null);
+                  setMenuPosition(null);
+                }}
+                style={{
+                  minHeight: 32,
+                  borderRadius: 8,
+                  border: "none",
+                  background: "transparent",
+                  color: "rgba(255,190,190,0.96)",
+                  textAlign: "left",
+                  padding: "0 10px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                Delete
+              </button>
+            </div>,
+            document.body
+          )
+        : null}
+      {confirmDeleteSequence && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              data-capture-sequence-delete-dialog="true"
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(6,8,12,0.52)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 20,
+                zIndex: 10000,
+              }}
+              onPointerDown={() => setConfirmDeleteSequence(null)}
+            >
+              <div
+                data-theme-surface="panel"
+                style={{
+                  width: "min(420px, 100%)",
+                  borderRadius: 18,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  background: "rgba(18,22,28,0.98)",
+                  boxShadow: "0 28px 60px rgba(0,0,0,0.42)",
+                  padding: 20,
+                  color: "white",
+                  display: "grid",
+                  gap: 14,
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>Delete animation?</div>
+                  <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(255,255,255,0.72)" }}>
+                    Delete "{confirmDeleteSequence.name}" from the saved viewer state?
+                  </div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteSequence(null)}
+                    style={{
+                      minHeight: 36,
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.10)",
+                      background: "rgba(255,255,255,0.06)",
+                      color: "white",
+                      padding: "0 14px",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDeleteSequence(confirmDeleteSequence.id);
+                      setConfirmDeleteSequence(null);
+                    }}
+                    style={{
+                      minHeight: 36,
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,120,120,0.20)",
+                      background: "rgba(255,120,120,0.14)",
+                      color: "rgba(255,220,220,0.98)",
+                      padding: "0 14px",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -3035,6 +3786,24 @@ export default function BottomToolbar({
   resourceManagerOpen = false,
   resourceSummary = null,
   resourceSamples = [],
+  captureStills = [],
+  captureSequences = [],
+  capturePlaybackActive = false,
+  capturePlaybackPaused = false,
+  onOpenCaptureEditor,
+  onExportCaptureFrame,
+  captureExportEnabled = false,
+  captureExportPending = false,
+  onToggleCapturePlayback,
+  onStopCapturePlayback,
+  onLoadCaptureStill,
+  onDownloadCaptureStill,
+  onDeleteCaptureStill,
+  onLoadCaptureSequence,
+  onPlayCaptureSequence,
+  onLoopCaptureSequence,
+  onRenameCaptureSequence,
+  onDeleteCaptureSequence,
 }: {
   activeTool: ToolId;
   onToolChange: (tool: ToolId) => void;
@@ -3115,6 +3884,24 @@ export default function BottomToolbar({
   resourceManagerOpen?: boolean;
   resourceSummary?: BrowserResourceSummary | null;
   resourceSamples?: ResourceHistorySample[];
+  captureStills?: CaptureStillMenuItem[];
+  captureSequences?: CaptureSequenceMenuItem[];
+  capturePlaybackActive?: boolean;
+  capturePlaybackPaused?: boolean;
+  onOpenCaptureEditor?: () => void;
+  onExportCaptureFrame?: () => void;
+  captureExportEnabled?: boolean;
+  captureExportPending?: boolean;
+  onToggleCapturePlayback?: () => void;
+  onStopCapturePlayback?: () => void;
+  onLoadCaptureStill?: (stillId: string) => void;
+  onDownloadCaptureStill?: (stillId: string) => void;
+  onDeleteCaptureStill?: (stillId: string) => void;
+  onLoadCaptureSequence?: (sequenceId: string) => void;
+  onPlayCaptureSequence?: (sequenceId: string) => void;
+  onLoopCaptureSequence?: (sequenceId: string) => void;
+  onRenameCaptureSequence?: (sequenceId: string, nextName: string) => void;
+  onDeleteCaptureSequence?: (sequenceId: string) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -3179,6 +3966,36 @@ export default function BottomToolbar({
               onDepthChange={onAnnotationDepthChange}
               onEraseModeChange={onAnnotationEraseModeChange}
               onPickColorFromScreen={onAnnotationPickColorFromScreen}
+            />
+          );
+        }
+
+        if (tool.id === "capture") {
+          return (
+            <CaptureToolButton
+              key={tool.id}
+              active={activeTool === "capture" || capturePlaybackActive || capturePlaybackPaused}
+              onOpenEditor={() => {
+                onToolChange(tool.id);
+              }}
+              onCreateSequence={() => onOpenCaptureEditor?.()}
+              onExportFrame={() => onExportCaptureFrame?.()}
+              canExportFrame={captureExportEnabled}
+              exportPending={captureExportPending}
+              isPlaybackActive={capturePlaybackActive}
+              isPlaybackPaused={capturePlaybackPaused}
+              onTogglePlayback={() => onToggleCapturePlayback?.()}
+              onStopPlayback={() => onStopCapturePlayback?.()}
+              stills={captureStills}
+              sequences={captureSequences}
+              onLoadStill={(stillId) => onLoadCaptureStill?.(stillId)}
+              onDownloadStill={(stillId) => onDownloadCaptureStill?.(stillId)}
+              onDeleteStill={(stillId) => onDeleteCaptureStill?.(stillId)}
+              onLoadSequence={(sequenceId) => onLoadCaptureSequence?.(sequenceId)}
+              onPlaySequence={(sequenceId) => onPlayCaptureSequence?.(sequenceId)}
+              onLoopSequence={(sequenceId) => onLoopCaptureSequence?.(sequenceId)}
+              onRenameSequence={(sequenceId, nextName) => onRenameCaptureSequence?.(sequenceId, nextName)}
+              onDeleteSequence={(sequenceId) => onDeleteCaptureSequence?.(sequenceId)}
             />
           );
         }

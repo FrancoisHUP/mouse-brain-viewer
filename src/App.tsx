@@ -1,6 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 import WebGLCanvas from "./WebGLCanvas";
-import BottomToolbar, { type HistoryMenuItem, type PipelineMenuItem, type ToolId } from "./BottomToolbar";
+import BottomToolbar, {
+  type CaptureStillMenuItem,
+  type CaptureSequenceMenuItem,
+  type HistoryMenuItem,
+  type PipelineMenuItem,
+  type ToolId,
+} from "./BottomToolbar";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import LocalDatasetManagerPanel from "./LocalDatasetManagerPanel";
@@ -36,6 +50,9 @@ import {
   clearPersistedViewerState,
   loadPersistedViewerSession,
   savePersistedViewerSession,
+  type CaptureSceneTransitionEasing,
+  type PersistedCaptureScene,
+  type PersistedCaptureSequence,
 } from "./viewerStateStorage";
 import {
   ALLEN_VIEWER_EMBED_NAMESPACE,
@@ -121,6 +138,7 @@ import { buildAppAssistantContext, type AppAssistantConversation } from "./appAs
 import type { AppAssistantToolCall } from "./appAssistant";
 import type {
   AnnotationShape,
+  IntensityWindow,
   LayerItemNode,
   LayerTreeNode,
   NodeTransform,
@@ -229,7 +247,425 @@ type LayerClipboardPayload = {
 };
 type SliceVec3 = { x: number; y: number; z: number };
 type VolumeDims = { x: number; y: number; z: number };
+type CaptureSceneTransitionOption = {
+  value: CaptureSceneTransitionEasing;
+  label: string;
+};
+type CaptureTimelineHistorySnapshot = {
+  scenes: PersistedCaptureScene[];
+  activeSceneId: string | null;
+  cursorMs: number;
+  zoom: number;
+};
+type CaptureTimelinePlaybackMode = "once" | "loop";
+type CaptureSliceCropRequest = {
+  layerId: string;
+  plane?: SlicePlane;
+  points: [number, number, number][];
+  cropRect?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null;
+};
 
+const DEFAULT_CAPTURE_SCENE_TRANSITION_MS = 2200;
+const DEFAULT_CAPTURE_TIMELINE_ZOOM = 1;
+const CAPTURE_TIMELINE_MIN_ZOOM = 0.6;
+const CAPTURE_TIMELINE_MAX_ZOOM = 3;
+const CAPTURE_TIMELINE_BASE_PX_PER_SECOND = 110;
+const CAPTURE_TIMELINE_VIEW_PADDING_MS = 2000;
+const DEFAULT_CAPTURE_TIMELINE_RANGE_MS = 60_000;
+const CAPTURE_SCENE_TRANSITION_OPTIONS: CaptureSceneTransitionOption[] = [
+  { value: "ease-in-out", label: "Smooth" },
+  { value: "linear", label: "Linear" },
+  { value: "ease-in", label: "Ease in" },
+  { value: "ease-out", label: "Ease out" },
+];
+
+function cloneViewerStateSnapshot(state: ViewerStateV1): ViewerStateV1 {
+  if (typeof structuredClone === "function") {
+    return structuredClone(state);
+  }
+  return JSON.parse(JSON.stringify(state)) as ViewerStateV1;
+}
+
+function clampCaptureTimelineZoom(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_CAPTURE_TIMELINE_ZOOM;
+  return Math.min(CAPTURE_TIMELINE_MAX_ZOOM, Math.max(CAPTURE_TIMELINE_MIN_ZOOM, value));
+}
+
+function cloneCaptureScene(scene: PersistedCaptureScene): PersistedCaptureScene {
+  return {
+    ...scene,
+    selectedLayerIds: [...scene.selectedLayerIds],
+    viewerState: scene.viewerState ? cloneViewerStateSnapshot(scene.viewerState) : null,
+  };
+}
+
+function cloneCaptureScenes(scenes: PersistedCaptureScene[]) {
+  return scenes.map(cloneCaptureScene);
+}
+
+function cloneCaptureSequence(sequence: PersistedCaptureSequence): PersistedCaptureSequence {
+  return {
+    ...sequence,
+    scenes: cloneCaptureScenes(sequence.scenes),
+  };
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === "string") {
+        resolve(result);
+        return;
+      }
+      reject(new Error("The captured image could not be read back."));
+    };
+    reader.onerror = () => {
+      reject(reader.error ?? new Error("The captured image could not be read back."));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+function dataUrlToBlob(dataUrl: string): Blob | null {
+  const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/.exec(dataUrl);
+  if (!match) return null;
+  const mimeType = match[1] || "image/png";
+  const payload = match[2] ?? "";
+  try {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new Blob([bytes], { type: mimeType });
+  } catch {
+    return null;
+  }
+}
+
+function CaptureTimelineIcon({
+  kind,
+  size = 16,
+}: {
+  kind: "play" | "play-start" | "pause" | "stop" | "export";
+  size?: number;
+}) {
+  const common = {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (kind === "play") {
+    return (
+      <svg {...common}>
+        <path d="M8 6.5v11l9-5.5-9-5.5z" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
+
+  if (kind === "play-start") {
+    return (
+      <svg {...common}>
+        <path d="M5.5 5.5v13" />
+        <path d="M9 6.5v11l6.8-5.5L9 6.5z" fill="currentColor" stroke="none" />
+        <path d="M15.4 6.5v11l4.1-5.5-4.1-5.5z" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
+
+  if (kind === "pause") {
+    return (
+      <svg {...common}>
+        <path d="M8.5 6.5v11" />
+        <path d="M15.5 6.5v11" />
+      </svg>
+    );
+  }
+
+  if (kind === "stop") {
+    return (
+      <svg {...common}>
+        <rect x="7.5" y="7.5" width="9" height="9" rx="1.6" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...common}>
+      <path d="M12 4v10" />
+      <path d="M8 8l4-4 4 4" />
+      <path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" />
+    </svg>
+  );
+}
+
+function easeCaptureSceneProgress(progress: number, easing: CaptureSceneTransitionEasing) {
+  const clamped = Math.min(1, Math.max(0, progress));
+  if (easing === "linear") return clamped;
+  if (easing === "ease-in") return clamped * clamped;
+  if (easing === "ease-out") return 1 - (1 - clamped) * (1 - clamped);
+  return clamped < 0.5
+    ? 4 * clamped * clamped * clamped
+    : 1 - Math.pow(-2 * clamped + 2, 3) / 2;
+}
+
+function interpolateNumber(start: number | undefined, end: number | undefined, fallback: number, progress: number) {
+  const startValue = typeof start === "number" && Number.isFinite(start) ? start : fallback;
+  const endValue = typeof end === "number" && Number.isFinite(end) ? end : fallback;
+  return startValue + (endValue - startValue) * progress;
+}
+
+function interpolateVector3(
+  start: [number, number, number] | undefined,
+  end: [number, number, number] | undefined,
+  fallback: [number, number, number],
+  progress: number
+): [number, number, number] {
+  return [
+    interpolateNumber(start?.[0], end?.[0], fallback[0], progress),
+    interpolateNumber(start?.[1], end?.[1], fallback[1], progress),
+    interpolateNumber(start?.[2], end?.[2], fallback[2], progress),
+  ];
+}
+
+function pickSteppedValue<T>(start: T, end: T, progress: number, threshold = 0.5) {
+  return progress < threshold ? start : end;
+}
+
+function interpolateCameraState(
+  start: SerializableCameraState,
+  end: SerializableCameraState,
+  progress: number
+): SerializableCameraState {
+  return {
+    mode: pickSteppedValue(start.mode, end.mode, progress),
+    position: interpolateVector3(start.position, end.position, DEFAULT_CAMERA_STATE.position, progress),
+    yaw: interpolateNumber(start.yaw, end.yaw, DEFAULT_CAMERA_STATE.yaw, progress),
+    pitch: interpolateNumber(start.pitch, end.pitch, DEFAULT_CAMERA_STATE.pitch, progress),
+    fovDeg: interpolateNumber(start.fovDeg, end.fovDeg, DEFAULT_CAMERA_STATE.fovDeg, progress),
+  };
+}
+
+function interpolateNodeTransform(start: NodeTransform | undefined, end: NodeTransform | undefined, progress: number): NodeTransform {
+  return {
+    translation: interpolateVector3(start?.translation, end?.translation, [0, 0, 0], progress),
+    rotation: interpolateVector3(start?.rotation, end?.rotation, [0, 0, 0], progress),
+    scale: interpolateVector3(start?.scale, end?.scale, [1, 1, 1], progress),
+  };
+}
+
+function interpolateSliceDirection(
+  start: SliceVec3 | undefined,
+  end: SliceVec3 | undefined,
+  fallback: SliceVec3,
+  progress: number
+): SliceVec3 {
+  return {
+    x: interpolateNumber(start?.x, end?.x, fallback.x, progress),
+    y: interpolateNumber(start?.y, end?.y, fallback.y, progress),
+    z: interpolateNumber(start?.z, end?.z, fallback.z, progress),
+  };
+}
+
+function interpolateSliceParams(start: SliceLayerParams, end: SliceLayerParams, progress: number): SliceLayerParams {
+  if (start.mode === "oblique" && end.mode === "oblique") {
+    return {
+      mode: "oblique",
+      normal: interpolateSliceDirection(start.normal, end.normal, { x: 0, y: 0, z: 1 }, progress),
+      uAxis: interpolateSliceDirection(start.uAxis, end.uAxis, { x: 1, y: 0, z: 0 }, progress),
+      referencePlane: pickSteppedValue(start.referencePlane, end.referencePlane, progress),
+      offset: interpolateNumber(start.offset, end.offset, 0, progress),
+      width: interpolateNumber(start.width, end.width, 1, progress),
+      height: interpolateNumber(start.height, end.height, 1, progress),
+      opacity: interpolateNumber(start.opacity, end.opacity, 1, progress),
+      flipX: pickSteppedValue(!!start.flipX, !!end.flipX, progress),
+      flipY: pickSteppedValue(!!start.flipY, !!end.flipY, progress),
+      flipZ: pickSteppedValue(!!start.flipZ, !!end.flipZ, progress),
+      rotationDeg: interpolateNumber(start.rotationDeg, end.rotationDeg, 0, progress),
+      scale: interpolateNumber(start.scale, end.scale, 1, progress),
+    };
+  }
+
+  if (start.mode !== "oblique" && end.mode !== "oblique") {
+    return {
+      mode: "axis",
+      plane: pickSteppedValue(start.plane, end.plane, progress),
+      index: Math.round(interpolateNumber(start.index, end.index, 0, progress)),
+      opacity: interpolateNumber(start.opacity, end.opacity, 1, progress),
+    };
+  }
+
+  return pickSteppedValue(start, end, progress);
+}
+
+function interpolateAxisSliceViewState(
+  start: LayerItemNode["axisSliceViewState"],
+  end: LayerItemNode["axisSliceViewState"],
+  progress: number
+): LayerItemNode["axisSliceViewState"] {
+  if (!start && !end) return undefined;
+  const planes: SlicePlane[] = ["xy", "xz", "yz"];
+  const result: LayerItemNode["axisSliceViewState"] = {};
+  for (const plane of planes) {
+    const startPlane = start?.[plane];
+    const endPlane = end?.[plane];
+    if (!startPlane && !endPlane) continue;
+    result[plane] = {
+      flipX: pickSteppedValue(!!startPlane?.flipX, !!endPlane?.flipX, progress),
+      flipY: pickSteppedValue(!!startPlane?.flipY, !!endPlane?.flipY, progress),
+      flipZ: pickSteppedValue(!!startPlane?.flipZ, !!endPlane?.flipZ, progress),
+      rotationDeg: interpolateNumber(startPlane?.rotationDeg, endPlane?.rotationDeg, 0, progress),
+      scale: interpolateNumber(startPlane?.scale, endPlane?.scale, 1, progress),
+    };
+  }
+  return result;
+}
+
+function interpolateAxisSliceState(
+  start: LayerItemNode["axisSliceState"],
+  end: LayerItemNode["axisSliceState"],
+  progress: number
+): LayerItemNode["axisSliceState"] {
+  if (!start && !end) return undefined;
+  return {
+    activePlane: pickSteppedValue(start?.activePlane, end?.activePlane, progress),
+    xy: Math.round(interpolateNumber(start?.xy, end?.xy, 0, progress)),
+    xz: Math.round(interpolateNumber(start?.xz, end?.xz, 0, progress)),
+    yz: Math.round(interpolateNumber(start?.yz, end?.yz, 0, progress)),
+  };
+}
+
+function interpolateLayerNode(start: LayerTreeNode, end: LayerTreeNode, progress: number): LayerTreeNode {
+  if (start.id !== end.id || start.kind !== end.kind) {
+    return cloneLayerTreeNodeSnapshot(pickSteppedValue(start, end, progress));
+  }
+
+  const baseNode = {
+    ...pickSteppedValue(start, end, progress),
+    id: start.id,
+    name: pickSteppedValue(start.name, end.name, progress),
+    visible: pickSteppedValue(start.visible, end.visible, progress),
+    opacity: interpolateNumber(start.opacity, end.opacity, 1, progress),
+    transform: interpolateNodeTransform(start.transform, end.transform, progress),
+  };
+
+  if (start.kind === "group" && end.kind === "group") {
+    if (start.children.length !== end.children.length) {
+      return cloneLayerTreeNodeSnapshot(pickSteppedValue(start, end, progress));
+    }
+    const sameShape = start.children.every((child, index) => {
+      const match = end.children[index];
+      return !!match && child.id === match.id && child.kind === match.kind;
+    });
+    if (!sameShape) {
+      return cloneLayerTreeNodeSnapshot(pickSteppedValue(start, end, progress));
+    }
+    return {
+      ...baseNode,
+      kind: "group",
+      expanded: pickSteppedValue(start.expanded, end.expanded, progress),
+      children: start.children.map((child, index) => interpolateLayerNode(child, end.children[index], progress)),
+    };
+  }
+
+  if (start.kind === "layer" && end.kind === "layer" && start.type === end.type) {
+    return {
+      ...baseNode,
+      kind: "layer",
+      type: start.type,
+      source: pickSteppedValue(start.source, end.source, progress),
+      sourceKind: pickSteppedValue(start.sourceKind, end.sourceKind, progress),
+      mimeType: pickSteppedValue(start.mimeType, end.mimeType, progress),
+      description: pickSteppedValue(start.description, end.description, progress),
+      remoteFormat: pickSteppedValue(start.remoteFormat, end.remoteFormat, progress),
+      renderMode: pickSteppedValue(start.renderMode, end.renderMode, progress),
+      remoteResolution: pickSteppedValue(start.remoteResolution, end.remoteResolution, progress),
+      remoteContentKind: pickSteppedValue(start.remoteContentKind, end.remoteContentKind, progress),
+      sliceParams:
+        start.sliceParams && end.sliceParams
+          ? interpolateSliceParams(start.sliceParams, end.sliceParams, progress)
+          : pickSteppedValue(start.sliceParams, end.sliceParams, progress),
+      axisSliceState: interpolateAxisSliceState(start.axisSliceState, end.axisSliceState, progress),
+      axisSliceViewState: interpolateAxisSliceViewState(start.axisSliceViewState, end.axisSliceViewState, progress),
+      localOnly: pickSteppedValue(start.localOnly, end.localOnly, progress),
+      localDataFormat: pickSteppedValue(start.localDataFormat, end.localDataFormat, progress),
+      localDataKind: pickSteppedValue(start.localDataKind, end.localDataKind, progress),
+      localDatasetInfo: pickSteppedValue(start.localDatasetInfo, end.localDatasetInfo, progress),
+      annotation:
+        start.annotation && end.annotation
+          ? {
+              ...pickSteppedValue(start.annotation, end.annotation, progress),
+              color: pickSteppedValue(start.annotation.color, end.annotation.color, progress),
+              opacity: interpolateNumber(start.annotation.opacity, end.annotation.opacity, 1, progress),
+              size: interpolateNumber(start.annotation.size, end.annotation.size, 1, progress),
+              brushDepth: interpolateNumber(start.annotation.brushDepth, end.annotation.brushDepth, 0, progress),
+              metadata: pickSteppedValue(start.annotation.metadata, end.annotation.metadata, progress),
+              points: pickSteppedValue(start.annotation.points, end.annotation.points, progress),
+              normal: pickSteppedValue(start.annotation.normal, end.annotation.normal, progress),
+              attachedLayerId: pickSteppedValue(start.annotation.attachedLayerId, end.annotation.attachedLayerId, progress),
+              attachedLayerName: pickSteppedValue(start.annotation.attachedLayerName, end.annotation.attachedLayerName, progress),
+              freehandStrokes: pickSteppedValue(start.annotation.freehandStrokes, end.annotation.freehandStrokes, progress),
+            }
+          : pickSteppedValue(start.annotation, end.annotation, progress),
+    };
+  }
+
+  return cloneLayerTreeNodeSnapshot(pickSteppedValue(start, end, progress));
+}
+
+function interpolateLayerTree(start: LayerTreeNode[], end: LayerTreeNode[], progress: number): LayerTreeNode[] {
+  if (start.length !== end.length) {
+    return cloneLayerTreeNodeSnapshotArray(pickSteppedValue(start, end, progress));
+  }
+  const sameShape = start.every((node, index) => {
+    const match = end[index];
+    return !!match && node.id === match.id && node.kind === match.kind;
+  });
+  if (!sameShape) {
+    return cloneLayerTreeNodeSnapshotArray(pickSteppedValue(start, end, progress));
+  }
+  return start.map((node, index) => interpolateLayerNode(node, end[index], progress));
+}
+
+function cloneLayerTreeNodeSnapshotArray(nodes: LayerTreeNode[]): LayerTreeNode[] {
+  return nodes.map((node) => cloneLayerTreeNodeSnapshot(node));
+}
+
+function interpolateViewerState(start: ViewerStateV1, end: ViewerStateV1, progress: number): ViewerStateV1 {
+  return {
+    version: 1,
+    layout: {
+      ...pickSteppedValue(start.layout, end.layout, progress),
+      windows: pickSteppedValue(start.layout.windows ?? [], end.layout.windows ?? [], progress),
+    },
+    camera: interpolateCameraState(start.camera, end.camera, progress),
+    scene: {
+      activeTool: pickSteppedValue(start.scene.activeTool, end.scene.activeTool, progress),
+      selectedNodeId: pickSteppedValue(start.scene.selectedNodeId, end.scene.selectedNodeId, progress),
+      layerTree: interpolateLayerTree(start.scene.layerTree, end.scene.layerTree, progress),
+    },
+    ui: {
+      sliceVolumeLayerId: pickSteppedValue(start.ui.sliceVolumeLayerId, end.ui.sliceVolumeLayerId, progress),
+      sliceName: pickSteppedValue(start.ui.sliceName, end.ui.sliceName, progress),
+      sliceParamsDraft: interpolateSliceParams(start.ui.sliceParamsDraft, end.ui.sliceParamsDraft, progress),
+    },
+    automation: pickSteppedValue(start.automation, end.automation, progress),
+  };
+}
 
 
 function isCanonicalSliceBrowsableLayer(
@@ -923,8 +1359,34 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [annotationRecentColors, setAnnotationRecentColors] = useState<string[]>(() => loadRecentAnnotationColors());
   const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
   const [selectedLayerRuntimeInfo, setSelectedLayerRuntimeInfo] = useState<SelectedLayerRuntimeInfo | null>(null);
+  const [captureRequestKey, setCaptureRequestKey] = useState(0);
+  const [isCapturePending, setIsCapturePending] = useState(false);
+  const [captureRequestLayerIds, setCaptureRequestLayerIds] = useState<string[]>([]);
+  const [captureRequestSliceCrop, setCaptureRequestSliceCrop] = useState<CaptureSliceCropRequest | null>(null);
+  const [captureStills, setCaptureStills] = useState<PersistedCaptureScene[]>([]);
+  const [activeCaptureStillId, setActiveCaptureStillId] = useState<string | null>(null);
+  const [captureScenes, setCaptureScenes] = useState<PersistedCaptureScene[]>([]);
+  const [activeCaptureSceneId, setActiveCaptureSceneId] = useState<string | null>(null);
+  const [captureSequences, setCaptureSequences] = useState<PersistedCaptureSequence[]>([]);
+  const [activeCaptureSequenceId, setActiveCaptureSequenceId] = useState<string | null>(null);
+  const [isCapturePanelOpen, setIsCapturePanelOpen] = useState(false);
+  const [captureTimelineCursorMs, setCaptureTimelineCursorMs] = useState(0);
+  const [captureTimelineZoom, setCaptureTimelineZoom] = useState(DEFAULT_CAPTURE_TIMELINE_ZOOM);
+  const [captureTimelineRangeMs, setCaptureTimelineRangeMs] = useState(DEFAULT_CAPTURE_TIMELINE_RANGE_MS);
+  const [captureTimelineHoverMs, setCaptureTimelineHoverMs] = useState<number | null>(null);
+  const [isCaptureTimelinePlaying, setIsCaptureTimelinePlaying] = useState(false);
+  const [isCaptureTimelinePaused, setIsCaptureTimelinePaused] = useState(false);
   const [floatingWindows, setFloatingWindows] = useState<FloatingWindowState[]>([]);
   const nextFloatingWindowZRef = useRef(1);
+  const captureTimelineFrameRef = useRef<number | null>(null);
+  const captureTimelineTokenRef = useRef(0);
+  const isCaptureTimelinePlayingRef = useRef(false);
+  const captureTimelinePlaybackModeRef = useRef<CaptureTimelinePlaybackMode>("once");
+  const captureTimelineViewportRef = useRef<HTMLDivElement | null>(null);
+  const captureTimelineDragRef = useRef<{ sceneId: string; startMs: number; originClientX: number; hasMoved: boolean } | null>(null);
+  const captureTimelinePastRef = useRef<CaptureTimelineHistorySnapshot[]>([]);
+  const captureTimelineFutureRef = useRef<CaptureTimelineHistorySnapshot[]>([]);
+  const pendingCaptureStillRef = useRef<{ scene: PersistedCaptureScene; fileName: string } | null>(null);
 
   const [localSceneLoadState, setLocalSceneLoadState] = useState<{ active: boolean; pending: number }>({ active: false, pending: 0 });
   const [dismissLocalSceneLoadNotice, setDismissLocalSceneLoadNotice] = useState(false);
@@ -1010,6 +1472,107 @@ export default function App({ startupSlices = [] }: AppProps) {
     () => (selectedNodeId ? findNodeById(layerTree, selectedNodeId) : null),
     [layerTree, selectedNodeId]
   );
+  const selectedCaptureLayerIds = useMemo(() => {
+    const candidateIds = selectedNodeIdsExternal?.length
+      ? selectedNodeIdsExternal
+      : selectedNodeId
+        ? [selectedNodeId]
+        : [];
+    return Array.from(
+      new Set(
+        candidateIds.filter((nodeId) => {
+          const node = findNodeById(layerTree, nodeId);
+          return !!node && node.kind === "layer";
+        })
+      )
+    );
+  }, [layerTree, selectedNodeId, selectedNodeIdsExternal]);
+  const selectedCaptureLayerNames = useMemo(
+    () =>
+      selectedCaptureLayerIds
+        .map((nodeId) => {
+          const node = findNodeById(layerTree, nodeId);
+          return node?.kind === "layer" ? node.name : null;
+        })
+        .filter((name): name is string => !!name),
+    [layerTree, selectedCaptureLayerIds]
+  );
+  const visibleCaptureLayerIds = useMemo(
+    () =>
+      allLayers
+        .filter((node) => node.visible)
+        .map((node) => node.id),
+    [allLayers]
+  );
+  const orderedCaptureScenes = useMemo(
+    () =>
+      [...captureScenes].sort((a, b) => {
+        const aTime = a.timestampMs ?? 0;
+        const bTime = b.timestampMs ?? 0;
+        if (aTime !== bTime) return aTime - bTime;
+        return a.createdAt - b.createdAt;
+      }),
+    [captureScenes]
+  );
+  const orderedCaptureStills = useMemo(
+    () =>
+      [...captureStills].sort((a, b) => {
+        if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+        return b.createdAt - a.createdAt;
+      }),
+    [captureStills]
+  );
+  const orderedCaptureSequences = useMemo(
+    () =>
+      [...captureSequences].sort((a, b) => {
+        if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+        return b.createdAt - a.createdAt;
+      }),
+    [captureSequences]
+  );
+  const activeCaptureScene = useMemo(
+    () => captureScenes.find((scene) => scene.id === activeCaptureSceneId) ?? null,
+    [activeCaptureSceneId, captureScenes]
+  );
+  const captureSequenceMenuItems = useMemo<CaptureSequenceMenuItem[]>(
+    () =>
+      orderedCaptureSequences.map((sequence) => ({
+        id: sequence.id,
+        name: sequence.name,
+        sceneCount: sequence.scenes.length,
+        updatedAt: sequence.updatedAt,
+        active: sequence.id === activeCaptureSequenceId,
+      })),
+    [activeCaptureSequenceId, orderedCaptureSequences]
+  );
+  const captureStillMenuItems = useMemo<CaptureStillMenuItem[]>(
+    () =>
+      orderedCaptureStills.map((still) => ({
+        id: still.id,
+        name: still.name,
+        thumbnailDataUrl: still.thumbnailDataUrl ?? still.capturedImageDataUrl,
+        updatedAt: still.updatedAt,
+        active: still.id === activeCaptureStillId,
+      })),
+    [activeCaptureStillId, orderedCaptureStills]
+  );
+  const activeOrderedCaptureSceneIndex = useMemo(
+    () => orderedCaptureScenes.findIndex((scene) => scene.id === activeCaptureSceneId),
+    [activeCaptureSceneId, orderedCaptureScenes]
+  );
+  const captureTimelineDurationMs = useMemo(
+    () => Math.max(DEFAULT_CAPTURE_TIMELINE_RANGE_MS, captureTimelineRangeMs),
+    [captureTimelineRangeMs]
+  );
+  const captureTimelinePixelsPerMs = useMemo(
+    () => (CAPTURE_TIMELINE_BASE_PX_PER_SECOND * captureTimelineZoom) / 1000,
+    [captureTimelineZoom]
+  );
+  const captureTimelineContentWidth = useMemo(
+    () => Math.max(900, Math.round(captureTimelineDurationMs * captureTimelinePixelsPerMs) + 80),
+    [captureTimelineDurationMs, captureTimelinePixelsPerMs]
+  );
+  const shouldShowCapturePanel = isCapturePanelOpen;
 
   const selectedAnnotationLayer =
     selectedNode &&
@@ -1266,6 +1829,9 @@ export default function App({ startupSlices = [] }: AppProps) {
   }, []);
 
   const handleCameraStateChange = useCallback((next: SerializableCameraState) => {
+    if (isCaptureTimelinePlayingRef.current) {
+      return;
+    }
     pendingCameraStateRef.current = next;
 
     if (cameraCommitTimeoutRef.current !== null) {
@@ -1293,6 +1859,10 @@ export default function App({ startupSlices = [] }: AppProps) {
       });
     }, 33);
   }, []);
+
+  useEffect(() => {
+    isCaptureTimelinePlayingRef.current = isCaptureTimelinePlaying;
+  }, [isCaptureTimelinePlaying]);
 
   const handleSelectedLayerRuntimeInfoChange = useCallback(
     (next: SelectedLayerRuntimeInfo | null) => {
@@ -1733,6 +2303,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onToggleCollapsed={() => setIsInspectorCollapsed((prev) => !prev)}
         onRenameNode={handleRenameNode}
         onUpdateSelectedNodeOpacity={updateSelectedNodeOpacity}
+        onUpdateSelectedNodeIntensityWindow={updateSelectedNodeIntensityWindow}
         onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
         onResetSelectedNodeTransform={resetSelectedNodeTransform}
         onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
@@ -3492,9 +4063,19 @@ export default function App({ startupSlices = [] }: AppProps) {
     const persistedHistory = loadPersistedViewerHistory();
 
     if (stateFromLocation) {
+      stopCaptureTimelinePlayback();
       lastCommittedStateRef.current = stateFromLocation;
       lastCommittedHashRef.current = hashViewerStateForHistory(stateFromLocation);
       applyViewerState(stateFromLocation, { suppressAutoCommit: true });
+      setCaptureStills([]);
+      setActiveCaptureStillId(null);
+      setCaptureScenes([]);
+      setActiveCaptureSceneId(null);
+      setCaptureSequences([]);
+      setActiveCaptureSequenceId(null);
+      setIsCapturePanelOpen(false);
+      setCaptureTimelineCursorMs(0);
+      setCaptureTimelineZoom(DEFAULT_CAPTURE_TIMELINE_ZOOM);
       setActiveSavedViewerId(null);
       if (sharedViewerUrl && isSerializableLayerTree(stateFromLocation.scene.layerTree)) {
         setViewerLibrary((prev) =>
@@ -3519,9 +4100,31 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
 
     if (persistedSession || persistedHistory) {
+      stopCaptureTimelinePlayback();
       lastCommittedStateRef.current = initialState;
       lastCommittedHashRef.current = hashViewerStateForHistory(initialState);
       applyViewerState(initialState, { suppressAutoCommit: true });
+      setCaptureStills(cloneCaptureScenes(persistedSession?.captureStills ?? []));
+      setCaptureScenes(cloneCaptureScenes(persistedSession?.captureScenes ?? []));
+      setCaptureSequences((persistedSession?.captureSequences ?? []).map(cloneCaptureSequence));
+      setActiveCaptureStillId(
+        persistedSession?.captureStills.some((scene) => scene.id === persistedSession.activeCaptureStillId)
+          ? persistedSession.activeCaptureStillId ?? null
+          : null
+      );
+      setActiveCaptureSceneId(
+        persistedSession?.captureScenes.some((scene) => scene.id === persistedSession.activeCaptureSceneId)
+          ? persistedSession.activeCaptureSceneId
+          : null
+      );
+      setActiveCaptureSequenceId(
+        persistedSession?.captureSequences?.some((sequence) => sequence.id === persistedSession.activeCaptureSequenceId)
+          ? persistedSession.activeCaptureSequenceId ?? null
+          : null
+      );
+      setIsCapturePanelOpen(persistedSession?.isCapturePanelOpen ?? false);
+      setCaptureTimelineCursorMs(persistedSession?.captureTimelineCursorMs ?? 0);
+      setCaptureTimelineZoom(clampCaptureTimelineZoom(persistedSession?.captureTimelineZoom ?? DEFAULT_CAPTURE_TIMELINE_ZOOM));
       setActiveSavedViewerId(resolveOwnedSavedViewerId(persistedSession?.activeSavedViewerId ?? null, viewerLibrary));
       setHasPersistedViewerState(!!persistedSession || !!persistedHistory);
       bumpHistoryRevision();
@@ -3531,9 +4134,18 @@ export default function App({ startupSlices = [] }: AppProps) {
     lastCommittedStateRef.current = currentViewerState;
     lastCommittedHashRef.current = currentViewerHash;
     savePersistedViewerSession({
-      version: 2,
+      version: 8,
       state: currentViewerState,
       activeSavedViewerId: null,
+      captureStills: [],
+      activeCaptureStillId: null,
+      captureScenes: [],
+      activeCaptureSceneId: null,
+      captureTimelineCursorMs: 0,
+      captureTimelineZoom: DEFAULT_CAPTURE_TIMELINE_ZOOM,
+      captureSequences: [],
+      activeCaptureSequenceId: null,
+      isCapturePanelOpen: false,
     });
     setHasPersistedViewerState(true);
     bumpHistoryRevision();
@@ -3580,16 +4192,88 @@ export default function App({ startupSlices = [] }: AppProps) {
 
     if (isSerializableLayerTree(currentViewerState.scene.layerTree)) {
       savePersistedViewerSession({
-        version: 2,
+        version: 8,
         state: currentViewerState,
         activeSavedViewerId: resolveOwnedSavedViewerId(activeSavedViewerId, viewerLibrary),
+        captureStills: captureStills.map((scene) => ({
+          ...scene,
+          viewerState:
+            scene.viewerState && isSerializableLayerTree(scene.viewerState.scene.layerTree)
+              ? scene.viewerState
+              : null,
+        })),
+        activeCaptureStillId:
+          captureStills.some((scene) => scene.id === activeCaptureStillId) ? activeCaptureStillId : null,
+        captureScenes: captureScenes.map((scene) => ({
+          ...scene,
+          viewerState:
+            scene.viewerState && isSerializableLayerTree(scene.viewerState.scene.layerTree)
+              ? scene.viewerState
+              : null,
+        })),
+        activeCaptureSceneId:
+          captureScenes.some((scene) => scene.id === activeCaptureSceneId) ? activeCaptureSceneId : null,
+        captureTimelineCursorMs,
+        captureTimelineZoom,
+        captureSequences: captureSequences.map((sequence) => ({
+          ...sequence,
+          scenes: sequence.scenes.map((scene) => ({
+            ...scene,
+            viewerState:
+              scene.viewerState && isSerializableLayerTree(scene.viewerState.scene.layerTree)
+                ? scene.viewerState
+                : null,
+          })),
+        })),
+        activeCaptureSequenceId:
+          captureSequences.some((sequence) => sequence.id === activeCaptureSequenceId)
+            ? activeCaptureSequenceId
+            : null,
+        isCapturePanelOpen,
       });
       setHasPersistedViewerState(true);
     } else {
       clearPersistedViewerState();
       setHasPersistedViewerState(false);
     }
-  }, [activeSavedViewerId, currentViewerState, viewerLibrary]);
+  }, [
+    activeCaptureSceneId,
+    activeCaptureSequenceId,
+    activeSavedViewerId,
+    activeCaptureStillId,
+    captureStills,
+    captureScenes,
+    captureSequences,
+    currentViewerState,
+    viewerLibrary,
+    captureTimelineCursorMs,
+    captureTimelineZoom,
+    isCapturePanelOpen,
+  ]);
+
+  useEffect(() => {
+    if (!hasHydratedHistoryRef.current) return;
+    if (!activeCaptureSequenceId) return;
+    setCaptureSequences((prev) =>
+      prev.map((sequence) =>
+        sequence.id === activeCaptureSequenceId
+          ? {
+              ...sequence,
+              scenes: cloneCaptureScenes(captureScenes),
+              cursorMs: captureTimelineCursorMs,
+              zoom: captureTimelineZoom,
+              updatedAt: Date.now(),
+            }
+          : sequence
+      )
+    );
+  }, [activeCaptureSequenceId, captureScenes, captureTimelineCursorMs, captureTimelineZoom]);
+
+  useEffect(() => {
+    return () => {
+      stopCaptureTimelinePlayback();
+    };
+  }, []);
 
   useEffect(() => {
     savePersistedViewerLibrary(viewerLibrary);
@@ -3738,6 +4422,33 @@ export default function App({ startupSlices = [] }: AppProps) {
       if (blockingOverlayOpen) return;
       if (shouldIgnoreShortcutTarget(event.target)) return;
 
+      if (isCapturePanelOpen && isHistoryShortcut) {
+        event.preventDefault();
+        if (lowerKey === "y" || event.shiftKey) {
+          if (!handleCaptureTimelineRedo()) {
+            handleRedo();
+          }
+        } else if (!handleCaptureTimelineUndo()) {
+          handleUndo();
+        }
+        return;
+      }
+
+      if (isCapturePanelOpen && (event.key === "Delete" || event.key === "Backspace")) {
+        if (activeCaptureSceneId) {
+          event.preventDefault();
+          handleDeleteCaptureScene(activeCaptureSceneId);
+        }
+        return;
+      }
+
+      if (event.key === "Delete") {
+        if (handleDeleteSelectedNodes()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
       const hasNoSecondaryModifiers = !event.altKey && !event.shiftKey;
 
       if (hasPrimaryModifier && hasNoSecondaryModifiers && lowerKey === "c") {
@@ -3789,6 +4500,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     isStateDialogOpen,
     isUserProfilePanelOpen,
     historyRevision,
+    isCapturePanelOpen,
+    activeCaptureSceneId,
     layerTree,
     selectedNodeId,
     selectedNodeIdsExternal,
@@ -4465,6 +5178,9 @@ export default function App({ startupSlices = [] }: AppProps) {
       return;
     }
     setActiveTool(tool);
+    if (tool === "capture") {
+      setIsCapturePanelOpen(false);
+    }
     if (tool !== "slice") {
       setScenePointerTarget(null);
     }
@@ -4491,6 +5207,851 @@ export default function App({ startupSlices = [] }: AppProps) {
       }
     }
   }
+
+  function buildCaptureFileName() {
+    const baseName =
+      selectedCaptureLayerNames.length === 1
+        ? selectedCaptureLayerNames[0]
+        : selectedCaptureLayerNames.length > 1
+          ? `${selectedCaptureLayerNames.length}-layers`
+          : "viewer-capture";
+    const safeBaseName = baseName.replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "viewer-capture";
+    return `${safeBaseName}-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+  }
+
+  function buildCaptureStillName(fileName: string) {
+    return fileName.replace(/\.png$/i, "");
+  }
+
+  function normalizeCaptureSceneName(value: string) {
+    const trimmed = value.trim();
+    return trimmed || `Scene ${captureScenes.length + 1}`;
+  }
+
+  function normalizeCaptureSequenceName(value: string) {
+    const trimmed = value.trim();
+    return trimmed || `Animation ${captureSequences.length + 1}`;
+  }
+
+  function getNextCaptureSequenceName() {
+    const usedNumbers = captureSequences
+      .map((sequence) => {
+        const match = /^New animation\s+(\d+)$/i.exec(sequence.name.trim());
+        return match ? Number.parseInt(match[1] ?? "", 10) : null;
+      })
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+    let nextIndex = 1;
+    while (usedNumbers.includes(nextIndex)) {
+      nextIndex += 1;
+    }
+    return `New animation ${nextIndex}`;
+  }
+
+  function buildCurrentCaptureStill(fileName: string): PersistedCaptureScene {
+    const now = Date.now();
+    return {
+      id: createId(),
+      name: buildCaptureStillName(fileName),
+      camera: {
+        mode: cameraState.mode,
+        position: [cameraState.position[0], cameraState.position[1], cameraState.position[2]],
+        yaw: cameraState.yaw,
+        pitch: cameraState.pitch,
+        fovDeg: cameraState.fovDeg,
+      },
+      selectedLayerIds: selectedCaptureLayerIds,
+      viewerState: cloneViewerStateSnapshot(currentViewerState),
+      thumbnailDataUrl: captureViewerThumbnailDataUrl(),
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  function formatCaptureTimelineTime(valueMs: number) {
+    const safeValue = Math.max(0, Math.round(valueMs));
+    const totalSeconds = Math.floor(safeValue / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    const milliseconds = safeValue % 1000;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(Math.floor(milliseconds / 10)).padStart(2, "0")}`;
+  }
+
+  function snapshotCaptureTimelineState(): CaptureTimelineHistorySnapshot {
+    return {
+      scenes: captureScenes.map((scene) => ({ ...scene, viewerState: scene.viewerState ? cloneViewerStateSnapshot(scene.viewerState) : null })),
+      activeSceneId: activeCaptureSceneId,
+      cursorMs: captureTimelineCursorMs,
+      zoom: captureTimelineZoom,
+    };
+  }
+
+  function applyCaptureTimelineHistorySnapshot(snapshot: CaptureTimelineHistorySnapshot) {
+    setCaptureScenes(snapshot.scenes.map((scene) => ({ ...scene, viewerState: scene.viewerState ? cloneViewerStateSnapshot(scene.viewerState) : null })));
+    setActiveCaptureSceneId(snapshot.activeSceneId);
+    setCaptureTimelineCursorMs(snapshot.cursorMs);
+    setCaptureTimelineZoom(snapshot.zoom);
+  }
+
+  function pushCaptureTimelineHistorySnapshot() {
+    captureTimelinePastRef.current = [
+      ...captureTimelinePastRef.current,
+      snapshotCaptureTimelineState(),
+    ];
+    captureTimelineFutureRef.current = [];
+    bumpHistoryRevision();
+  }
+
+  function handleCaptureTimelineUndo() {
+    if (!captureTimelinePastRef.current.length) return false;
+    const previous = captureTimelinePastRef.current[captureTimelinePastRef.current.length - 1];
+    captureTimelinePastRef.current = captureTimelinePastRef.current.slice(0, -1);
+    captureTimelineFutureRef.current = [snapshotCaptureTimelineState(), ...captureTimelineFutureRef.current];
+    stopCaptureTimelinePlayback();
+    applyCaptureTimelineHistorySnapshot(previous);
+    bumpHistoryRevision();
+    return true;
+  }
+
+  function handleCaptureTimelineRedo() {
+    if (!captureTimelineFutureRef.current.length) return false;
+    const next = captureTimelineFutureRef.current[0];
+    captureTimelineFutureRef.current = captureTimelineFutureRef.current.slice(1);
+    captureTimelinePastRef.current = [...captureTimelinePastRef.current, snapshotCaptureTimelineState()];
+    stopCaptureTimelinePlayback();
+    applyCaptureTimelineHistorySnapshot(next);
+    bumpHistoryRevision();
+    return true;
+  }
+
+  function getDefaultNextCaptureSceneTimestamp() {
+    const lastScene = orderedCaptureScenes[orderedCaptureScenes.length - 1];
+    if (!lastScene) return Math.max(0, captureTimelineCursorMs);
+    return Math.max(captureTimelineCursorMs, (lastScene.timestampMs ?? 0) + DEFAULT_CAPTURE_SCENE_TRANSITION_MS);
+  }
+
+  function ensureCaptureTimelineRange(targetMs: number) {
+    setCaptureTimelineRangeMs((prev) => {
+      const required = Math.max(DEFAULT_CAPTURE_TIMELINE_RANGE_MS, targetMs + CAPTURE_TIMELINE_VIEW_PADDING_MS);
+      if (required <= prev) return prev;
+      let next = prev;
+      while (next < required) {
+        next *= 2;
+      }
+      return next;
+    });
+  }
+
+  function buildCurrentCaptureScene(name?: string, timestampMs?: number): PersistedCaptureScene | null {
+    const now = Date.now();
+    const nextTimestampMs = Math.max(0, Math.round(timestampMs ?? getDefaultNextCaptureSceneTimestamp()));
+    ensureCaptureTimelineRange(nextTimestampMs);
+    return {
+      id: createId(),
+      name: normalizeCaptureSceneName(name ?? ""),
+      camera: {
+        mode: cameraState.mode,
+        position: [cameraState.position[0], cameraState.position[1], cameraState.position[2]],
+        yaw: cameraState.yaw,
+        pitch: cameraState.pitch,
+        fovDeg: cameraState.fovDeg,
+      },
+      selectedLayerIds: selectedCaptureLayerIds,
+      viewerState: cloneViewerStateSnapshot(currentViewerState),
+      timestampMs: nextTimestampMs,
+      thumbnailDataUrl: captureViewerThumbnailDataUrl(),
+      transitionEasing: activeCaptureScene?.transitionEasing ?? "ease-in-out",
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  function resolveCaptureSceneViewerState(scene: PersistedCaptureScene): ViewerStateV1 | null {
+    if (!scene.viewerState) return null;
+    const nextState = cloneViewerStateSnapshot(scene.viewerState);
+    nextState.camera = {
+      mode: scene.camera.mode,
+      position: [scene.camera.position[0], scene.camera.position[1], scene.camera.position[2]],
+      yaw: scene.camera.yaw,
+      pitch: scene.camera.pitch,
+      fovDeg: scene.camera.fovDeg,
+    };
+    return nextState;
+  }
+
+  function applyCaptureSceneCamera(nextCamera: SerializableCameraState) {
+    setCameraState({
+      mode: nextCamera.mode,
+      position: [nextCamera.position[0], nextCamera.position[1], nextCamera.position[2]],
+      yaw: nextCamera.yaw,
+      pitch: nextCamera.pitch,
+      fovDeg: nextCamera.fovDeg,
+    });
+    setCameraSyncKey((prev) => prev + 1);
+  }
+
+  function applyCaptureScene(scene: PersistedCaptureScene, options?: { preserveActiveTool?: boolean; suppressAutoCommit?: boolean; syncCamera?: boolean }) {
+    const existingLayerIds = scene.selectedLayerIds.filter((layerId) => {
+      const node = findNodeById(layerTree, layerId);
+      return !!node && node.kind === "layer";
+    });
+    const resolvedViewerState = resolveCaptureSceneViewerState(scene);
+    const preferredNodeId = resolvedViewerState
+      ? applyCaptureSceneState(resolvedViewerState, existingLayerIds, options)
+      : (() => {
+          const fallbackNodeId = existingLayerIds[existingLayerIds.length - 1] ?? null;
+          setSelectedNodeIdsExternal(existingLayerIds.length ? existingLayerIds : null);
+          setSelectedNodeId(fallbackNodeId);
+          applyCaptureSceneCamera(scene.camera);
+          return fallbackNodeId;
+        })();
+    return {
+      preferredNodeId,
+      existingLayerIds,
+    };
+  }
+
+  function applyCaptureSceneState(
+    viewerState: ViewerStateV1,
+    selectedLayerIds: string[],
+    options?: { preserveActiveTool?: boolean; suppressAutoCommit?: boolean; syncCamera?: boolean }
+  ) {
+    const nextState = cloneViewerStateSnapshot(viewerState);
+    const preferredNodeId = selectedLayerIds[selectedLayerIds.length - 1] ?? nextState.scene.selectedNodeId ?? null;
+    if (options?.preserveActiveTool) {
+      nextState.scene.activeTool = activeTool;
+    }
+    nextState.scene.selectedNodeId = preferredNodeId;
+    setSelectedNodeIdsExternal(selectedLayerIds.length ? selectedLayerIds : null);
+    applyViewerState(nextState, {
+      suppressAutoCommit: options?.suppressAutoCommit,
+      syncCamera: options?.syncCamera,
+    });
+    return preferredNodeId;
+  }
+
+  function stopCaptureTimelinePlayback(options?: { resetSceneId?: string | null }) {
+    captureTimelineTokenRef.current += 1;
+    if (captureTimelineFrameRef.current !== null) {
+      window.cancelAnimationFrame(captureTimelineFrameRef.current);
+      captureTimelineFrameRef.current = null;
+    }
+    captureTimelinePlaybackModeRef.current = "once";
+    setIsCaptureTimelinePlaying(false);
+    setIsCaptureTimelinePaused(false);
+    if (typeof options?.resetSceneId !== "undefined") {
+      setActiveCaptureSceneId(options.resetSceneId);
+    }
+  }
+
+  function pauseCaptureTimelinePlayback() {
+    captureTimelineTokenRef.current += 1;
+    if (captureTimelineFrameRef.current !== null) {
+      window.cancelAnimationFrame(captureTimelineFrameRef.current);
+      captureTimelineFrameRef.current = null;
+    }
+    setIsCaptureTimelinePlaying(false);
+    setIsCaptureTimelinePaused(true);
+  }
+
+  function beginCaptureTimelineLoop(
+    scenes: PersistedCaptureScene[],
+    playbackToken: number,
+    startCursorMs: number,
+    playbackMode: CaptureTimelinePlaybackMode
+  ) {
+    const lastScene = scenes[scenes.length - 1];
+    const playbackStart = performance.now();
+    const firstScene = scenes[0];
+    const startSceneTime = firstScene?.timestampMs ?? 0;
+    const endSceneTime = lastScene.timestampMs ?? startSceneTime;
+
+    const renderPlaybackFrame = (frameTime: number) => {
+      if (captureTimelineTokenRef.current !== playbackToken) return;
+      const elapsed = frameTime - playbackStart;
+      const absoluteTimelineMs = startCursorMs + elapsed;
+      setCaptureTimelineCursorMs(Math.min(endSceneTime, Math.max(startCursorMs, absoluteTimelineMs)));
+      if (absoluteTimelineMs >= endSceneTime) {
+        const finalSelection = lastScene.selectedLayerIds.filter((layerId) => {
+          const node = findNodeById(layerTree, layerId);
+          return !!node && node.kind === "layer";
+        });
+        const finalState = resolveCaptureSceneViewerState(lastScene);
+        if (finalState) {
+          applyCaptureSceneState(finalState, finalSelection, {
+            preserveActiveTool: true,
+            suppressAutoCommit: true,
+            syncCamera: true,
+          });
+        } else {
+          handleApplyCaptureScene(lastScene.id);
+        }
+        if (playbackMode === "loop" && scenes.length > 1) {
+          applyCaptureScene(firstScene, {
+            preserveActiveTool: true,
+            suppressAutoCommit: true,
+            syncCamera: true,
+          });
+          setActiveCaptureSceneId(firstScene.id);
+          setCaptureTimelineCursorMs(startSceneTime);
+          captureTimelineFrameRef.current = window.requestAnimationFrame(() => {
+            if (captureTimelineTokenRef.current !== playbackToken) return;
+            beginCaptureTimelineLoop(scenes, playbackToken, startSceneTime, playbackMode);
+          });
+          return;
+        }
+        stopCaptureTimelinePlayback({
+          resetSceneId: lastScene.id,
+        });
+        return;
+      }
+
+      for (let index = 1; index < scenes.length; index += 1) {
+        const startScene = scenes[index - 1];
+        const endScene = scenes[index];
+        const segmentStartMs = startScene.timestampMs ?? 0;
+        const segmentEndMs = endScene.timestampMs ?? segmentStartMs;
+        const segmentDuration = Math.max(1, segmentEndMs - segmentStartMs);
+        if (absoluteTimelineMs < segmentEndMs) {
+          const segmentProgress = Math.min(1, Math.max(0, (absoluteTimelineMs - segmentStartMs) / segmentDuration));
+          const easedProgress = easeCaptureSceneProgress(segmentProgress, endScene.transitionEasing ?? "ease-in-out");
+          const startState = resolveCaptureSceneViewerState(startScene);
+          const endState = resolveCaptureSceneViewerState(endScene);
+          const interpolatedCamera = interpolateCameraState(startScene.camera, endScene.camera, easedProgress);
+          if (startState && endState) {
+            const interpolatedState = interpolateViewerState(startState, endState, easedProgress);
+            interpolatedState.camera = interpolatedCamera;
+            const interpolatedSelectionSource = easedProgress < 0.5 ? startScene.selectedLayerIds : endScene.selectedLayerIds;
+            const interpolatedSelection = interpolatedSelectionSource.filter((layerId) => {
+              const node = findNodeById(interpolatedState.scene.layerTree, layerId);
+              return !!node && node.kind === "layer";
+            });
+            applyCaptureSceneState(interpolatedState, interpolatedSelection, {
+              preserveActiveTool: true,
+              suppressAutoCommit: true,
+              syncCamera: true,
+            });
+          } else {
+            if (startState || endState) {
+              const steppedState = cloneViewerStateSnapshot((easedProgress < 0.5 ? startState : endState) ?? startState ?? endState!);
+              steppedState.camera = interpolatedCamera;
+              const steppedSelectionSource = easedProgress < 0.5 ? startScene.selectedLayerIds : endScene.selectedLayerIds;
+              const steppedSelection = steppedSelectionSource.filter((layerId) => {
+                const node = findNodeById(steppedState.scene.layerTree, layerId);
+                return !!node && node.kind === "layer";
+              });
+              applyCaptureSceneState(steppedState, steppedSelection, {
+                preserveActiveTool: true,
+                suppressAutoCommit: true,
+                syncCamera: true,
+              });
+            } else {
+              if (segmentProgress < 0.5) {
+                setSelectedNodeIdsExternal(startScene.selectedLayerIds.length ? startScene.selectedLayerIds : null);
+                setSelectedNodeId(startScene.selectedLayerIds[startScene.selectedLayerIds.length - 1] ?? null);
+              } else {
+                setSelectedNodeIdsExternal(endScene.selectedLayerIds.length ? endScene.selectedLayerIds : null);
+                setSelectedNodeId(endScene.selectedLayerIds[endScene.selectedLayerIds.length - 1] ?? null);
+              }
+              applyCaptureSceneCamera(interpolatedCamera);
+            }
+          }
+          setActiveCaptureSceneId(easedProgress < 0.5 ? startScene.id : endScene.id);
+          captureTimelineFrameRef.current = window.requestAnimationFrame(renderPlaybackFrame);
+          return;
+        }
+      }
+
+      stopCaptureTimelinePlayback({
+        resetSceneId: lastScene.id,
+      });
+    };
+
+    captureTimelineFrameRef.current = window.requestAnimationFrame(renderPlaybackFrame);
+  }
+
+  function downloadBlob(blob: Blob, fileName: string) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function handleRequestCaptureImage(
+    layerIds?: string[] | null,
+    sliceCrop?: CaptureSliceCropRequest | null
+  ) {
+    const requestedLayerIds = Array.from(new Set((layerIds ?? visibleCaptureLayerIds).filter((id) => typeof id === "string" && id.length > 0)));
+    if (!requestedLayerIds.length) return;
+    const stillFileName = sliceCrop ? null : buildCaptureFileName();
+    pendingCaptureStillRef.current = stillFileName
+      ? {
+          scene: buildCurrentCaptureStill(stillFileName),
+          fileName: stillFileName,
+        }
+      : null;
+    setCaptureRequestLayerIds(requestedLayerIds);
+    setCaptureRequestSliceCrop(sliceCrop ?? null);
+    setIsCapturePending(true);
+    setCaptureRequestKey((prev) => prev + 1);
+  }
+
+  function handleCaptureSliceRegion(payload: {
+    layerId: string;
+    plane?: SlicePlane;
+    points: [number, number, number][];
+    cropRect?: {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    } | null;
+  }) {
+    handleRequestCaptureImage([payload.layerId], payload);
+  }
+
+  function handleSaveCaptureScene() {
+    pushCaptureTimelineHistorySnapshot();
+    const scene = buildCurrentCaptureScene(undefined, captureTimelineCursorMs);
+    if (!scene) {
+      return;
+    }
+    setCaptureScenes((prev) => [...prev, scene]);
+    setActiveCaptureSceneId(scene.id);
+    setCaptureTimelineCursorMs(scene.timestampMs ?? 0);
+  }
+
+  function handleUpdateActiveCaptureScene() {
+    if (!activeCaptureScene) return;
+    pushCaptureTimelineHistorySnapshot();
+    const updatedAt = Date.now();
+    setCaptureScenes((prev) =>
+      prev.map((scene) =>
+        scene.id === activeCaptureScene.id
+          ? {
+              ...scene,
+              camera: {
+                mode: cameraState.mode,
+                position: [cameraState.position[0], cameraState.position[1], cameraState.position[2]],
+                yaw: cameraState.yaw,
+                pitch: cameraState.pitch,
+                fovDeg: cameraState.fovDeg,
+              },
+              selectedLayerIds: selectedCaptureLayerIds,
+              viewerState: cloneViewerStateSnapshot(currentViewerState),
+              thumbnailDataUrl: captureViewerThumbnailDataUrl(),
+              transitionEasing: scene.transitionEasing ?? "ease-in-out",
+              updatedAt,
+            }
+          : scene
+      )
+    );
+  }
+
+  function handleApplyCaptureScene(sceneId: string) {
+    const scene = captureScenes.find((entry) => entry.id === sceneId);
+    if (!scene) return;
+    stopCaptureTimelinePlayback({ resetSceneId: scene.id });
+    const { preferredNodeId } = applyCaptureScene(scene, { syncCamera: true });
+    setActiveCaptureSceneId(scene.id);
+    setCaptureTimelineCursorMs(scene.timestampMs ?? 0);
+    runAutomationForSelection(preferredNodeId);
+  }
+
+  function handleApplyCaptureStill(stillId: string) {
+    const still = captureStills.find((entry) => entry.id === stillId);
+    if (!still) return;
+    const { preferredNodeId } = applyCaptureScene(still, { syncCamera: true });
+    setActiveCaptureStillId(still.id);
+    runAutomationForSelection(preferredNodeId);
+  }
+
+  function handleDownloadCaptureStill(stillId: string) {
+    const still = captureStills.find((entry) => entry.id === stillId);
+    if (!still?.capturedImageDataUrl) return;
+    const blob = dataUrlToBlob(still.capturedImageDataUrl);
+    if (!blob) {
+      enqueueToast({
+        tone: "error",
+        title: "Screen shot unavailable",
+        message: "This saved screen shot could not be prepared for download.",
+      }, { dedupeKey: `capture-still-download:${stillId}`, dedupeWindowMs: 3000 });
+      return;
+    }
+    downloadBlob(blob, `${still.name || "viewer-capture"}.png`);
+  }
+
+  function handleDeleteCaptureStill(stillId: string) {
+    setCaptureStills((prev) => prev.filter((entry) => entry.id !== stillId));
+    setActiveCaptureStillId((prev) => (prev === stillId ? null : prev));
+  }
+
+  function handleUpdateCaptureSceneTransition(
+    sceneId: string,
+    patch: Partial<Pick<PersistedCaptureScene, "transitionEasing">>
+  ) {
+    pushCaptureTimelineHistorySnapshot();
+    setCaptureScenes((prev) =>
+      prev.map((scene) =>
+        scene.id === sceneId
+          ? {
+              ...scene,
+              transitionEasing: patch.transitionEasing ?? scene.transitionEasing ?? "ease-in-out",
+              updatedAt: Date.now(),
+            }
+          : scene
+      )
+    );
+  }
+
+  function loadCaptureSequenceIntoEditor(sequence: PersistedCaptureSequence, options?: { openPanel?: boolean }) {
+    stopCaptureTimelinePlayback();
+    const nextScenes = cloneCaptureScenes(sequence.scenes);
+    const nextActiveSceneId =
+      nextScenes.some((scene) => scene.id === activeCaptureSceneId) ? activeCaptureSceneId : nextScenes[0]?.id ?? null;
+    setCaptureScenes(nextScenes);
+    setActiveCaptureSceneId(nextActiveSceneId);
+    setCaptureTimelineCursorMs(sequence.cursorMs ?? 0);
+    setCaptureTimelineZoom(clampCaptureTimelineZoom(sequence.zoom ?? DEFAULT_CAPTURE_TIMELINE_ZOOM));
+    setActiveCaptureSequenceId(sequence.id);
+    if (typeof options?.openPanel === "boolean") {
+      setIsCapturePanelOpen(options.openPanel);
+    }
+  }
+
+  function handleCreateCaptureSequence(options?: { openPanel?: boolean }) {
+    const now = Date.now();
+    const sequence: PersistedCaptureSequence = {
+      id: createId(),
+      name: getNextCaptureSequenceName(),
+      scenes: [],
+      cursorMs: 0,
+      zoom: DEFAULT_CAPTURE_TIMELINE_ZOOM,
+      createdAt: now,
+      updatedAt: now,
+    };
+    setCaptureSequences((prev) => [sequence, ...prev]);
+    setActiveCaptureSequenceId(sequence.id);
+    setCaptureScenes([]);
+    setActiveCaptureSceneId(null);
+    setCaptureTimelineCursorMs(0);
+    setCaptureTimelineZoom(DEFAULT_CAPTURE_TIMELINE_ZOOM);
+    setIsCapturePanelOpen(options?.openPanel ?? true);
+    setActiveTool("capture");
+  }
+
+  function handleDeleteCaptureSequence(sequenceId: string) {
+    stopCaptureTimelinePlayback();
+    setCaptureSequences((prev) => prev.filter((sequence) => sequence.id !== sequenceId));
+    setActiveCaptureSequenceId((prev) => (prev === sequenceId ? null : prev));
+    if (activeCaptureSequenceId === sequenceId) {
+      setCaptureScenes([]);
+      setActiveCaptureSceneId(null);
+      setCaptureTimelineCursorMs(0);
+      setCaptureTimelineZoom(DEFAULT_CAPTURE_TIMELINE_ZOOM);
+      setIsCapturePanelOpen(false);
+    }
+  }
+
+  function handleRenameCaptureSequence(sequenceId: string, nextName: string) {
+    const normalized = normalizeCaptureSequenceName(nextName);
+    setCaptureSequences((prev) =>
+      prev.map((sequence) =>
+        sequence.id === sequenceId
+          ? {
+              ...sequence,
+              name: normalized,
+              updatedAt: Date.now(),
+            }
+          : sequence
+      )
+    );
+  }
+
+  function handleLoadCaptureSequence(sequenceId: string, options?: { openPanel?: boolean }) {
+    const sequence = captureSequences.find((entry) => entry.id === sequenceId);
+    if (!sequence) return;
+    loadCaptureSequenceIntoEditor(sequence, {
+      openPanel: options?.openPanel ?? true,
+    });
+  }
+
+  function handlePlayCaptureTimeline(options?: {
+    fromStart?: boolean;
+    playbackMode?: CaptureTimelinePlaybackMode;
+    scenes?: PersistedCaptureScene[];
+    startCursorMs?: number;
+  }) {
+    const sourceScenes = options?.scenes ? cloneCaptureScenes(options.scenes) : cloneCaptureScenes(orderedCaptureScenes);
+    if (!sourceScenes.length) return;
+    stopCaptureTimelinePlayback();
+    setIsCapturePanelOpen(false);
+    const playbackMode = options?.playbackMode ?? "once";
+    const firstSceneTime = sourceScenes[0]?.timestampMs ?? 0;
+    const startCursorMs = Math.max(
+      firstSceneTime,
+      options?.startCursorMs ?? (options?.fromStart ? firstSceneTime : captureTimelineCursorMs)
+    );
+    const startIndex = Math.max(
+      0,
+      sourceScenes.findIndex((scene, index) => {
+        const nextScene = sourceScenes[index + 1];
+        const sceneStart = scene.timestampMs ?? 0;
+        const nextSceneStart = nextScene?.timestampMs ?? Number.POSITIVE_INFINITY;
+        return startCursorMs >= sceneStart && startCursorMs < nextSceneStart;
+      })
+    );
+    const playbackScenes = sourceScenes.slice(startIndex).map((scene) => ({
+      ...scene,
+      viewerState: resolveCaptureSceneViewerState(scene),
+      transitionEasing: scene.transitionEasing ?? "ease-in-out",
+    }));
+    if (playbackScenes.length === 1) {
+      setIsCapturePanelOpen(false);
+      handleApplyCaptureScene(playbackScenes[0].id);
+      return;
+    }
+    const firstScene = playbackScenes[0];
+    captureTimelinePlaybackModeRef.current = playbackMode;
+    applyCaptureScene(firstScene, {
+      preserveActiveTool: true,
+      suppressAutoCommit: true,
+      syncCamera: true,
+    });
+    setActiveCaptureSceneId(firstScene.id);
+    setCaptureTimelineCursorMs(startCursorMs);
+    setIsCaptureTimelinePaused(false);
+    setIsCaptureTimelinePlaying(true);
+    const playbackToken = captureTimelineTokenRef.current + 1;
+    captureTimelineTokenRef.current = playbackToken;
+    captureTimelineFrameRef.current = window.requestAnimationFrame(() => {
+      if (captureTimelineTokenRef.current !== playbackToken) return;
+      captureTimelineFrameRef.current = window.requestAnimationFrame(() => {
+        if (captureTimelineTokenRef.current !== playbackToken) return;
+        beginCaptureTimelineLoop(playbackScenes, playbackToken, startCursorMs, playbackMode);
+      });
+    });
+  }
+
+  function handlePauseCaptureTimeline() {
+    if (!isCaptureTimelinePlaying) return;
+    pauseCaptureTimelinePlayback();
+  }
+
+  function handleToggleCaptureTimelinePlayback() {
+    if (isCaptureTimelinePlaying) {
+      handlePauseCaptureTimeline();
+      return;
+    }
+    if (isCaptureTimelinePaused) {
+      handlePlayCaptureTimeline({ playbackMode: captureTimelinePlaybackModeRef.current });
+      return;
+    }
+    handlePlayCaptureTimeline({ playbackMode: captureTimelinePlaybackModeRef.current });
+  }
+
+  function handlePlayCaptureSequenceFromLibrary(
+    sequenceId: string,
+    playbackMode: CaptureTimelinePlaybackMode = "once"
+  ) {
+    const sequence = captureSequences.find((entry) => entry.id === sequenceId);
+    if (!sequence) return;
+    const nextScenes = cloneCaptureScenes(sequence.scenes);
+    setCaptureScenes(nextScenes);
+    setActiveCaptureSceneId(nextScenes[0]?.id ?? null);
+    setCaptureTimelineCursorMs(sequence.cursorMs ?? 0);
+    setCaptureTimelineZoom(clampCaptureTimelineZoom(sequence.zoom ?? DEFAULT_CAPTURE_TIMELINE_ZOOM));
+    setActiveCaptureSequenceId(sequence.id);
+    setIsCapturePanelOpen(false);
+    setActiveTool((current) => (current === "capture" ? "mouse" : current));
+    handlePlayCaptureTimeline({
+      fromStart: true,
+      playbackMode,
+      scenes: nextScenes,
+      startCursorMs: nextScenes[0]?.timestampMs ?? 0,
+    });
+  }
+
+  function handleDeleteCaptureScene(sceneId: string) {
+    const scene = captureScenes.find((entry) => entry.id === sceneId);
+    if (!scene) return;
+    pushCaptureTimelineHistorySnapshot();
+    if (isCaptureTimelinePlaying) {
+      stopCaptureTimelinePlayback({ resetSceneId: activeCaptureSceneId });
+    }
+    setCaptureScenes((prev) => prev.filter((entry) => entry.id !== sceneId));
+    setActiveCaptureSceneId((prev) => (prev === sceneId ? null : prev));
+    if (activeCaptureSceneId === sceneId) {
+      setCaptureTimelineCursorMs(scene.timestampMs ?? captureTimelineCursorMs);
+    }
+  }
+
+  function handleDownloadCaptureScene(sceneId: string) {
+    const scene = captureScenes.find((entry) => entry.id === sceneId);
+    const imageDataUrl = scene?.thumbnailDataUrl;
+    if (!scene || !imageDataUrl) return;
+    const blob = dataUrlToBlob(imageDataUrl);
+    if (!blob) {
+      enqueueToast({
+        tone: "error",
+        title: "Scene screen shot unavailable",
+        message: "This timeline scene preview could not be prepared for download.",
+      }, { dedupeKey: `capture-scene-download:${sceneId}`, dedupeWindowMs: 3000 });
+      return;
+    }
+    downloadBlob(blob, `${scene.name || "scene"}-${formatCaptureTimelineTime(scene.timestampMs ?? 0).replace(/[^0-9a-z]+/gi, "-")}.png`);
+  }
+
+  function getCaptureTimelineMsFromClientX(clientX: number) {
+    const viewport = captureTimelineViewportRef.current;
+    if (!viewport) return captureTimelineCursorMs;
+    const rect = viewport.getBoundingClientRect();
+    const localX = clientX - rect.left + viewport.scrollLeft - 28;
+    const nextMs = localX / Math.max(captureTimelinePixelsPerMs, 1e-6);
+    const boundedMs = Math.max(0, Math.round(nextMs));
+    ensureCaptureTimelineRange(boundedMs);
+    return boundedMs;
+  }
+
+  function handleCaptureTimelineBackgroundPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const nextMs = getCaptureTimelineMsFromClientX(event.clientX);
+    setCaptureTimelineCursorMs(nextMs);
+    setCaptureTimelineHoverMs(nextMs);
+    setActiveCaptureSceneId(null);
+  }
+
+  function handleCaptureTimelineScenePointerDown(event: ReactPointerEvent<HTMLButtonElement>, sceneId: string) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const scene = captureScenes.find((entry) => entry.id === sceneId);
+    if (!scene) return;
+    captureTimelineDragRef.current = {
+      sceneId,
+      startMs: scene.timestampMs ?? 0,
+      originClientX: event.clientX,
+      hasMoved: false,
+    };
+    setActiveCaptureSceneId(sceneId);
+    setCaptureTimelineCursorMs(scene.timestampMs ?? 0);
+  }
+
+  function handleCaptureTimelineWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.target as Node)) return;
+    event.preventDefault();
+    const viewport = captureTimelineViewportRef.current;
+    if (!viewport) return;
+    const nextZoom = clampCaptureTimelineZoom(
+      captureTimelineZoom * (event.deltaY < 0 ? 1.12 : 1 / 1.12)
+    );
+    if (nextZoom === captureTimelineZoom) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const localX = event.clientX - rect.left - 28;
+    const timeAtPointerMs =
+      (viewport.scrollLeft + localX) / Math.max(captureTimelinePixelsPerMs, 1e-6);
+    const nextPixelsPerMs = (CAPTURE_TIMELINE_BASE_PX_PER_SECOND * nextZoom) / 1000;
+    const targetVisibleEndMs =
+      timeAtPointerMs + (viewport.clientWidth / Math.max(nextPixelsPerMs, 1e-6));
+    ensureCaptureTimelineRange(targetVisibleEndMs);
+    setCaptureTimelineZoom(nextZoom);
+    window.requestAnimationFrame(() => {
+      const currentViewport = captureTimelineViewportRef.current;
+      if (!currentViewport) return;
+      currentViewport.scrollLeft = Math.max(
+        0,
+        timeAtPointerMs * nextPixelsPerMs - localX
+      );
+    });
+  }
+
+  useEffect(() => {
+    const furthestSceneMs = orderedCaptureScenes.length ? orderedCaptureScenes[orderedCaptureScenes.length - 1].timestampMs ?? 0 : 0;
+    ensureCaptureTimelineRange(Math.max(furthestSceneMs, captureTimelineCursorMs, captureTimelineHoverMs ?? 0));
+  }, [orderedCaptureScenes, captureTimelineCursorMs, captureTimelineHoverMs]);
+
+  useEffect(() => {
+    function handleWindowPointerMove(event: PointerEvent) {
+      const drag = captureTimelineDragRef.current;
+      if (!drag) return;
+      const deltaMs = Math.round((event.clientX - drag.originClientX) / Math.max(captureTimelinePixelsPerMs, 1e-6));
+      if (!drag.hasMoved && Math.abs(deltaMs) > 0) {
+        pushCaptureTimelineHistorySnapshot();
+        drag.hasMoved = true;
+      }
+      const nextTimestampMs = Math.max(0, drag.startMs + deltaMs);
+      setCaptureScenes((prev) =>
+        prev.map((scene) =>
+          scene.id === drag.sceneId
+            ? {
+                ...scene,
+                timestampMs: nextTimestampMs,
+                updatedAt: Date.now(),
+              }
+            : scene
+        )
+      );
+      setCaptureTimelineCursorMs(nextTimestampMs);
+      setCaptureTimelineHoverMs(nextTimestampMs);
+    }
+
+    function handleWindowPointerUp() {
+      if (!captureTimelineDragRef.current) return;
+      captureTimelineDragRef.current = null;
+      setCaptureTimelineHoverMs(null);
+    }
+
+    window.addEventListener("pointermove", handleWindowPointerMove);
+    window.addEventListener("pointerup", handleWindowPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerUp);
+    };
+  }, [captureTimelinePixelsPerMs]);
+
+  const handleImageCaptureComplete = useCallback(async (result: { ok: boolean; blob?: Blob; error?: string }) => {
+    setIsCapturePending(false);
+    setCaptureRequestLayerIds([]);
+    setCaptureRequestSliceCrop(null);
+    if (!result.ok || !result.blob) {
+      pendingCaptureStillRef.current = null;
+      const message = result.error ?? "The viewer could not create the PNG capture.";
+      console.warn(message);
+      enqueueToast({
+        tone: "error",
+        title: "Image capture failed",
+        message,
+      }, { dedupeKey: `image-capture-error:${message}`, dedupeWindowMs: 3000 });
+      return;
+    }
+
+    const pendingStill = pendingCaptureStillRef.current;
+    pendingCaptureStillRef.current = null;
+    const fileName = pendingStill?.fileName ?? buildCaptureFileName();
+    downloadBlob(result.blob, fileName);
+
+    if (!pendingStill) {
+      return;
+    }
+
+    try {
+      const imageDataUrl = await blobToDataUrl(result.blob);
+      const nextStill: PersistedCaptureScene = {
+        ...pendingStill.scene,
+        thumbnailDataUrl: imageDataUrl,
+        capturedImageDataUrl: imageDataUrl,
+        updatedAt: Date.now(),
+      };
+      setCaptureStills((prev) => [nextStill, ...prev.filter((entry) => entry.id !== nextStill.id)]);
+      setActiveCaptureStillId(nextStill.id);
+    } catch (error) {
+      console.warn("Failed to persist capture still preview.", error);
+    }
+  }, []);
 
   useEffect(() => {
     if (activeTool !== "resources") return;
@@ -4545,7 +6106,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     runAutomationForSelection(nodeId);
   }
 
-  function handleSelectSceneLayers(nodeIds: string[], options?: { append?: boolean; preferredNodeId?: string | null }) {
+  function handleSelectSceneLayers(
+    nodeIds: string[],
+    options?: { append?: boolean; preferredNodeId?: string | null; captureAfterSelect?: boolean }
+  ) {
     const orderedUnique = Array.from(new Set(nodeIds.filter((id) => typeof id === "string" && id.length > 0)));
     if (!orderedUnique.length) return;
     const append = !!options?.append;
@@ -5184,6 +6748,21 @@ export default function App({ startupSlices = [] }: AppProps) {
     );
   }
 
+  function updateSelectedNodeIntensityWindow(window: IntensityWindow) {
+    if (!selectedNodeId) return;
+    const safeMin = Math.max(0, Math.min(0.99, window.min));
+    const safeMax = Math.max(safeMin + 0.01, Math.min(1, window.max));
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedNodeId, (node) => ({
+        ...node,
+        intensityWindow: {
+          min: safeMin,
+          max: safeMax,
+        },
+      }))
+    );
+  }
+
   function updateSelectedNodeTransform(patch: Partial<NodeTransform>) {
     if (!selectedNodeId) return;
 
@@ -5338,6 +6917,30 @@ export default function App({ startupSlices = [] }: AppProps) {
     });
   }
 
+  function handleDeleteSelectedNodes() {
+    const selectionIds = Array.from(
+      new Set(
+        (selectedNodeIdsExternal?.length
+          ? selectedNodeIdsExternal
+          : selectedNodeId
+            ? [selectedNodeId]
+            : []
+        ).filter((nodeId) => {
+          if (typeof nodeId !== "string" || nodeId.length === 0) return false;
+          return !!findNodeById(layerTree, nodeId);
+        })
+      )
+    );
+
+    if (!selectionIds.length) return false;
+    if (selectionIds.length === 1) {
+      handleDeleteNode(selectionIds[0]);
+    } else {
+      handleDeleteNodes(selectionIds);
+    }
+    return true;
+  }
+
   function handleCreateGroupFromNodes(nodeIds: string[]) {
     const uniqueIds = Array.from(new Set(nodeIds));
     if (uniqueIds.length < 2) return;
@@ -5460,6 +7063,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     clearPersistedViewerLibrary();
     setViewerLibrary([]);
     setActiveSavedViewerId(null);
+    setCaptureScenes([]);
+    setActiveCaptureSceneId(null);
+    setCaptureTimelineCursorMs(0);
+    setCaptureTimelineZoom(DEFAULT_CAPTURE_TIMELINE_ZOOM);
     setViewerLibraryMode("browse");
     setHasPersistedViewerState(false);
     notifyProfileDataChanged();
@@ -5487,6 +7094,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     } catch {}
     setViewerLibrary([]);
     setActiveSavedViewerId(null);
+    setCaptureScenes([]);
+    setActiveCaptureSceneId(null);
+    setCaptureTimelineCursorMs(0);
+    setCaptureTimelineZoom(DEFAULT_CAPTURE_TIMELINE_ZOOM);
     setViewerLibraryMode("browse");
     setAnnotationRecentColors([]);
     pastStatesRef.current = [];
@@ -5838,15 +7449,15 @@ export default function App({ startupSlices = [] }: AppProps) {
         background: appPreferences.sceneBackground,
         color: appPreferences.theme === "light" ? "#18212b" : "white",
         cursor:
-          activeTool === "select"
+          (activeTool === "select" || activeTool === "capture")
             ? "pointer"
             : appPreferences.cursorStyle === "crosshair"
             ? "crosshair"
             : appPreferences.cursorStyle === "high-contrast"
             ? "cell"
             : "default",
-        userSelect: activeTool === "select" ? "none" : "auto",
-        WebkitUserSelect: activeTool === "select" ? "none" : "auto",
+        userSelect: activeTool === "select" || activeTool === "capture" ? "none" : "auto",
+        WebkitUserSelect: activeTool === "select" || activeTool === "capture" ? "none" : "auto",
       }}
     >
       <style>{getThemeRootCss(appPreferences.theme)}</style>
@@ -5891,6 +7502,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         suppressScenePointerTarget={isSlicePanelHoverLocked}
         onSelectSceneLayer={handleSelectSceneLayer}
         onSelectSceneLayers={handleSelectSceneLayers}
+        onCaptureSliceRegion={handleCaptureSliceRegion}
         onAxisSliceStateChange={handleUpdateAxisSliceState}
         onCustomSliceParamsChange={handleUpdateCustomSliceParams}
         onCustomSliceTilt={handleTiltObliqueSliceForLayer}
@@ -5901,6 +7513,16 @@ export default function App({ startupSlices = [] }: AppProps) {
         cacheClearRequestKey={cacheClearRequestKey}
         hiddenDataAutoUnloadMinutes={appPreferences.hiddenDataAutoUnloadMinutes}
         onCacheClearComplete={handleResourceCacheCleared}
+        imageCaptureRequest={
+          isCapturePending
+            ? {
+                key: captureRequestKey,
+                selectedLayerIds: captureRequestLayerIds,
+                sliceCrop: captureRequestSliceCrop,
+              }
+            : null
+        }
+        onImageCaptureComplete={handleImageCaptureComplete}
       />
 
       <style>{`
@@ -5975,6 +7597,467 @@ export default function App({ startupSlices = [] }: AppProps) {
         onOpenProfile={() => { setIsUserProfilePanelOpen(true); setIsAppMenuOpen(false); }}
         onOpenAbout={openAboutDialog}
       />
+
+      {shouldShowCapturePanel ? (
+        <div
+          data-theme-surface="panel"
+          style={{
+            position: "absolute",
+            left: 18,
+            right: 18,
+            bottom: 82,
+            borderRadius: 18,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(12,14,18,0.92)",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.28)",
+            backdropFilter: "blur(14px)",
+            padding: 12,
+            color: "white",
+            display: "grid",
+            gridTemplateRows: "auto 1fr",
+            gap: 10,
+            zIndex: 48,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexWrap: "nowrap",
+              overflowX: "auto",
+              overflowY: "hidden",
+              paddingBottom: 2,
+            }}
+          >
+            <button
+              type="button"
+              aria-label="Play from start"
+              title="Play from start"
+              onClick={() => handlePlayCaptureTimeline({ fromStart: true, playbackMode: "once" })}
+              disabled={orderedCaptureScenes.length === 0}
+              style={{
+                minHeight: 34,
+                minWidth: 34,
+                borderRadius: 9,
+                border: "1px solid rgba(120,190,255,0.28)",
+                background: "rgba(120,190,255,0.18)",
+                color: "white",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "0 10px",
+                cursor: orderedCaptureScenes.length === 0 ? "not-allowed" : "pointer",
+                opacity: orderedCaptureScenes.length === 0 ? 0.58 : 1,
+              }}
+            >
+              <CaptureTimelineIcon kind="play-start" />
+            </button>
+            <button
+              type="button"
+              aria-label={isCaptureTimelinePlaying ? "Pause preview" : isCaptureTimelinePaused ? "Resume preview" : "Play from cursor"}
+              title={isCaptureTimelinePlaying ? "Pause preview" : isCaptureTimelinePaused ? "Resume preview" : "Play from cursor"}
+              onClick={handleToggleCaptureTimelinePlayback}
+              disabled={orderedCaptureScenes.length === 0}
+              style={{
+                minHeight: 34,
+                minWidth: 34,
+                borderRadius: 9,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: isCaptureTimelinePlaying ? "rgba(255,160,120,0.16)" : "rgba(255,255,255,0.08)",
+                color: "white",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "0 10px",
+                cursor: orderedCaptureScenes.length === 0 ? "not-allowed" : "pointer",
+                opacity: orderedCaptureScenes.length === 0 ? 0.58 : 1,
+              }}
+            >
+              <CaptureTimelineIcon kind={isCaptureTimelinePlaying ? "pause" : "play"} />
+            </button>
+            <div
+              aria-hidden="true"
+              style={{
+                width: 1,
+                alignSelf: "stretch",
+                minHeight: 28,
+                background: "rgba(255,255,255,0.12)",
+                margin: "0 4px",
+              }}
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.56)" }}>Transition</div>
+              <select
+                value={activeCaptureScene?.transitionEasing ?? "ease-in-out"}
+                onChange={(event) =>
+                  activeCaptureScene
+                    ? handleUpdateCaptureSceneTransition(activeCaptureScene.id, {
+                        transitionEasing: event.target.value as CaptureSceneTransitionEasing,
+                      })
+                    : undefined
+                }
+                disabled={!activeCaptureScene || activeOrderedCaptureSceneIndex <= 0}
+                style={{
+                  minHeight: 32,
+                  borderRadius: 9,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(255,255,255,0.08)",
+                  color: "white",
+                  padding: "0 8px",
+                  fontSize: 12,
+                  outline: "none",
+                  opacity: !activeCaptureScene || activeOrderedCaptureSceneIndex <= 0 ? 0.58 : 1,
+                }}
+              >
+                {CAPTURE_SCENE_TRANSITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div
+              aria-hidden="true"
+              style={{
+                width: 1,
+                alignSelf: "stretch",
+                minHeight: 28,
+                background: "rgba(255,255,255,0.12)",
+                margin: "0 4px",
+                flex: "0 0 auto",
+              }}
+            />
+            <button
+              type="button"
+              onClick={handleSaveCaptureScene}
+              style={{
+                minHeight: 34,
+                borderRadius: 9,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.08)",
+                color: "white",
+                fontSize: 12,
+                fontWeight: 800,
+                padding: "0 12px",
+                cursor: "pointer",
+                flex: "0 0 auto",
+              }}
+            >
+              Add scene at cursor
+            </button>
+            <button
+              type="button"
+              onClick={handleUpdateActiveCaptureScene}
+              disabled={!activeCaptureScene}
+              style={{
+                minHeight: 34,
+                borderRadius: 9,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.08)",
+                color: "white",
+                fontSize: 12,
+                fontWeight: 800,
+                padding: "0 12px",
+                cursor: activeCaptureScene ? "pointer" : "not-allowed",
+                opacity: activeCaptureScene ? 1 : 0.58,
+                flex: "0 0 auto",
+              }}
+            >
+              Update selected scene
+            </button>
+            <div style={{ flex: 1, minWidth: 16 }} />
+            <button
+              type="button"
+              aria-label="Close timeline editor"
+              title="Close timeline editor"
+              onClick={() => setIsCapturePanelOpen(false)}
+              style={{
+                minHeight: 34,
+                minWidth: 34,
+                borderRadius: 9,
+                border: "1px solid rgba(255,255,255,0.10)",
+                background: "rgba(255,255,255,0.08)",
+                color: "white",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "0 10px",
+                cursor: "pointer",
+                flex: "0 0 auto",
+              }}
+            >
+              <span style={{ fontSize: 18, lineHeight: 1 }}>×</span>
+            </button>
+          </div>
+
+          <>
+              <div style={{ display: "grid", gridTemplateColumns: "auto auto 1fr auto", gap: 12, alignItems: "center" }}>
+                <div style={{ fontSize: 12, fontWeight: 800 }}>Playhead {formatCaptureTimelineTime(captureTimelineCursorMs)}</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+                  {selectedCaptureLayerNames.length
+                    ? selectedCaptureLayerNames.length === 1
+                      ? selectedCaptureLayerNames[0]
+                      : `${selectedCaptureLayerNames.length} layers selected`
+                    : "No scene layer selected"}
+                </div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+                  {activeCaptureScene
+                    ? `Selected scene ${formatCaptureTimelineTime(activeCaptureScene.timestampMs ?? 0)}`
+                    : "No scene selected"}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.56)" }}>
+                    Wheel to zoom {Math.round(captureTimelineZoom * 100)}%
+                  </div>
+                </div>
+              </div>
+
+              <div
+                ref={captureTimelineViewportRef}
+                onPointerDown={handleCaptureTimelineBackgroundPointerDown}
+                onPointerMove={(event) => setCaptureTimelineHoverMs(getCaptureTimelineMsFromClientX(event.clientX))}
+                onPointerLeave={() => setCaptureTimelineHoverMs(null)}
+                onWheel={handleCaptureTimelineWheel}
+                onScroll={(event) => {
+                  const viewport = event.currentTarget;
+                  const visibleEndMs =
+                    (viewport.scrollLeft + viewport.clientWidth) / Math.max(captureTimelinePixelsPerMs, 1e-6);
+                  if (visibleEndMs > captureTimelineDurationMs - CAPTURE_TIMELINE_VIEW_PADDING_MS) {
+                    ensureCaptureTimelineRange(visibleEndMs + CAPTURE_TIMELINE_VIEW_PADDING_MS);
+                  }
+                }}
+                style={{
+                  position: "relative",
+                  overflowX: "auto",
+                  overflowY: "hidden",
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  background:
+                    "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.03) 100%)",
+                }}
+              >
+                <div
+                  style={{
+                    position: "relative",
+                    width: captureTimelineContentWidth,
+                    minHeight: 148,
+                    padding: "10px 20px 14px 28px",
+                    boxSizing: "border-box",
+                  }}
+                >
+                  {Array.from({ length: Math.floor(captureTimelineDurationMs / 1000) + 1 }, (_, index) => {
+                    const tickMs = index * 1000;
+                    const x = 28 + tickMs * captureTimelinePixelsPerMs;
+                    return (
+                      <div key={tickMs}>
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: x,
+                            top: 0,
+                            bottom: 0,
+                            width: 1,
+                            background: index % 5 === 0 ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.05)",
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: x + 4,
+                            top: 8,
+                            fontSize: 10,
+                            color: "rgba(255,255,255,0.48)",
+                            userSelect: "none",
+                          }}
+                        >
+                          {formatCaptureTimelineTime(tickMs)}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: 28,
+                      right: 20,
+                      top: 44,
+                      height: 2,
+                      borderRadius: 999,
+                      background: "rgba(255,255,255,0.10)",
+                    }}
+                  />
+
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: 28 + captureTimelineCursorMs * captureTimelinePixelsPerMs,
+                      top: 28,
+                      bottom: 12,
+                      width: 2,
+                      background: "rgba(120,190,255,0.92)",
+                      borderRadius: 999,
+                      pointerEvents: "none",
+                    }}
+                  />
+
+                  {captureTimelineHoverMs !== null ? (
+                    <>
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: 28 + captureTimelineHoverMs * captureTimelinePixelsPerMs,
+                          top: 28,
+                          bottom: 12,
+                          width: 1,
+                          background: "rgba(255,255,255,0.36)",
+                          borderRadius: 999,
+                          pointerEvents: "none",
+                        }}
+                      />
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: 34 + captureTimelineHoverMs * captureTimelinePixelsPerMs,
+                          top: 28,
+                          fontSize: 10,
+                          color: "rgba(255,255,255,0.72)",
+                          pointerEvents: "none",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {formatCaptureTimelineTime(captureTimelineHoverMs)}
+                      </div>
+                    </>
+                  ) : null}
+
+                  {orderedCaptureScenes.map((scene) => {
+                    const left = 28 + (scene.timestampMs ?? 0) * captureTimelinePixelsPerMs;
+                    const isActive = scene.id === activeCaptureSceneId;
+                    return (
+                      <div
+                        key={scene.id}
+                        onPointerDown={(event) => handleCaptureTimelineScenePointerDown(event, scene.id)}
+                        style={{
+                          position: "absolute",
+                          left,
+                          top: 54,
+                          width: 148,
+                          height: 90,
+                          transform: "translateX(-50%)",
+                          borderRadius: 12,
+                          border: isActive ? "2px solid rgba(120,190,255,0.84)" : "1px solid rgba(255,255,255,0.12)",
+                          background: scene.thumbnailDataUrl ? `center / cover no-repeat url(${scene.thumbnailDataUrl})` : "rgba(255,255,255,0.08)",
+                          boxShadow: isActive ? "0 0 0 3px rgba(120,190,255,0.14)" : "0 8px 20px rgba(0,0,0,0.22)",
+                          overflow: "hidden",
+                          cursor: "grab",
+                          padding: 0,
+                          userSelect: "none",
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleApplyCaptureScene(scene.id);
+                          }}
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            border: "none",
+                            background: "transparent",
+                            padding: 0,
+                            cursor: "pointer",
+                          }}
+                          aria-label={`Load scene at ${formatCaptureTimelineTime(scene.timestampMs ?? 0)}`}
+                        />
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: 6,
+                            right: 6,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            zIndex: 1,
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleDownloadCaptureScene(scene.id);
+                            }}
+                            title="Download scene screen shot"
+                            aria-label="Download scene screen shot"
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: 8,
+                              border: "1px solid rgba(255,255,255,0.16)",
+                              background: "rgba(10,12,16,0.72)",
+                              color: "white",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              cursor: "pointer",
+                              backdropFilter: "blur(8px)",
+                            }}
+                          >
+                            <CaptureTimelineIcon kind="export" />
+                          </button>
+                          <button
+                            type="button"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleDeleteCaptureScene(scene.id);
+                            }}
+                            title="Delete scene"
+                            aria-label="Delete scene"
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: 8,
+                              border: "1px solid rgba(255,160,160,0.18)",
+                              background: "rgba(55,18,18,0.72)",
+                              color: "rgba(255,220,220,0.96)",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              cursor: "pointer",
+                              backdropFilter: "blur(8px)",
+                            }}
+                          >
+                            <span style={{ fontSize: 14, lineHeight: 1 }}>✕</span>
+                          </button>
+                        </div>
+                        <div
+                          style={{
+                            position: "absolute",
+                            inset: "auto 0 0 0",
+                            background: "linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.72) 100%)",
+                            padding: "24px 8px 7px",
+                            textAlign: "left",
+                          }}
+                        >
+                          <div style={{ fontSize: 11, fontWeight: 800, color: "white" }}>
+                            {formatCaptureTimelineTime(scene.timestampMs ?? 0)}
+                          </div>
+                          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.72)" }}>
+                            {scene.selectedLayerIds.length === 1 ? "1 layer" : `${scene.selectedLayerIds.length} layers`}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+        </div>
+      ) : null}
 
       <LayerPanel
         layerTree={layerTree}
@@ -6083,6 +8166,24 @@ export default function App({ startupSlices = [] }: AppProps) {
         onCameraModeChange={handleCameraModeChange}
         onFocusSelectedLayer={handleRequestFocusSelectedLayer}
         onSaveCurrentViewer={handleSaveCurrentViewerToLibrary}
+        captureStills={captureStillMenuItems}
+        captureSequences={captureSequenceMenuItems}
+        capturePlaybackActive={isCaptureTimelinePlaying}
+        capturePlaybackPaused={isCaptureTimelinePaused}
+        onOpenCaptureEditor={() => handleCreateCaptureSequence({ openPanel: true })}
+        onExportCaptureFrame={handleRequestCaptureImage}
+        captureExportEnabled={visibleCaptureLayerIds.length > 0}
+        captureExportPending={isCapturePending}
+        onToggleCapturePlayback={handleToggleCaptureTimelinePlayback}
+        onStopCapturePlayback={stopCaptureTimelinePlayback}
+        onLoadCaptureStill={handleApplyCaptureStill}
+        onDownloadCaptureStill={handleDownloadCaptureStill}
+        onDeleteCaptureStill={handleDeleteCaptureStill}
+        onLoadCaptureSequence={(sequenceId) => handleLoadCaptureSequence(sequenceId, { openPanel: true })}
+        onPlayCaptureSequence={(sequenceId) => handlePlayCaptureSequenceFromLibrary(sequenceId, "once")}
+        onLoopCaptureSequence={(sequenceId) => handlePlayCaptureSequenceFromLibrary(sequenceId, "loop")}
+        onRenameCaptureSequence={handleRenameCaptureSequence}
+        onDeleteCaptureSequence={handleDeleteCaptureSequence}
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={() => handleUndo()}

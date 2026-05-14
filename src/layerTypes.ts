@@ -159,6 +159,11 @@ export type NodeTransform = {
   scale?: NodeTransformVector3;
 };
 
+export type IntensityWindow = {
+  min: number;
+  max: number;
+};
+
 export const DEFAULT_NODE_OPACITY = 1;
 export const DEFAULT_NODE_TRANSLATION: NodeTransformVector3 = [0, 0, 0];
 export const DEFAULT_NODE_ROTATION: NodeTransformVector3 = [0, 0, 0];
@@ -174,6 +179,7 @@ type BaseNode = {
   name: string;
   visible: boolean;
   opacity?: number;
+  intensityWindow?: IntensityWindow;
   transform?: NodeTransform;
 };
 

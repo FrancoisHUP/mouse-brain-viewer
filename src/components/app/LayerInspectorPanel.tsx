@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { LayerItemNode, LayerTreeNode, AnnotationShape, NodeTransform } from '../../layerTypes';
+import type { LayerItemNode, LayerTreeNode, AnnotationShape, NodeTransform, IntensityWindow } from '../../layerTypes';
 import type { SelectedLayerRuntimeInfo } from '../../WebGLCanvas';
 import { MetadataRichContent } from './MetadataRichContent';
 
@@ -104,6 +104,216 @@ function NumberField({
         }}
       />
     </label>
+  );
+}
+
+function DualRangeSlider({
+  min,
+  max,
+  step = 0.01,
+  valueMin,
+  valueMax,
+  onChange,
+}: {
+  min: number;
+  max: number;
+  step?: number;
+  valueMin: number;
+  valueMax: number;
+  onChange: (next: IntensityWindow) => void;
+}) {
+  const range = Math.max(max - min, 0.0001);
+  const startPercent = ((valueMin - min) / range) * 100;
+  const endPercent = ((valueMax - min) / range) * 100;
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <style>{`
+        .dual-range-slider{
+          -webkit-appearance:none;
+          appearance:none;
+          height:22px;
+          outline:none;
+          pointer-events:none;
+        }
+        .dual-range-slider::-webkit-slider-runnable-track{
+          height:6px;
+          background:transparent;
+          border:none;
+        }
+        .dual-range-slider::-moz-range-track{
+          height:6px;
+          background:transparent;
+          border:none;
+        }
+        .dual-range-slider::-webkit-slider-thumb{
+          -webkit-appearance:none;
+          appearance:none;
+          width:14px;
+          height:14px;
+          border-radius:999px;
+          border:1px solid rgba(255,255,255,0.55);
+          background:#dff3ff;
+          box-shadow:0 0 0 3px rgba(120,200,255,0.18);
+          cursor:pointer;
+          margin-top:-4px;
+          pointer-events:auto;
+        }
+        .dual-range-slider::-moz-range-thumb{
+          width:14px;
+          height:14px;
+          border-radius:999px;
+          border:1px solid rgba(255,255,255,0.55);
+          background:#dff3ff;
+          box-shadow:0 0 0 3px rgba(120,200,255,0.18);
+          cursor:pointer;
+          pointer-events:auto;
+        }
+      `}</style>
+      <div style={{ position: 'relative', height: 22, display: 'flex', alignItems: 'center' }}>
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            height: 6,
+            borderRadius: 999,
+            background: 'rgba(255,255,255,0.10)',
+          }}
+        />
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: `${startPercent}%`,
+            width: `${Math.max(endPercent - startPercent, 0)}%`,
+            height: 6,
+            borderRadius: 999,
+            background: 'linear-gradient(90deg, rgba(120,200,255,0.72), rgba(170,230,255,0.96))',
+            boxShadow: '0 0 0 1px rgba(255,255,255,0.08)',
+          }}
+        />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={valueMin}
+          onChange={(event) =>
+            onChange({
+              min: Math.min(Number(event.target.value), valueMax - step),
+              max: valueMax,
+            })
+          }
+          className="dual-range-slider"
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            width: '100%',
+            margin: 0,
+            background: 'transparent',
+          }}
+        />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={valueMax}
+          onChange={(event) =>
+            onChange({
+              min: valueMin,
+              max: Math.max(Number(event.target.value), valueMin + step),
+            })
+          }
+          className="dual-range-slider"
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            width: '100%',
+            margin: 0,
+            background: 'transparent',
+          }}
+        />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, opacity: 0.72 }}>
+        <span>Min {valueMin.toFixed(2)}</span>
+        <span>Max {valueMax.toFixed(2)}</span>
+      </div>
+    </div>
+  );
+}
+
+function SingleRangeSlider({
+  min,
+  max,
+  step = 0.01,
+  value,
+  onChange,
+  valueLabel,
+}: {
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+  onChange: (value: number) => void;
+  valueLabel: string;
+}) {
+  const range = Math.max(max - min, 0.0001);
+  const fillPercent = ((value - min) / range) * 100;
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <div style={{ position: 'relative', height: 22, display: 'flex', alignItems: 'center' }}>
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            height: 6,
+            borderRadius: 999,
+            background: 'rgba(255,255,255,0.10)',
+          }}
+        />
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: 0,
+            width: `${Math.max(fillPercent, 0)}%`,
+            height: 6,
+            borderRadius: 999,
+            background: 'linear-gradient(90deg, rgba(120,200,255,0.72), rgba(170,230,255,0.96))',
+            boxShadow: '0 0 0 1px rgba(255,255,255,0.08)',
+          }}
+        />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(event) => onChange(Number(event.target.value))}
+          className="dual-range-slider"
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            width: '100%',
+            margin: 0,
+            background: 'transparent',
+            pointerEvents: 'auto',
+          }}
+        />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, fontSize: 11, opacity: 0.72 }}>
+        <span>{valueLabel}</span>
+      </div>
+    </div>
   );
 }
 
@@ -263,6 +473,7 @@ export default function LayerInspectorPanel({
   onToggleCollapsed,
   onRenameNode,
   onUpdateSelectedNodeOpacity,
+  onUpdateSelectedNodeIntensityWindow,
   onUpdateSelectedNodeTransform,
   onResetSelectedNodeTransform,
   onUpdateSelectedAnnotationLayer,
@@ -276,6 +487,7 @@ export default function LayerInspectorPanel({
   onToggleCollapsed: () => void;
   onRenameNode: (nodeId: string, newName: string) => void;
   onUpdateSelectedNodeOpacity: (opacity: number) => void;
+  onUpdateSelectedNodeIntensityWindow: (window: IntensityWindow) => void;
   onUpdateSelectedNodeTransform: (patch: Partial<NodeTransform>) => void;
   onResetSelectedNodeTransform: () => void;
   onUpdateSelectedAnnotationLayer: (patch: Partial<NonNullable<LayerItemNode['annotation']>>) => void;
@@ -288,6 +500,21 @@ export default function LayerInspectorPanel({
   const isNoteAnnotation = selectedAnnotation?.shape === 'note';
 
   const selectedOpacity = Math.max(0, Math.min(1, selectedNode?.opacity ?? 1));
+  const selectedIntensityWindow = {
+    min: Math.max(0, Math.min(1, selectedNode?.intensityWindow?.min ?? 0)),
+    max: Math.max(0, Math.min(1, selectedNode?.intensityWindow?.max ?? 1)),
+  };
+  const canAdjustIntensityWindow =
+    selectedNode?.kind === 'layer' &&
+    (
+      selectedNode.type === 'custom-slice' ||
+      selectedNode.localDataKind === 'volume' ||
+      (
+        selectedNode.type === 'remote' &&
+        selectedNode.remoteFormat === 'ome-zarr' &&
+        selectedNode.remoteContentKind !== 'annotation'
+      )
+    );
 
   void isInspectorCollapsed;
   void onToggleCollapsed;
@@ -327,20 +554,29 @@ export default function LayerInspectorPanel({
                 <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
                   Opacity
                 </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={selectedOpacity}
-                    onChange={(event) => onUpdateSelectedNodeOpacity(Number(event.target.value))}
-                    style={{ flex: 1 }}
-                  />
-                  <span style={{ fontSize: 11, minWidth: 36, textAlign: 'right', opacity: 0.72 }}>
-                    {Math.round(selectedOpacity * 100)}%
-                  </span>
-                </div>
+                <SingleRangeSlider
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={selectedOpacity}
+                  onChange={onUpdateSelectedNodeOpacity}
+                  valueLabel={`${Math.round(selectedOpacity * 100)}%`}
+                />
+                {canAdjustIntensityWindow ? (
+                  <>
+                    <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                      Intensity range
+                    </span>
+                    <DualRangeSlider
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      valueMin={selectedIntensityWindow.min}
+                      valueMax={selectedIntensityWindow.max}
+                      onChange={onUpdateSelectedNodeIntensityWindow}
+                    />
+                  </>
+                ) : null}
               </div>
             </Section>
 

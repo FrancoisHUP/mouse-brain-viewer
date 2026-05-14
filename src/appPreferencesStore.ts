@@ -1,26 +1,31 @@
 export type AppThemeId = "dark" | "gray" | "light";
 export type CursorStyleId = "default" | "high-contrast" | "crosshair";
+export type ReleaseUpdateMode = "manual" | "notify" | "auto-latest";
 
 export type AppPreferences = {
-    schemaVersion: 1;
+    schemaVersion: 2;
     theme: AppThemeId;
     cursorStyle: CursorStyleId;
     sceneBackground: string;
     historyLimit: number;
     keepAssistantModel: boolean;
     hiddenDataAutoUnloadMinutes: number | null;
+    releaseUpdateMode: ReleaseUpdateMode;
+    lastSeenReleaseCommitSha: string | null;
 };
 
 export const APP_PREFERENCES_STORAGE_KEY = "mouse_brain_viewer.app_preferences";
 
 const DEFAULT_PREFERENCES: AppPreferences = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     theme: "dark",
     cursorStyle: "default",
     sceneBackground: "#0b0f14",
     historyLimit: 80,
     keepAssistantModel: true,
     hiddenDataAutoUnloadMinutes: null,
+    releaseUpdateMode: "notify",
+    lastSeenReleaseCommitSha: null,
 };
 
 function clampHistoryLimit(value: number) {
@@ -42,7 +47,7 @@ function normalizePreferences(value: unknown): AppPreferences {
     const raw = value as Partial<AppPreferences>;
 
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         theme:
             raw.theme === "dark" || raw.theme === "gray" || raw.theme === "light"
                 ? raw.theme
@@ -65,6 +70,16 @@ function normalizePreferences(value: unknown): AppPreferences {
         hiddenDataAutoUnloadMinutes: clampHiddenDataAutoUnloadMinutes(
             raw.hiddenDataAutoUnloadMinutes ?? DEFAULT_PREFERENCES.hiddenDataAutoUnloadMinutes
         ),
+        releaseUpdateMode:
+            raw.releaseUpdateMode === "manual" ||
+            raw.releaseUpdateMode === "notify" ||
+            raw.releaseUpdateMode === "auto-latest"
+                ? raw.releaseUpdateMode
+                : DEFAULT_PREFERENCES.releaseUpdateMode,
+        lastSeenReleaseCommitSha:
+            typeof raw.lastSeenReleaseCommitSha === "string" && raw.lastSeenReleaseCommitSha.trim()
+                ? raw.lastSeenReleaseCommitSha.trim()
+                : DEFAULT_PREFERENCES.lastSeenReleaseCommitSha,
     };
 }
 

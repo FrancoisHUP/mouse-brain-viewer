@@ -1,3 +1,10 @@
+(1) I want to add some template. I want to have a square template around the volume, 
+(2) I want to add a grid in 3 main axis so it look a bit like a graph.
+
+
+[todo?] swap the toggle on layes panel to an automation as the base automation. 
+[todo] saved viewer, the user could think by doucle clicking it will select the existing saved viewer to save on. but it's not the behavior. (ctrl+s, when there's no pointer to a saved state) 
+
 [todo] update panel (i) button, past version update message. Pupop when user is update from a previous version. Have a version maanger where the user can manager the version of the software?  
 
 Automations {
@@ -25,14 +32,11 @@ import data {
 
 export data {
   [todo] Unselect row (when user click away).
-  [?] export images 
 } 
-
 
 Export {
   [todo] add exports? download the file in other types then the original (converter), download the transformation / apply the transformation to the brain (for this one I should make sure I import the data the right way compatible with other software), download RAS (auto detect).  download images, annotaions, recordings ?  
 }
-
 
 Annotations { 
   [todo] making the annotation match the color of the allen atlas; getting the other skeleton of the annotation instead of volumetric data or both ? 
