@@ -5924,7 +5924,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     setActiveCaptureSceneId(null);
   }
 
-  function handleCaptureTimelineScenePointerDown(event: ReactPointerEvent<HTMLButtonElement>, sceneId: string) {
+  function handleCaptureTimelineScenePointerDown(event: ReactPointerEvent<HTMLElement>, sceneId: string) {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
