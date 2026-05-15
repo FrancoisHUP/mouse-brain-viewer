@@ -164,6 +164,11 @@ export type IntensityWindow = {
   max: number;
 };
 
+export type MeshStyle = {
+  color?: string;
+  lineWidth?: number;
+};
+
 export const DEFAULT_NODE_OPACITY = 1;
 export const DEFAULT_NODE_TRANSLATION: NodeTransformVector3 = [0, 0, 0];
 export const DEFAULT_NODE_ROTATION: NodeTransformVector3 = [0, 0, 0];
@@ -218,6 +223,9 @@ export type LayerItemNode = BaseNode & {
 
   // For drawing annotations
   annotation?: AnnotationData;
+
+  // For mesh-style display controls
+  meshStyle?: MeshStyle;
 };
 
 export type LayerTreeNode = LayerGroupNode | LayerItemNode;

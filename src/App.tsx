@@ -141,6 +141,7 @@ import type {
   IntensityWindow,
   LayerItemNode,
   LayerTreeNode,
+  MeshStyle,
   NodeTransform,
   RemoteContentKind,
   RemoteDataFormat,
@@ -220,6 +221,7 @@ type ExternalSourceDraft = {
   name: string;
   url: string;
   icon?: "generic" | "custom";
+  builtIn?: boolean;
   remoteFormat?: RemoteDataFormat;
   remoteContentKind?: RemoteContentKind;
   renderMode?: RemoteRenderMode;
@@ -1007,7 +1009,7 @@ function buildObliqueSliceFromCanonicalPlane(
     offset: dataIndex - getPlaneCenterCoordinate(dims, plane),
     width,
     height,
-    opacity: 0.92,
+    opacity: 1,
     flipX: true,
     flipY: false,
     flipZ: true,
@@ -1458,7 +1460,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     mode: "axis",
     plane: "xy",
     index: 0,
-    opacity: 0.92,
+    opacity: 1,
   });
 
   const groupOptions = useMemo(() => collectGroups(layerTree), [layerTree]);
@@ -2304,6 +2306,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onRenameNode={handleRenameNode}
         onUpdateSelectedNodeOpacity={updateSelectedNodeOpacity}
         onUpdateSelectedNodeIntensityWindow={updateSelectedNodeIntensityWindow}
+        onUpdateSelectedNodeMeshStyle={updateSelectedNodeMeshStyle}
         onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
         onResetSelectedNodeTransform={resetSelectedNodeTransform}
         onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
@@ -4351,7 +4354,7 @@ export default function App({ startupSlices = [] }: AppProps) {
               mode: "axis",
               plane: item.plane,
               index: item.index,
-              opacity: item.opacity ?? 0.92,
+              opacity: item.opacity ?? 1,
             },
           },
         ];
@@ -4599,7 +4602,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         mode: "axis",
         plane: "xy",
         index: 0,
-        opacity: 0.92,
+        opacity: 1,
       },
       layerPanelCollapsed: false,
       inspectorCollapsed: false,
@@ -6763,6 +6766,38 @@ export default function App({ startupSlices = [] }: AppProps) {
     );
   }
 
+  function updateSelectedNodeMeshStyle(patch: Partial<MeshStyle>) {
+    if (!selectedNodeId) return;
+
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedNodeId, (node) => {
+        if (node.kind !== "layer") return node;
+        const current = node.meshStyle ?? {};
+        return {
+          ...node,
+          meshStyle: {
+            color:
+              patch.color !== undefined
+                ? normalizeHexColor(patch.color)
+                : current.color,
+            lineWidth:
+              patch.lineWidth !== undefined
+                ? Math.max(
+                    0.5,
+                    Math.min(
+                      6,
+                      Number.isFinite(patch.lineWidth)
+                        ? Number(patch.lineWidth)
+                        : current.lineWidth ?? 1.6
+                    )
+                  )
+                : current.lineWidth,
+          },
+        };
+      })
+    );
+  }
+
   function updateSelectedNodeTransform(patch: Partial<NodeTransform>) {
     if (!selectedNodeId) return;
 
@@ -7024,10 +7059,12 @@ export default function App({ startupSlices = [] }: AppProps) {
           type: "remote",
           visible: true,
           source: trimmedUrl,
-          sourceKind: "external",
+          sourceKind: item.builtIn ? "built-in" : "external",
           description:
             remoteFormat === "mesh-obj"
-              ? "External mesh source"
+              ? item.builtIn
+                ? "Built-in template mesh"
+                : "External mesh source"
               : item.remoteContentKind === "annotation"
               ? "Allen annotation overlay"
               : item.icon === "custom"
@@ -7039,6 +7076,13 @@ export default function App({ startupSlices = [] }: AppProps) {
             remoteFormat === "ome-zarr" ? item.renderMode ?? "volume" : undefined,
           remoteResolution:
             remoteFormat === "ome-zarr" ? item.remoteResolution ?? "100um" : undefined,
+          meshStyle:
+            remoteFormat === "mesh-obj" && item.id === "allen-volume-bounds-cube"
+              ? {
+                  color: "#86d7ff",
+                  lineWidth: 2.2,
+                }
+              : undefined,
         };
 
         const selected = selectedNodeId ? findNodeById(next, selectedNodeId) : null;

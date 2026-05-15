@@ -95,8 +95,8 @@ export const ALLEN_VOLUME_PROFILE: ViewerOrientationProfile = {
   xy: {},
   xz: {},
   yz: {
-    rotate90: true,
-    flipZ: true,
+    // rotate90: true,
+    // flipZ: true,
   },
 };
 

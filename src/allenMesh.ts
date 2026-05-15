@@ -41,6 +41,8 @@ const ALLEN_REFERENCE_DIMS_10UM = {
   z: 1140,
 };
 
+const ALLEN_VOLUME_BOUNDS_CUBE_URL_SUFFIX = "/builtins/allen_volume_bounds_cube.obj";
+
 
 const ALLEN_MESH_AXIS_CORRECTION = {
   // Targeted correction after centering/orientation.
@@ -62,6 +64,14 @@ const ALLEN_MESH_CONFIG = {
 
 export function getMeshCacheKey(url: string): string {
   return url;
+}
+
+function normalizeMeshUrl(url: string): string {
+  return url.trim().split(/[?#]/, 1)[0].toLowerCase();
+}
+
+function isAllenVolumeBoundsCubeUrl(url: string): boolean {
+  return normalizeMeshUrl(url).endsWith(ALLEN_VOLUME_BOUNDS_CUBE_URL_SUFFIX);
 }
 
 async function loadText(url: string): Promise<string> {
@@ -297,7 +307,31 @@ function applyAllenDisplayScale(model: mat4) {
   ]);
 }
 
+function getAllenVolumeBoundsCubeModelMatrix(mesh: LoadedMesh): mat4 {
+  const bounds = getBoundsInfo(mesh);
+  const { sx, sy, sz } = getAllenReferenceDisplayScale();
+  const ax = (2 * sx) / Math.max(bounds.sizeX, 1e-6);
+  const ay = (2 * sy) / Math.max(bounds.sizeY, 1e-6);
+  const az = (2 * sz) / Math.max(bounds.sizeZ, 1e-6);
+  const tx = -sx - ax * bounds.minX;
+  const ty = -sy - ay * bounds.minY;
+  const tz = -sz - az * bounds.minZ;
+  const model = mat4.create();
+  mat4.set(
+    model,
+    ax, 0, 0, 0,
+    0, ay, 0, 0,
+    0, 0, az, 0,
+    tx, ty, tz, 1
+  );
+  return model;
+}
+
 export function getAllenMeshModelMatrix(mesh: LoadedMesh): mat4 {
+  if (isAllenVolumeBoundsCubeUrl(mesh.url)) {
+    return getAllenVolumeBoundsCubeModelMatrix(mesh);
+  }
+
   const bounds = getBoundsInfo(mesh);
   const model = mat4.create();
 

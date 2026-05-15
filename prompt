@@ -1,5 +1,8 @@
-(1) I want to add some template. I want to have a square template around the volume, 
-(2) I want to add a grid in 3 main axis so it look a bit like a graph.
+(1) I want to add some template. I want to have a square template around the volume, I want to add a grid in 3 main axis so it look a bit like a graph.I want to have a grid version too.
+
+[todo] fix the oblique slice creation with the rotation. Fix the import of volume, right now the imported volume always need the same modification, make the oblique slice inherit the transformations. 
+[todo] ajouter une system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
+
 
 
 [todo?] swap the toggle on layes panel to an automation as the base automation. 
@@ -65,7 +68,9 @@ Extracter {
 [NTH] neuroglance resolution loader style
 [NTH] streaming data (live operation)
 [NTH] support tablet/phone control (pen and fingers)
-[NTH] coworking session? Browser connect to another browser? This may needs a backend with a commen open session?  
+[NTH] coworking session? Browser connect to another browser? This may needs a backend with a commen open session? 
+[NTH] add cube annotations in the gemoetrical annotations. 
+
 
 
 --- small fixes

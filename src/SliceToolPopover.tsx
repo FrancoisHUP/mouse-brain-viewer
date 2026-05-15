@@ -97,7 +97,7 @@ export default function SliceToolPopover({
           offset: 0,
           width: 256,
           height: 256,
-          opacity: value.opacity ?? 0.95,
+          opacity: value.opacity ?? 1,
         };
 
   const axis =
@@ -106,13 +106,13 @@ export default function SliceToolPopover({
           mode: "axis" as const,
           plane: "xy" as SlicePlane,
           index: 0,
-          opacity: value.opacity ?? 0.95,
+          opacity: value.opacity ?? 1,
         }
       : {
           mode: "axis" as const,
           plane: value.plane,
           index: value.index,
-          opacity: value.opacity ?? 0.95,
+          opacity: value.opacity ?? 1,
         };
 
   function setObliqueNormalPart(
@@ -213,7 +213,7 @@ export default function SliceToolPopover({
               min={0}
               max={1}
               step={0.01}
-              value={axis.opacity ?? 0.95}
+               value={axis.opacity ?? 1}
               onChange={(e) =>
                 onChange({
                   ...axis,
@@ -348,7 +348,7 @@ export default function SliceToolPopover({
               min={0}
               max={1}
               step={0.01}
-              value={oblique.opacity ?? 0.95}
+              value={oblique.opacity ?? 1}
               onChange={(e) =>
                 onChange({
                   ...oblique,

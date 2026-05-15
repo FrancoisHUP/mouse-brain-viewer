@@ -282,6 +282,40 @@ function estimateLoadedMeshBytes(mesh: LoadedMesh): number {
   return Math.max(0, mesh.linePositions?.byteLength ?? 0) + Math.max(0, mesh.trianglePositions?.byteLength ?? 0);
 }
 
+function normalizeMeshLikeUrl(url: string): string {
+  return url.trim().split(/[?#]/, 1)[0].toLowerCase();
+}
+
+function isAllenVolumeBoundsCubeSource(url: string): boolean {
+  return normalizeMeshLikeUrl(url).endsWith("/builtins/allen_volume_bounds_cube.obj");
+}
+
+function getMeshStyleColor(layer: LayerItemNode): [number, number, number] {
+  const raw = typeof layer.meshStyle?.color === "string" ? layer.meshStyle.color.trim() : "";
+  const match = /^#?([0-9a-f]{6})$/i.exec(raw);
+  if (!match) return [0.52, 0.72, 0.96];
+  const hex = match[1];
+  return [
+    parseInt(hex.slice(0, 2), 16) / 255,
+    parseInt(hex.slice(2, 4), 16) / 255,
+    parseInt(hex.slice(4, 6), 16) / 255,
+  ];
+}
+
+function getMeshStyleLineWidth(layer: LayerItemNode): number {
+  const value = layer.meshStyle?.lineWidth;
+  if (!Number.isFinite(value)) return 1.6;
+  return clamp(Number(value), 0.5, 6);
+}
+
+function resolveRenderedCustomSliceOpacity(rawOpacity: number | undefined): number {
+  if (rawOpacity == null || !Number.isFinite(rawOpacity)) return 1;
+  if (Math.abs(rawOpacity - 0.92) < 1e-6 || Math.abs(rawOpacity - 0.95) < 1e-6) {
+    return 1;
+  }
+  return clamp(Number(rawOpacity), 0, 1);
+}
+
 type CustomSliceSourceRef = {
   volumeLayerId?: string | null;
 };
@@ -3657,7 +3691,7 @@ function drawColorCylinder(
         const mvp = mat4.create();
         mat4.multiply(mv, view, model);
         mat4.multiply(mvp, projection, mv);
-        drawMeshLines(mesh, mvp, color, 1.6);
+        drawMeshLines(mesh, mvp, color, Math.max(1.6, getMeshStyleLineWidth(layer)));
         return;
       }
 
@@ -4170,7 +4204,7 @@ function drawColorCylinder(
         const customLoadedVolumeEntry = getLoadedVolumeForLayer(volumeNode);
         if (!customLoadedVolumeEntry) continue;
         const { volume, profile } = customLoadedVolumeEntry;
-        const alpha = clamp((sliceParams.opacity ?? 1) * layerEntry.opacity, 0.02, 1);
+        const alpha = clamp(resolveRenderedCustomSliceOpacity(sliceParams.opacity) * layerEntry.opacity, 0.02, 1);
         if (!volume || alpha >= 0.999) continue;
         let sliceModel: mat4 | null = null;
         if (
@@ -4204,14 +4238,19 @@ function drawColorCylinder(
             const model = multiplyModelMatrices(layerEntry.worldMatrix, getAllenMeshModelMatrix(mesh));
             const mv = mat4.create();
             const mvp = mat4.create();
+            const [mr, mg, mb] = getMeshStyleColor(layer);
+            const lineWidth = getMeshStyleLineWidth(layer);
+            const isBoundsCube =
+              typeof layer.source === "string" &&
+              isAllenVolumeBoundsCubeSource(layer.source);
 
             mat4.multiply(mv, view, model);
             mat4.multiply(mvp, projection, mv);
 
             const surfaceColor: [number, number, number, number] = [
-              0.52,
-              0.72,
-              0.96,
+              mr,
+              mg,
+              mb,
               clamp((isHoveredSelectionLayer ? 0.18 : 0.14) * layerEntry.opacity, 0.03, 1),
             ];
             const drawSurface = () => drawMeshSurface(mesh, mvp, surfaceColor);
@@ -4219,6 +4258,58 @@ function drawColorCylinder(
               enqueueTransparentDraw(getModelDistanceToCamera(model), 1, drawSurface);
             } else {
               drawSurface();
+            }
+
+            const lineColor: [number, number, number, number] = [
+              mr,
+              mg,
+              mb,
+              clamp((isHoveredSelectionLayer ? 1 : 0.92) * layerEntry.opacity, 0.05, 1),
+            ];
+              if (isBoundsCube) {
+                const drawBoundsCubeEdges = () => {
+                  const positions = mesh.linePositions;
+                  const edgeRadius = Math.max(0.0012, lineWidth * 0.00135);
+                for (let i = 0; i <= positions.length - 6; i += 6) {
+                  const startVec = transformPoint(model, [positions[i], positions[i + 1], positions[i + 2]]);
+                  const endVec = transformPoint(model, [positions[i + 3], positions[i + 4], positions[i + 5]]);
+                  const start: [number, number, number] = [startVec[0], startVec[1], startVec[2]];
+                  const end: [number, number, number] = [endVec[0], endVec[1], endVec[2]];
+                  const lineModel = makeLineModelMatrix(start, end, edgeRadius);
+                  if (!lineModel) continue;
+                  const lineMv = mat4.create();
+                  const lineMvp = mat4.create();
+                  mat4.multiply(lineMv, view, lineModel);
+                  mat4.multiply(lineMvp, projection, lineMv);
+                  const nearestPlane = getNearestTranslucentSlicePlane(getAveragePoint([start, end]), translucentSlicePlanes);
+                  if (nearestPlane) {
+                    drawColorCylinder(lineMvp, lineColor, true, lineModel, {
+                      plane: nearestPlane.plane,
+                      keepSign: (nearestPlane.cameraSideSign === 1 ? -1 : 1),
+                    });
+                    enqueueForegroundAnnotationDraw(() => {
+                      drawColorCylinder(lineMvp, lineColor, true, lineModel, {
+                        plane: nearestPlane.plane,
+                        keepSign: nearestPlane.cameraSideSign,
+                      });
+                    });
+                  } else {
+                    drawColorCylinder(lineMvp, lineColor, true, lineModel);
+                  }
+                  }
+                };
+                // Draw bounds-cube edges in the same immediate clipped pass as 3D
+                // annotation cylinders. Queuing the whole cube as one transparent
+                // batch can make the "behind the slice" half composite on top of
+                // canonical slice planes once the slice alpha drops below 1.
+                drawBoundsCubeEdges();
+              } else {
+              const drawLines = () => drawMeshLines(mesh, mvp, lineColor, lineWidth);
+              if (lineColor[3] < 0.999) {
+                enqueueTransparentDraw(getModelDistanceToCamera(model), 2, drawLines);
+              } else {
+                drawLines();
+              }
             }
           }
 
@@ -4414,7 +4505,7 @@ function drawColorCylinder(
           mat4.multiply(mv, view, finalModel);
           mat4.multiply(mvp, projection, mv);
 
-          const alpha = clamp((sliceParams.opacity ?? 1) * layerEntry.opacity, 0.02, 1);
+          const alpha = clamp(resolveRenderedCustomSliceOpacity(sliceParams.opacity) * layerEntry.opacity, 0.02, 1);
           const brightness = !capturePassActive && isHoveredSelectionLayer ? 0.82 : 1.0;
           const drawSlice = () =>
             drawTexturedPlane(

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { LayerItemNode, LayerTreeNode, AnnotationShape, NodeTransform, IntensityWindow } from '../../layerTypes';
+import type { LayerItemNode, LayerTreeNode, AnnotationShape, NodeTransform, IntensityWindow, MeshStyle } from '../../layerTypes';
 import type { SelectedLayerRuntimeInfo } from '../../WebGLCanvas';
 import { MetadataRichContent } from './MetadataRichContent';
 
@@ -21,6 +21,14 @@ function readTransformVector(
     Number.isFinite(value?.[1]) ? Number(value![1]) : fallback[1],
     Number.isFinite(value?.[2]) ? Number(value![2]) : fallback[2],
   ];
+}
+
+function normalizeMeshLikeUrl(url: string): string {
+  return url.trim().split(/[?#]/, 1)[0].toLowerCase();
+}
+
+function isAllenVolumeBoundsCubeSource(url: string): boolean {
+  return normalizeMeshLikeUrl(url).endsWith('/builtins/allen_volume_bounds_cube.obj');
 }
 
 function ResetIcon() {
@@ -474,6 +482,7 @@ export default function LayerInspectorPanel({
   onRenameNode,
   onUpdateSelectedNodeOpacity,
   onUpdateSelectedNodeIntensityWindow,
+  onUpdateSelectedNodeMeshStyle,
   onUpdateSelectedNodeTransform,
   onResetSelectedNodeTransform,
   onUpdateSelectedAnnotationLayer,
@@ -488,6 +497,7 @@ export default function LayerInspectorPanel({
   onRenameNode: (nodeId: string, newName: string) => void;
   onUpdateSelectedNodeOpacity: (opacity: number) => void;
   onUpdateSelectedNodeIntensityWindow: (window: IntensityWindow) => void;
+  onUpdateSelectedNodeMeshStyle: (patch: Partial<MeshStyle>) => void;
   onUpdateSelectedNodeTransform: (patch: Partial<NodeTransform>) => void;
   onResetSelectedNodeTransform: () => void;
   onUpdateSelectedAnnotationLayer: (patch: Partial<NonNullable<LayerItemNode['annotation']>>) => void;
@@ -515,6 +525,19 @@ export default function LayerInspectorPanel({
         selectedNode.remoteContentKind !== 'annotation'
       )
     );
+  const canAdjustMeshStyle =
+    selectedNode?.kind === 'layer' &&
+    (
+      (selectedNode.type === 'remote' && selectedNode.remoteFormat === 'mesh-obj') ||
+      selectedNode.localDataKind === 'mesh'
+    );
+  const selectedMeshLayer = selectedNode && selectedNode.kind === 'layer' ? selectedNode : null;
+  const canAdjustMeshThickness =
+    !!selectedMeshLayer &&
+    typeof selectedMeshLayer.source === 'string' &&
+    isAllenVolumeBoundsCubeSource(selectedMeshLayer.source);
+  const selectedMeshColor = selectedMeshLayer?.meshStyle?.color ?? '#86d7ff';
+  const selectedMeshLineWidth = Math.max(0.5, Math.min(6, selectedMeshLayer?.meshStyle?.lineWidth ?? 1.6));
 
   void isInspectorCollapsed;
   void onToggleCollapsed;
@@ -575,6 +598,44 @@ export default function LayerInspectorPanel({
                       valueMax={selectedIntensityWindow.max}
                       onChange={onUpdateSelectedNodeIntensityWindow}
                     />
+                  </>
+                ) : null}
+                {canAdjustMeshStyle ? (
+                  <>
+                    <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                      Mesh color
+                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="color"
+                        value={selectedMeshColor}
+                        onChange={(event) => onUpdateSelectedNodeMeshStyle({ color: event.target.value })}
+                        style={{
+                          width: 40,
+                          height: 34,
+                          padding: 0,
+                          border: 'none',
+                          background: 'transparent',
+                          cursor: 'pointer',
+                        }}
+                      />
+                      <div style={{ fontSize: 11, opacity: 0.72 }}>{selectedMeshColor.toUpperCase()}</div>
+                    </div>
+                    {canAdjustMeshThickness ? (
+                      <>
+                        <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                          Line thickness
+                        </span>
+                        <SingleRangeSlider
+                          min={0.5}
+                          max={6}
+                          step={0.1}
+                          value={selectedMeshLineWidth}
+                          onChange={(value) => onUpdateSelectedNodeMeshStyle({ lineWidth: value })}
+                          valueLabel={`${selectedMeshLineWidth.toFixed(1)} px`}
+                        />
+                      </>
+                    ) : null}
                   </>
                 ) : null}
               </div>

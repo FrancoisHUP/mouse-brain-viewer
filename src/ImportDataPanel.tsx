@@ -447,12 +447,23 @@ const ALLEN_BRAIN_SKELETON_URL =
 const ALLEN_ANNOTATION_URL =
   "https://storage.googleapis.com/sbh-assistant-data/allen_annotation.ome.zarr/";
 
+const ALLEN_VOLUME_BOUNDS_CUBE_URL =
+  "/builtins/allen_volume_bounds_cube.obj";
+
 const BUILT_IN_EXTERNAL_SOURCES: ExternalSourceItem[] = [
   {
     id: "allen-brain-skeleton-mesh",
     name: "Allen Mouse Brain Skeleton Mesh",
     url: ALLEN_BRAIN_SKELETON_URL,
     icon: "brain-outline",
+    builtIn: true,
+    remoteFormat: "mesh-obj",
+  },
+  {
+    id: "allen-volume-bounds-cube",
+    name: "Allen Volume Bounds Cube",
+    url: ALLEN_VOLUME_BOUNDS_CUBE_URL,
+    icon: "axes-3d",
     builtIn: true,
     remoteFormat: "mesh-obj",
   },
@@ -1456,6 +1467,7 @@ export default function ImportDataPanel({
       name: string;
       url: string;
       icon?: "generic" | "custom";
+      builtIn?: boolean;
       remoteFormat?: RemoteDataFormat;
       remoteContentKind?: RemoteContentKind;
       renderMode?: RemoteRenderMode;
@@ -1476,6 +1488,7 @@ export default function ImportDataPanel({
           name: buildCustomLayerName(item, uiState.renderMode, selectedScale.resolutionLabel),
           url: item.url,
           icon: item.icon === "custom" ? "custom" : "generic",
+          builtIn: item.builtIn,
           remoteFormat: item.remoteFormat ?? "ome-zarr",
           remoteContentKind: item.remoteContentKind ?? "intensity",
           renderMode: uiState.renderMode,
@@ -1488,6 +1501,7 @@ export default function ImportDataPanel({
         name: item.name,
         url: item.url,
         icon: item.icon === "custom" ? "custom" : "generic",
+        builtIn: item.builtIn,
         remoteFormat: item.remoteFormat,
         remoteContentKind: item.remoteContentKind,
         renderMode: item.renderMode,
