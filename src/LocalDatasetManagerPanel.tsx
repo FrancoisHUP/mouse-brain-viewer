@@ -491,6 +491,7 @@ export default function LocalDatasetManagerPanel({
   onClose,
   onRenameDataset,
   onDeleteDataset,
+  requestedDetailSourceId = null,
   activeLayerTree,
   savedViewers,
   onExportNoticeChange,
@@ -499,6 +500,7 @@ export default function LocalDatasetManagerPanel({
   onClose: () => void;
   onRenameDataset?: (datasetId: string, nextName: string) => Promise<void> | void;
   onDeleteDataset?: (datasetId: string) => Promise<void> | void;
+  requestedDetailSourceId?: string | null;
   activeLayerTree: LayerTreeNode[];
   savedViewers: SavedViewerEntry[];
   onExportNoticeChange?: (notice: TaskNotice | null) => void;
@@ -737,6 +739,14 @@ export default function LocalDatasetManagerPanel({
 
     setDetailInspection({ status: "idle" });
   }, [detailItem, detailSourceId]);
+
+  useEffect(() => {
+    if (!open || !requestedDetailSourceId) return;
+    if (!items.some((item) => item.id === requestedDetailSourceId)) return;
+    setSelectedIds([requestedDetailSourceId]);
+    setSelectionAnchorId(requestedDetailSourceId);
+    setDetailSourceId((current) => (current === requestedDetailSourceId ? current : requestedDetailSourceId));
+  }, [items, open, requestedDetailSourceId]);
 
   useEffect(() => {
     if (!detailItem || detailItem.sourceType !== "local") return;

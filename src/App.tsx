@@ -46,6 +46,11 @@ import {
   loadAppPreferences,
   type AppPreferences,
 } from "./appPreferencesStore";
+import { getCustomExternalSources } from "./customSourceStore";
+import {
+  loadSourceOrientationPreference,
+  saveSourceOrientationPreference,
+} from "./sourceOrientationStore";
 import {
   clearPersistedViewerState,
   loadPersistedViewerSession,
@@ -149,6 +154,7 @@ import type {
   RemoteRenderMode,
   SliceLayerParams,
   SlicePlane,
+  VolumeOrientationPresetId,
 } from "./layerTypes";
 import {
   inspectStoredLocalDatasetById,
@@ -165,11 +171,22 @@ import {
 } from "./localDataStore";
 import type { ScenePointerHit, SelectedLayerRuntimeInfo } from "./WebGLCanvas";
 import {
-  ALLEN_VOLUME_PROFILE,
-  IDENTITY_PROFILE,
   getProfileAdjustedPlaneBasis,
   makePlaneBasis,
+  type ViewerOrientationProfile,
 } from "./omeZarr";
+import {
+  cloneAxisSliceViewState,
+  getDefaultTransformForOrientationPreset,
+  getAxisSliceViewStateForOrientationPreset,
+  getDefaultVolumeOrientationPresetForLayer,
+  getEffectiveVolumeOrientationPresetForLayer,
+  getViewerOrientationProfileForPreset,
+  getVolumeOrientationSourceKey,
+  isVolumeOrientationAdjustableLayer,
+  type StoredTransformPreset,
+  VOLUME_ORIENTATION_PRESET_OPTIONS,
+} from "./volumeOrientation";
 import {
   collectAllLayerItems,
   collectGroups,
@@ -919,7 +936,30 @@ function getAxisSliceSizeForPlane(
 }
 
 function getSliceOrientationProfileForLayer(layer: LayerItemNode) {
-  return layer.type === "file" ? IDENTITY_PROFILE : ALLEN_VOLUME_PROFILE;
+  return getViewerOrientationProfileForPreset(
+    getEffectiveVolumeOrientationPresetForLayer(layer)
+  );
+}
+
+function applyOrientationPreferenceToLayer(
+  layer: LayerItemNode
+): LayerItemNode {
+  if (!isVolumeOrientationAdjustableLayer(layer)) return layer;
+  const sourceKey = getVolumeOrientationSourceKey(layer);
+  const persisted = sourceKey
+    ? loadSourceOrientationPreference(sourceKey)
+    : null;
+  const preset =
+    persisted?.preset ?? getDefaultVolumeOrientationPresetForLayer(layer);
+  return {
+    ...layer,
+    orientationPreset: preset,
+    axisSliceViewState:
+      cloneAxisSliceViewState(
+        persisted?.axisSliceViewState ??
+          getAxisSliceViewStateForOrientationPreset(preset)
+      ) ?? undefined,
+  };
 }
 
 function getMaxFloatingWindowZ(windows: Array<{ zIndex: number }>) {
@@ -928,6 +968,43 @@ function getMaxFloatingWindowZ(windows: Array<{ zIndex: number }>) {
       Number.isFinite(windowState.zIndex) ? Math.max(maxZ, windowState.zIndex) : maxZ,
     1
   );
+}
+
+function updateDerivedCustomSlicesForVolume(
+  nodes: LayerTreeNode[],
+  volumeLayerId: string,
+  updater: (node: LayerItemNode) => LayerItemNode
+): LayerTreeNode[] {
+  return nodes.map((node) => {
+    if (node.kind === "group") {
+      return {
+        ...node,
+        children: updateDerivedCustomSlicesForVolume(
+          node.children,
+          volumeLayerId,
+          updater
+        ),
+      };
+    }
+    if (
+      node.type === "custom-slice" &&
+      hasVolumeLayerId(node.source) &&
+      node.source.volumeLayerId === volumeLayerId
+    ) {
+      return updater(node);
+    }
+    return node;
+  });
+}
+
+function cloneNodeTransformValue(
+  transform: NodeTransform | undefined
+): NodeTransform {
+  return {
+    translation: transform?.translation ? [...transform.translation] : [0, 0, 0],
+    rotation: transform?.rotation ? [...transform.rotation] : [0, 0, 0],
+    scale: transform?.scale ? [...transform.scale] : [1, 1, 1],
+  };
 }
 
 function applyPlanarViewTransformToBasis(
@@ -962,7 +1039,7 @@ function applyPlanarViewTransformToBasis(
 
 function getPlaneReverseIndex(
   plane: SlicePlane,
-  profile: typeof ALLEN_VOLUME_PROFILE
+  profile: ViewerOrientationProfile
 ): boolean {
   if (plane === "xy") return !!profile.xy?.reverseIndex;
   if (plane === "xz") return !!profile.xz?.reverseIndex;
@@ -1308,6 +1385,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [importPanelView, setImportPanelView] = useState<"library" | "import-external" | "import-local">("library");
   const [isLocalDatasetManagerOpen, setIsLocalDatasetManagerOpen] = useState(false);
+  const [requestedLocalDatasetManagerSourceId, setRequestedLocalDatasetManagerSourceId] = useState<string | null>(null);
   const [isUserProfilePanelOpen, setIsUserProfilePanelOpen] = useState(false);
   const [isStateDialogOpen, setIsStateDialogOpen] = useState(false);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
@@ -1360,6 +1438,8 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [annotationDraft, setAnnotationDraft] = useState<AnnotationDraftSettings>(DEFAULT_ANNOTATION_DRAFT);
   const [annotationRecentColors, setAnnotationRecentColors] = useState<string[]>(() => loadRecentAnnotationColors());
   const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
+  const [showRasReference, setShowRasReference] = useState(false);
+  const [sourceOrientationRevision, setSourceOrientationRevision] = useState(0);
   const [selectedLayerRuntimeInfo, setSelectedLayerRuntimeInfo] = useState<SelectedLayerRuntimeInfo | null>(null);
   const [captureRequestKey, setCaptureRequestKey] = useState(0);
   const [isCapturePending, setIsCapturePending] = useState(false);
@@ -1473,6 +1553,22 @@ export default function App({ startupSlices = [] }: AppProps) {
   const selectedNode = useMemo(
     () => (selectedNodeId ? findNodeById(layerTree, selectedNodeId) : null),
     [layerTree, selectedNodeId]
+  );
+  const selectedVolumeOrientationSourceKey = useMemo(() => {
+    return selectedNode &&
+      selectedNode.kind === "layer" &&
+      isVolumeOrientationAdjustableLayer(selectedNode)
+      ? getVolumeOrientationSourceKey(selectedNode)
+      : null;
+  }, [selectedNode]);
+  const selectedStoredSourceOrientationPreference = useMemo(() => {
+    return selectedVolumeOrientationSourceKey
+      ? loadSourceOrientationPreference(selectedVolumeOrientationSourceKey)
+      : null;
+  }, [selectedVolumeOrientationSourceKey, sourceOrientationRevision]);
+  const selectedTransformPresets = useMemo(
+    () => selectedStoredSourceOrientationPreference?.transformPresets ?? [],
+    [selectedStoredSourceOrientationPreference]
   );
   const selectedCaptureLayerIds = useMemo(() => {
     const candidateIds = selectedNodeIdsExternal?.length
@@ -1994,6 +2090,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         const next = updater(normalized);
         return {
           ...node,
+          orientationPreset: "custom",
           axisSliceState: {
             ...node.axisSliceState,
             activePlane: plane,
@@ -2141,6 +2238,17 @@ export default function App({ startupSlices = [] }: AppProps) {
         sourceKind: "built-in",
         description: `Free slice from ${layer.name}`,
         sliceParams: nextSliceParams,
+        transform: layer.transform
+          ? {
+              translation: layer.transform.translation
+                ? [...layer.transform.translation]
+                : undefined,
+              rotation: layer.transform.rotation
+                ? [...layer.transform.rotation]
+                : undefined,
+              scale: layer.transform.scale ? [...layer.transform.scale] : undefined,
+            }
+          : undefined,
       },
     ]);
     setSelectedNodeId(nextId);
@@ -2155,7 +2263,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (!dims) return;
     const profile = selectedCanonicalSliceLayer
       ? getSliceOrientationProfileForLayer(selectedCanonicalSliceLayer)
-      : ALLEN_VOLUME_PROFILE;
+      : getViewerOrientationProfileForPreset("allen");
     const basis = getProfileAdjustedPlaneBasis(
       getCanonicalPlaneNormal(plane),
       profile,
@@ -2309,6 +2417,15 @@ export default function App({ startupSlices = [] }: AppProps) {
         onUpdateSelectedNodeMeshStyle={updateSelectedNodeMeshStyle}
         onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
         onResetSelectedNodeTransform={resetSelectedNodeTransform}
+        orientationPresetOptions={VOLUME_ORIENTATION_PRESET_OPTIONS}
+        onUpdateSelectedNodeOrientationPreset={updateSelectedNodeOrientationPreset}
+        showRasReference={showRasReference}
+        onToggleShowRasReference={() => setShowRasReference((prev) => !prev)}
+        transformPresets={selectedTransformPresets}
+        onSaveSelectedNodeTransformPreset={saveSelectedNodeTransformPreset}
+        onApplySelectedNodeTransformPreset={applySelectedNodeTransformPreset}
+        onRenameSelectedNodeTransformPreset={renameSelectedNodeTransformPreset}
+        onDeleteSelectedNodeTransformPreset={deleteSelectedNodeTransformPreset}
         onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
         onOpenMetadataWindow={openMetadataWindow}
       />
@@ -4055,6 +4172,26 @@ export default function App({ startupSlices = [] }: AppProps) {
     sliceBrowsableLayers,
     layerTree,
   ]);
+
+  useEffect(() => {
+    for (const node of collectAllLayerItems(layerTree)) {
+      if (!isVolumeOrientationAdjustableLayer(node)) continue;
+      const sourceKey = getVolumeOrientationSourceKey(node);
+      if (!sourceKey) continue;
+      const preset = getEffectiveVolumeOrientationPresetForLayer(node);
+      const existingPreference = loadSourceOrientationPreference(sourceKey);
+      saveSourceOrientationPreference(sourceKey, {
+        preset,
+        axisSliceViewState:
+          cloneAxisSliceViewState(
+            node.axisSliceViewState ??
+              getAxisSliceViewStateForOrientationPreset(preset)
+          ) ?? undefined,
+        transformPresets: existingPreference?.transformPresets,
+      });
+    }
+    setSourceOrientationRevision((prev) => prev + 1);
+  }, [layerTree]);
 
   useEffect(() => {
     if (hasHydratedHistoryRef.current) return;
@@ -6083,6 +6220,53 @@ export default function App({ startupSlices = [] }: AppProps) {
     runAutomationForSelection(nodeId);
   }
 
+  function resolveManagedSourceDetailsIdFromNode(node: LayerTreeNode | null): string | null {
+    if (!node || node.kind !== "layer") return null;
+
+    if (
+      node.type === "file" &&
+      node.sourceKind === "custom-upload" &&
+      typeof node.source === "string"
+    ) {
+      return node.source;
+    }
+
+    if (
+      node.type === "remote" &&
+      node.sourceKind === "external" &&
+      typeof node.source === "string"
+    ) {
+      const sourceUrl = node.source;
+      const matchingSource = getCustomExternalSources().find(
+        (source) => source.url.trim() === sourceUrl.trim()
+      );
+      return matchingSource?.id ?? null;
+    }
+
+    if (
+      node.type === "custom-slice" &&
+      node.source &&
+      typeof node.source === "object" &&
+      "volumeLayerId" in node.source
+    ) {
+      const parentNode = findNodeById(layerTree, node.source.volumeLayerId);
+      return resolveManagedSourceDetailsIdFromNode(parentNode ?? null);
+    }
+
+    return null;
+  }
+
+  function handleOpenSelectedLayerSourceDetails(nodeId: string) {
+    const node = findNodeById(layerTree, nodeId);
+    const sourceId = resolveManagedSourceDetailsIdFromNode(node ?? null);
+    if (!sourceId) return;
+    setRequestedLocalDatasetManagerSourceId(sourceId);
+    setIsImportPanelOpen(false);
+    setImportPanelView("library");
+    setDroppedLocalEntries(null);
+    setIsLocalDatasetManagerOpen(true);
+  }
+
   function handleSelectSceneLayer(nodeId: string | null, options?: { toggle?: boolean }) {
     if (!nodeId) {
       setSelectedNodeId(null);
@@ -6212,7 +6396,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       kind: candidate.inspection.kind,
     });
 
-    return {
+    return applyOrientationPreferenceToLayer({
       id: createId(),
       kind: "layer",
       name: displayName,
@@ -6230,7 +6414,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         ...resolvedInfo,
         datasetId,
       },
-    };
+    });
   }
 
   function addLayerNodes(nodes: LayerTreeNode[]) {
@@ -6801,13 +6985,15 @@ export default function App({ startupSlices = [] }: AppProps) {
   function updateSelectedNodeTransform(patch: Partial<NodeTransform>) {
     if (!selectedNodeId) return;
 
-    setLayerTree((prev) =>
-      updateNodeById(prev, selectedNodeId, (node) => {
+    setLayerTree((prev) => {
+      let nextTransform: NodeTransform | null = null;
+      let shouldSyncDerivedSlices = false;
+      const next = updateNodeById(prev, selectedNodeId, (node) => {
         const currentTranslation = normalizeTransformVector(node.transform?.translation, [0, 0, 0]);
         const currentRotation = normalizeTransformVector(node.transform?.rotation, [0, 0, 0]);
         const currentScale = normalizeTransformVector(node.transform?.scale, [1, 1, 1]);
 
-        return {
+        const updatedNode = {
           ...node,
           transform: {
             translation: patch.translation
@@ -6821,22 +7007,233 @@ export default function App({ startupSlices = [] }: AppProps) {
               : currentScale,
           },
         };
-      })
-    );
+        if (
+          updatedNode.kind === "layer" &&
+          isCanonicalSliceBrowsableLayer(updatedNode)
+        ) {
+          nextTransform = updatedNode.transform;
+          shouldSyncDerivedSlices = true;
+        }
+        return updatedNode;
+      });
+      if (!shouldSyncDerivedSlices || !nextTransform) {
+        return next;
+      }
+      return updateDerivedCustomSlicesForVolume(
+        next,
+        selectedNodeId,
+        (node) => ({
+          ...node,
+          transform: {
+            translation: nextTransform?.translation
+              ? [...nextTransform.translation]
+              : undefined,
+            rotation: nextTransform?.rotation
+              ? [...nextTransform.rotation]
+              : undefined,
+            scale: nextTransform?.scale ? [...nextTransform.scale] : undefined,
+          },
+        })
+      );
+    });
   }
 
   function resetSelectedNodeTransform() {
     if (!selectedNodeId) return;
-    setLayerTree((prev) =>
-      updateNodeById(prev, selectedNodeId, (node) => ({
+    setLayerTree((prev) => {
+      let shouldSyncDerivedSlices = false;
+      const next = updateNodeById(prev, selectedNodeId, (node) => {
+        const updatedNode = {
+          ...node,
+          transform: {
+            translation: [0, 0, 0] as [number, number, number],
+            rotation: [0, 0, 0] as [number, number, number],
+            scale: [1, 1, 1] as [number, number, number],
+          },
+        };
+        if (
+          updatedNode.kind === "layer" &&
+          isCanonicalSliceBrowsableLayer(updatedNode)
+        ) {
+          shouldSyncDerivedSlices = true;
+        }
+        return updatedNode;
+      });
+      if (!shouldSyncDerivedSlices) {
+        return next;
+      }
+      return updateDerivedCustomSlicesForVolume(next, selectedNodeId, (node) => ({
         ...node,
         transform: {
           translation: [0, 0, 0],
           rotation: [0, 0, 0],
           scale: [1, 1, 1],
         },
-      }))
-    );
+      }));
+    });
+  }
+
+  function updateSelectedNodeOrientationPreset(
+    preset: VolumeOrientationPresetId
+  ) {
+    if (!selectedNodeId) return;
+    setLayerTree((prev) => {
+      let shouldSyncDerivedSlices = false;
+      const next = updateNodeById(prev, selectedNodeId, (node) => {
+        if (node.kind !== "layer" || !isVolumeOrientationAdjustableLayer(node)) {
+          return node;
+        }
+        const updatedNode = {
+          ...node,
+          orientationPreset: preset,
+          axisSliceViewState: cloneAxisSliceViewState(
+            getAxisSliceViewStateForOrientationPreset(preset)
+          ),
+          transform: cloneNodeTransformValue(
+            getDefaultTransformForOrientationPreset(preset)
+          ),
+        };
+        if (isCanonicalSliceBrowsableLayer(updatedNode)) {
+          shouldSyncDerivedSlices = true;
+        }
+        return updatedNode;
+      });
+      if (!shouldSyncDerivedSlices) {
+        return next;
+      }
+      const nextTransform = cloneNodeTransformValue(
+        getDefaultTransformForOrientationPreset(preset)
+      );
+      return updateDerivedCustomSlicesForVolume(next, selectedNodeId, (node) => ({
+        ...node,
+        transform: cloneNodeTransformValue(nextTransform),
+      }));
+    });
+  }
+
+  function saveSelectedNodeTransformPreset(name: string) {
+    const trimmedName = name.trim();
+    if (!trimmedName || !selectedVolumeOrientationSourceKey) return;
+    const currentNode =
+      selectedNode && selectedNode.kind === "layer" ? selectedNode : null;
+    if (!currentNode) return;
+    const existingPreference =
+      loadSourceOrientationPreference(selectedVolumeOrientationSourceKey);
+    const nextPreset: StoredTransformPreset = {
+      id: createId(),
+      name: trimmedName,
+      orientationPreset:
+        currentNode.kind === "layer" && isVolumeOrientationAdjustableLayer(currentNode)
+          ? getEffectiveVolumeOrientationPresetForLayer(currentNode)
+          : "custom",
+      axisSliceViewState:
+        cloneAxisSliceViewState(
+          currentNode.kind === "layer" ? currentNode.axisSliceViewState : undefined
+        ) ?? undefined,
+      transform: cloneNodeTransformValue(currentNode.transform),
+    };
+    saveSourceOrientationPreference(selectedVolumeOrientationSourceKey, {
+      preset:
+        currentNode.kind === "layer" && isVolumeOrientationAdjustableLayer(currentNode)
+          ? getEffectiveVolumeOrientationPresetForLayer(currentNode)
+          : existingPreference?.preset ?? "identity",
+      axisSliceViewState:
+        cloneAxisSliceViewState(
+          currentNode.kind === "layer" && isVolumeOrientationAdjustableLayer(currentNode)
+            ? currentNode.axisSliceViewState
+            : existingPreference?.axisSliceViewState
+        ) ?? undefined,
+      transformPresets: [
+        ...(existingPreference?.transformPresets ?? []),
+        nextPreset,
+      ],
+    });
+    setSourceOrientationRevision((prev) => prev + 1);
+  }
+
+  function applySelectedNodeTransformPreset(presetId: string) {
+    const preset = selectedTransformPresets.find((item) => item.id === presetId);
+    if (!preset || !selectedNodeId) return;
+    setLayerTree((prev) => {
+      let shouldSyncDerivedSlices = false;
+      const next = updateNodeById(prev, selectedNodeId, (node) => {
+        const updatedNode = {
+          ...node,
+          orientationPreset: preset.orientationPreset,
+          axisSliceViewState:
+            cloneAxisSliceViewState(preset.axisSliceViewState) ?? undefined,
+          transform: cloneNodeTransformValue(preset.transform),
+        };
+        if (
+          updatedNode.kind === "layer" &&
+          isCanonicalSliceBrowsableLayer(updatedNode)
+        ) {
+          shouldSyncDerivedSlices = true;
+        }
+        return updatedNode;
+      });
+      if (!shouldSyncDerivedSlices) {
+        return next;
+      }
+      return updateDerivedCustomSlicesForVolume(next, selectedNodeId, (node) => ({
+        ...node,
+        transform: cloneNodeTransformValue(preset.transform),
+      }));
+    });
+  }
+
+  function renameSelectedNodeTransformPreset(
+    presetId: string,
+    name: string
+  ) {
+    const trimmedName = name.trim();
+    if (!trimmedName || !selectedVolumeOrientationSourceKey) return;
+    const currentNode =
+      selectedNode && selectedNode.kind === "layer" ? selectedNode : null;
+    const existingPreference =
+      loadSourceOrientationPreference(selectedVolumeOrientationSourceKey);
+    if (!existingPreference) return;
+    saveSourceOrientationPreference(selectedVolumeOrientationSourceKey, {
+      preset:
+        currentNode && isVolumeOrientationAdjustableLayer(currentNode)
+          ? getEffectiveVolumeOrientationPresetForLayer(currentNode)
+          : existingPreference.preset,
+      axisSliceViewState:
+        cloneAxisSliceViewState(
+          currentNode && isVolumeOrientationAdjustableLayer(currentNode)
+            ? currentNode.axisSliceViewState
+            : existingPreference.axisSliceViewState
+        ) ?? undefined,
+      transformPresets: (existingPreference.transformPresets ?? []).map((item) =>
+        item.id === presetId ? { ...item, name: trimmedName } : item
+      ),
+    });
+    setSourceOrientationRevision((prev) => prev + 1);
+  }
+
+  function deleteSelectedNodeTransformPreset(presetId: string) {
+    if (!selectedVolumeOrientationSourceKey) return;
+    const currentNode =
+      selectedNode && selectedNode.kind === "layer" ? selectedNode : null;
+    const existingPreference =
+      loadSourceOrientationPreference(selectedVolumeOrientationSourceKey);
+    if (!existingPreference) return;
+    saveSourceOrientationPreference(selectedVolumeOrientationSourceKey, {
+      preset:
+        currentNode && isVolumeOrientationAdjustableLayer(currentNode)
+          ? getEffectiveVolumeOrientationPresetForLayer(currentNode)
+          : existingPreference.preset,
+      axisSliceViewState:
+        cloneAxisSliceViewState(
+          currentNode && isVolumeOrientationAdjustableLayer(currentNode)
+            ? currentNode.axisSliceViewState
+            : existingPreference.axisSliceViewState
+        ) ?? undefined,
+      transformPresets: (existingPreference.transformPresets ?? []).filter(
+        (item) => item.id !== presetId
+      ),
+    });
+    setSourceOrientationRevision((prev) => prev + 1);
   }
 
 
@@ -7052,7 +7449,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       for (const item of sources) {
         const trimmedUrl = item.url.trim();
         const remoteFormat = item.remoteFormat ?? detectRemoteFormat(trimmedUrl);
-        const node: LayerTreeNode = {
+        const node = applyOrientationPreferenceToLayer({
           id: createId(),
           kind: "layer",
           name: item.name.trim() || "Remote Data",
@@ -7083,7 +7480,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                   lineWidth: 2.2,
                 }
               : undefined,
-        };
+        });
 
         const selected = selectedNodeId ? findNodeById(next, selectedNodeId) : null;
 
@@ -7567,6 +7964,7 @@ export default function App({ startupSlices = [] }: AppProps) {
             : null
         }
         onImageCaptureComplete={handleImageCaptureComplete}
+        showRasReference={showRasReference}
       />
 
       <style>{`
@@ -7602,7 +8000,10 @@ export default function App({ startupSlices = [] }: AppProps) {
                 return {
                   ...exportTaskNotice,
                   onDismiss: handleDismissExportTaskNotice,
-                  onClick: () => setIsLocalDatasetManagerOpen(true),
+                  onClick: () => {
+                    setRequestedLocalDatasetManagerSourceId(null);
+                    setIsLocalDatasetManagerOpen(true);
+                  },
                   onHoverChange: setIsExportTaskNoticeHovered,
                   progress:
                     exportTaskNotice.terminal
@@ -7634,7 +8035,7 @@ export default function App({ startupSlices = [] }: AppProps) {
           setIsImportPanelOpen(true);
           setIsAppMenuOpen(false);
         }}
-        onOpenManageLocalData={() => { setIsLocalDatasetManagerOpen(true); setIsAppMenuOpen(false); }}
+        onOpenManageLocalData={() => { setRequestedLocalDatasetManagerSourceId(null); setIsLocalDatasetManagerOpen(true); setIsAppMenuOpen(false); }}
         onOpenExportState={() => { openExportStateModal(); setIsAppMenuOpen(false); }}
         onOpenImportState={() => { openImportStateModal(); setIsAppMenuOpen(false); }}
         onOpenShareDialog={openShareDialog}
@@ -8116,6 +8517,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onSetCollapsed={setIsLayerPanelCollapsed}
         onToggleVisible={handleToggleVisible}
         onSelectNode={handleSelectNode}
+        onDoubleClickNode={handleOpenSelectedLayerSourceDetails}
         onSelectionChange={handleLayerPanelSelectionChange}
         onToggleGroupExpanded={handleToggleGroupExpanded}
         onSetGroupExpanded={handleSetGroupExpanded}
@@ -8385,13 +8787,18 @@ export default function App({ startupSlices = [] }: AppProps) {
           setIsImportPanelOpen(false);
           setImportPanelView("library");
           setDroppedLocalEntries(null);
+          setRequestedLocalDatasetManagerSourceId(null);
           setIsLocalDatasetManagerOpen(true);
         }}
       />
 
       <LocalDatasetManagerPanel
         open={isLocalDatasetManagerOpen}
-        onClose={() => setIsLocalDatasetManagerOpen(false)}
+        onClose={() => {
+          setIsLocalDatasetManagerOpen(false);
+          setRequestedLocalDatasetManagerSourceId(null);
+        }}
+        requestedDetailSourceId={requestedLocalDatasetManagerSourceId}
         onRenameDataset={handleRenameLocalDataset}
         onDeleteDataset={handleDeleteLocalDataset}
         activeLayerTree={layerTree}
@@ -8420,6 +8827,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onDeleteLocalDataset={handleDeleteLocalDataset}
         onOpenLocalDatasetManager={() => {
           setIsUserProfilePanelOpen(false);
+          setRequestedLocalDatasetManagerSourceId(null);
           setIsLocalDatasetManagerOpen(true);
         }}
         onDataChanged={notifyProfileDataChanged}

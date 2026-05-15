@@ -151,6 +151,13 @@ export type LocalDatasetInfo = {
   treeRootPath?: string | null;
 };
 
+export type VolumeOrientationPresetId =
+  | "allen"
+  | "registered-to-allen"
+  | "ras+"
+  | "identity"
+  | "custom";
+
 export type NodeTransformVector3 = [number, number, number];
 
 export type NodeTransform = {
@@ -214,6 +221,7 @@ export type LayerItemNode = BaseNode & {
   // For interactive canonical slice browsing on slice-rendered volume layers
   axisSliceState?: AxisSliceNavigationState;
   axisSliceViewState?: AxisSliceViewState;
+  orientationPreset?: VolumeOrientationPresetId;
 
   // For browser-hosted local uploads
   localOnly?: boolean;

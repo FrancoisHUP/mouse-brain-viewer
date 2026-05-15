@@ -12,8 +12,6 @@ import {
   isRemoteMeshLayer,
 } from "./layerTypes";
 import {
-  ALLEN_VOLUME_PROFILE,
-  IDENTITY_PROFILE,
   clampSliceIndex,
   extractObliqueSlice2D,
   extractOrientedCenterSlices,
@@ -27,6 +25,10 @@ import {
   type SlicePlane,
   type ViewerOrientationProfile,
 } from "./omeZarr";
+import {
+  getViewerOrientationProfileForPreset,
+  getEffectiveVolumeOrientationPresetForLayer,
+} from "./volumeOrientation";
 import { annotationSliceToRgbaBytes } from "./annotationColors";
 import {
   getAllenMeshModelMatrix,
@@ -578,6 +580,13 @@ function composeNodeLocalMatrix(node: LayerTreeNode): mat4 {
   return model;
 }
 
+function getCustomSliceSourceWorldMatrix(
+  sliceWorldMatrix: mat4,
+  _sourceVolumeLayer: LayerItemNode
+): mat4 {
+  return sliceWorldMatrix;
+}
+
 function multiplyModelMatrices(parent: mat4, local: mat4): mat4 {
   const out = mat4.create();
   mat4.multiply(out, parent, local);
@@ -633,6 +642,38 @@ function transformNormalsByMatrix(model: mat4, normals: [number, number, number]
   return normals.map((normal) => transformNormalByMatrix(model, normal));
 }
 
+function projectWorldPointToViewport(
+  point: [number, number, number],
+  projection: mat4,
+  view: mat4,
+  width: number,
+  height: number
+): { x: number; y: number; depth: number } | null {
+  const p = vec3.fromValues(point[0], point[1], point[2]);
+  const vp = mat4.create();
+  mat4.multiply(vp, projection, view);
+  const x = p[0];
+  const y = p[1];
+  const z = p[2];
+  const cx = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
+  const cy = vp[1] * x + vp[5] * y + vp[9] * z + vp[13];
+  const cz = vp[2] * x + vp[6] * y + vp[10] * z + vp[14];
+  const cw = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+  if (Math.abs(cw) <= 1e-8) return null;
+  const ndcX = cx / cw;
+  const ndcY = cy / cw;
+  const ndcZ = cz / cw;
+  if (!Number.isFinite(ndcX) || !Number.isFinite(ndcY) || !Number.isFinite(ndcZ)) {
+    return null;
+  }
+  if (ndcZ < -1.15 || ndcZ > 1.15) return null;
+  return {
+    x: ((ndcX + 1) * 0.5) * width,
+    y: ((1 - ndcY) * 0.5) * height,
+    depth: ndcZ,
+  };
+}
+
 function isInteractiveOverlayTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return !!target.closest(
@@ -680,6 +721,7 @@ export default function WebGLCanvas({
   onCacheClearComplete,
   imageCaptureRequest = null,
   onImageCaptureComplete,
+  showRasReference = false,
 }: {
   activeTool: ToolId;
   layerTree: LayerTreeNode[];
@@ -738,8 +780,10 @@ export default function WebGLCanvas({
   onCacheClearComplete?: (result: { clearedVolumes: number; clearedMeshes: number; workerReleased: boolean }) => void;
   imageCaptureRequest?: ImageCaptureRequest | null;
   onImageCaptureComplete?: (result: ImageCaptureResult) => void;
+  showRasReference?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rasOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const cameraRef = useRef<CameraState>({
     mode: cameraState.mode ?? "fly",
@@ -769,6 +813,7 @@ export default function WebGLCanvas({
   const pendingImageCaptureRequestRef = useRef<ImageCaptureRequest | null>(null);
 
   const activeToolRef = useRef<ToolId>(activeTool);
+  const showRasReferenceRef = useRef<boolean>(showRasReference);
   const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
   const selectedNodeIdsRef = useRef<string[]>(selectedNodeIds ?? (selectedNodeId ? [selectedNodeId] : []));
   const highlightedLayerIdsRef = useRef<Set<string>>(new Set());
@@ -967,6 +1012,10 @@ export default function WebGLCanvas({
   useEffect(() => {
     activeToolRef.current = activeTool;
   }, [activeTool]);
+
+  useEffect(() => {
+    showRasReferenceRef.current = showRasReference;
+  }, [showRasReference]);
 
   useEffect(() => {
     selectedNodeIdRef.current = selectedNodeId;
@@ -1255,13 +1304,29 @@ export default function WebGLCanvas({
     if (isOmeZarrLayer(layer) && typeof layer.source === "string") {
       const cacheKey = getVolumeCacheKey(layer.source, getRemoteLayerResolutionUm(layer), getRemoteLayerContentKind(layer));
       const volume = volumeCacheRef.current.get(cacheKey);
-      return volume ? { cacheKey, volume, profile: ALLEN_VOLUME_PROFILE } : null;
+      return volume
+        ? {
+            cacheKey,
+            volume,
+            profile: getViewerOrientationProfileForPreset(
+              getEffectiveVolumeOrientationPresetForLayer(layer)
+            ),
+          }
+        : null;
     }
 
     if (isLocalVolumeLayer(layer) && typeof layer.source === "string") {
       const cacheKey = getLocalVolumeCacheKey(layer.source);
       const volume = volumeCacheRef.current.get(cacheKey);
-      return volume ? { cacheKey, volume, profile: IDENTITY_PROFILE } : null;
+      return volume
+        ? {
+            cacheKey,
+            volume,
+            profile: getViewerOrientationProfileForPreset(
+              getEffectiveVolumeOrientationPresetForLayer(layer)
+            ),
+          }
+        : null;
     }
 
     return null;
@@ -1911,7 +1976,10 @@ export default function WebGLCanvas({
       const cached = sliceTextureCache.get(cacheKey);
       if (cached) return cached;
 
-      const { xy, xz, yz } = extractOrientedCenterSlices(volume, ALLEN_VOLUME_PROFILE);
+      const { xy, xz, yz } = extractOrientedCenterSlices(
+        volume,
+        getViewerOrientationProfileForPreset("allen")
+      );
 
       const xyTex = createSliceTexture(xy.width, xy.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(xy.pixels) : sliceToRgbaBytes(xy.pixels));
       const xzTex = createSliceTexture(xz.width, xz.height, volume.contentKind === "annotation" ? annotationSliceToRgbaBytes(xz.pixels) : sliceToRgbaBytes(xz.pixels));
@@ -1935,7 +2003,7 @@ export default function WebGLCanvas({
       volume: LoadedVolume,
       plane: SlicePlane,
       displayIndex: number,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ): ObliqueSliceSpec {
       const dataIndex = mapDisplaySliceIndexToDataIndex(
         volume,
@@ -1993,7 +2061,7 @@ export default function WebGLCanvas({
             height?: number;
           }
       ,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ): AxisSliceTextureEntry {
       const cached = customSliceTextureCache.get(cacheKey);
       if (cached) return cached;
@@ -2036,7 +2104,7 @@ export default function WebGLCanvas({
       volume: LoadedVolume,
       plane: SlicePlane,
       index: number,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ): AxisSliceTextureEntry {
       const cached = volumeSliceTextureCache.get(cacheKey);
       if (cached) return cached;
@@ -2057,7 +2125,7 @@ export default function WebGLCanvas({
       volume: LoadedVolume,
       plane: SlicePlane,
       displayIndex: number,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ): mat4 {
       return makeObliqueSliceModelMatrix(
         volume,
@@ -2071,7 +2139,7 @@ export default function WebGLCanvas({
       volume: LoadedVolume,
       plane: SlicePlane,
       displayIndex: number,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ): mat4 {
       const model = makeSliceModelMatrix(volume, plane, displayIndex, profile);
       const viewState = getLayerAxisSliceViewTransform(layer, plane);
@@ -2153,7 +2221,7 @@ export default function WebGLCanvas({
     function makeObliqueSliceModelMatrix(
       volume: LoadedVolume,
       spec: ObliqueSliceSpec,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ): mat4 {
       const model = mat4.create();
 
@@ -2189,7 +2257,7 @@ export default function WebGLCanvas({
     function makeInteractiveObliqueSliceModelMatrix(
       volume: LoadedVolume,
       sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ): mat4 {
       const model = makeObliqueSliceModelMatrix(
         volume,
@@ -2222,6 +2290,57 @@ export default function WebGLCanvas({
       }
 
       return { projection, view, forward };
+    }
+
+    function drawRasReferenceOverlay(projection: mat4, view: mat4) {
+      const overlayCanvas = rasOverlayCanvasRef.current;
+      if (!overlayCanvas) return;
+      const ctx = overlayCanvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      if (!showRasReferenceRef.current) return;
+
+      const origin = projectWorldPointToViewport(
+        [0, 0, 0],
+        projection,
+        view,
+        overlayCanvas.width,
+        overlayCanvas.height
+      );
+      if (!origin) return;
+
+      const axes = [
+        { label: "Right", point: [-1.4, 0, 0] as [number, number, number], color: "#ff7b7b" },
+        { label: "Anterior", point: [0, 0, 1.4] as [number, number, number], color: "#6ee7a8" },
+        { label: "Superior", point: [0, 1.4, 0] as [number, number, number], color: "#7dc8ff" },
+      ];
+
+      ctx.save();
+      ctx.lineWidth = Math.max(2, overlayCanvas.width * 0.0018);
+      ctx.font = `${Math.max(12, Math.round(overlayCanvas.width * 0.012))}px sans-serif`;
+      ctx.textBaseline = "middle";
+      for (const axis of axes) {
+        const projected = projectWorldPointToViewport(
+          axis.point,
+          projection,
+          view,
+          overlayCanvas.width,
+          overlayCanvas.height
+        );
+        if (!projected) continue;
+        ctx.strokeStyle = axis.color;
+        ctx.fillStyle = axis.color;
+        ctx.shadowColor = `${axis.color}88`;
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.moveTo(origin.x, origin.y);
+        ctx.lineTo(projected.x, projected.y);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.fillText(axis.label, projected.x + 8, projected.y);
+      }
+      ctx.restore();
     }
 
     function intersectModelPlane(
@@ -2334,6 +2453,7 @@ export default function WebGLCanvas({
 
     function getObliqueSliceDragWorldStep(
       layerEntry: ResolvedLayerEntry,
+      sourceVolumeLayer: LayerItemNode,
       volume: LoadedVolume,
       sliceParams: Extract<SliceLayerParams, { mode: "oblique" }>,
       profile: ViewerOrientationProfile
@@ -2341,7 +2461,7 @@ export default function WebGLCanvas({
       const currentOffset = sliceParams.offset ?? 0;
       const adjacentOffset = currentOffset + 1;
       const currentModel = multiplyModelMatrices(
-        layerEntry.worldMatrix,
+        getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, sourceVolumeLayer),
         makeInteractiveObliqueSliceModelMatrix(
           volume,
           {
@@ -2355,7 +2475,7 @@ export default function WebGLCanvas({
         )
       );
       const adjacentModel = multiplyModelMatrices(
-        layerEntry.worldMatrix,
+        getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, sourceVolumeLayer),
         makeInteractiveObliqueSliceModelMatrix(
           volume,
           {
@@ -2764,7 +2884,16 @@ export default function WebGLCanvas({
             model = makeSliceModelMatrix(volume, sliceParams.plane, clampSliceIndex(volume, sliceParams.plane, sliceParams.index), profile);
           }
           if (model) {
-            const projected = projectWorldPointsToCanvas(getModelQuadWorldPoints(multiplyModelMatrices(layerEntry.worldMatrix, model)), projection, view);
+            const projected = projectWorldPointsToCanvas(
+              getModelQuadWorldPoints(
+                multiplyModelMatrices(
+                  getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, volumeNode),
+                  model
+                )
+              ),
+              projection,
+              view
+            );
             const bounds = screenBoundsFromProjectedPoints(projected);
             if (bounds && doesScreenBoundsIntersectRect(bounds, rect)) pushLayerId(layer.id);
           }
@@ -2960,7 +3089,19 @@ export default function WebGLCanvas({
           }
 
           if (model) {
-            considerHit(layer, intersectModelPlane(multiplyModelMatrices(layerEntry.worldMatrix, model), clientX, clientY, projection, view));
+            considerHit(
+              layer,
+              intersectModelPlane(
+                multiplyModelMatrices(
+                  getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, volumeNode),
+                  model
+                ),
+                clientX,
+                clientY,
+                projection,
+                view
+              )
+            );
           }
 
           continue;
@@ -3005,10 +3146,17 @@ export default function WebGLCanvas({
       const dpr = window.devicePixelRatio || 1;
       const width = Math.floor(canvas.clientWidth * dpr);
       const height = Math.floor(canvas.clientHeight * dpr);
+      const rasOverlayCanvas = rasOverlayCanvasRef.current;
 
       if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width;
         canvas.height = height;
+      }
+      if (rasOverlayCanvas) {
+        if (rasOverlayCanvas.width !== width || rasOverlayCanvas.height !== height) {
+          rasOverlayCanvas.width = width;
+          rasOverlayCanvas.height = height;
+        }
       }
 
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -3745,7 +3893,10 @@ function drawColorCylinder(
           model = makeSliceModelMatrix(volume, sliceParams.plane, clampSliceIndex(volume, sliceParams.plane, sliceParams.index), profile);
         }
         if (!model) return;
-        const finalModel = multiplyModelMatrices(layerEntry.worldMatrix, model);
+        const finalModel = multiplyModelMatrices(
+          getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, volumeNode),
+          model
+        );
         const mv = mat4.create();
         const mvp = mat4.create();
         mat4.multiply(mv, view, finalModel);
@@ -3942,7 +4093,7 @@ function drawColorCylinder(
       worldMatrix: mat4,
       view: mat4,
       projection: mat4,
-      profile: ViewerOrientationProfile = ALLEN_VOLUME_PROFILE
+      profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ) {
       const plane = chooseStableVolumeRenderPlane(volume);
       const totalSlices = getPlaneSliceCount(volume, plane);
@@ -4217,10 +4368,22 @@ function drawColorCylinder(
           sliceModel = makeInteractiveObliqueSliceModelMatrix(volume, sliceParams, profile);
         } else if (isAxisAlignedSliceParams(sliceParams)) {
           const safeIndex = clampSliceIndex(volume, sliceParams.plane, sliceParams.index);
-          sliceModel = makeSliceModelMatrix(volume, sliceParams.plane, safeIndex, ALLEN_VOLUME_PROFILE);
+          sliceModel = makeSliceModelMatrix(
+            volume,
+            sliceParams.plane,
+            safeIndex,
+            profile
+          );
         }
         if (!sliceModel) continue;
-        translucentSlicePlanes.push(buildSlicePlaneFromModel(multiplyModelMatrices(layerEntry.worldMatrix, sliceModel)));
+        translucentSlicePlanes.push(
+          buildSlicePlaneFromModel(
+            multiplyModelMatrices(
+              getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, volumeNode),
+              sliceModel
+            )
+          )
+        );
       }
       for (let i = 0; i < layers.length; i += 1) {
         const layerEntry = layers[i];
@@ -4491,13 +4654,16 @@ function drawColorCylinder(
               volume,
               sliceParams.plane,
               safeIndex,
-              ALLEN_VOLUME_PROFILE
+              profile
             );
           } else {
             continue;
           }
 
-          const finalModel = multiplyModelMatrices(layerEntry.worldMatrix, model);
+          const finalModel = multiplyModelMatrices(
+            getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, volumeNode),
+            model
+          );
           const mv = mat4.create();
           const mvp = mat4.create();
           const intensityWindow = getLayerIntensityWindow(layerEntry);
@@ -4875,6 +5041,8 @@ function drawColorCylinder(
           });
       }
 
+      drawRasReferenceOverlay(projection, view);
+
       animationFrameId = requestAnimationFrame(render);
     }
 
@@ -5128,7 +5296,7 @@ function drawColorCylinder(
           sliceWidth = slice.width;
           sliceHeight = slice.height;
           model = multiplyModelMatrices(
-            resolvedEntry.worldMatrix,
+            getCustomSliceSourceWorldMatrix(resolvedEntry.worldMatrix, volumeNode),
             makeInteractiveObliqueSliceModelMatrix(volume, sliceParams, profile)
           );
         } else if (isAxisAlignedSliceParams(sliceParams)) {
@@ -5138,8 +5306,8 @@ function drawColorCylinder(
           sliceWidth = slice.width;
           sliceHeight = slice.height;
           model = multiplyModelMatrices(
-            resolvedEntry.worldMatrix,
-            makeSliceModelMatrix(volume, sliceParams.plane, safeIndex, ALLEN_VOLUME_PROFILE)
+            getCustomSliceSourceWorldMatrix(resolvedEntry.worldMatrix, volumeNode),
+            makeSliceModelMatrix(volume, sliceParams.plane, safeIndex, profile)
           );
         }
         intensityWindow = volume.contentKind === "annotation" ? null : normalizeLayerIntensityWindow(layer);
@@ -5281,11 +5449,17 @@ function drawColorCylinder(
               : null;
           const resolvedLayerEntry =
             collectResolvedVisibleLayers(layerTreeRef.current, true).find((entry) => entry.layer.id === targetNode.id) ?? null;
-          if (!loadedVolumeEntry || !resolvedLayerEntry) {
+          if (
+            !loadedVolumeEntry ||
+            !resolvedLayerEntry ||
+            !volumeNode ||
+            volumeNode.kind !== "layer"
+          ) {
             return;
           }
           const dragWorldStep = getObliqueSliceDragWorldStep(
             resolvedLayerEntry,
+            volumeNode,
             loadedVolumeEntry.volume,
             targetNode.sliceParams,
             loadedVolumeEntry.profile
@@ -5854,6 +6028,17 @@ function drawColorCylinder(
           height: "100%",
           display: "block",
           cursor: activeTool === "capture" ? "crosshair" : undefined,
+        }}
+      />
+      <canvas
+        ref={rasOverlayCanvasRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+          zIndex: 12,
         }}
       />
 

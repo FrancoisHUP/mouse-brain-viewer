@@ -1,14 +1,14 @@
+[todo] make the toolbar adjustable -> when the user click for a couple seconde, it changes the bottom toolbar to editable mode, in this mode the icon have a - icon addon and the user can draga and drop the icons to another order. If the user delete an icon, we should have a store where the user can see the deleted icon / deleted tools. In this same panel the user could see the other tools available. This should work like a store where people publish add on to the browser and push the code to the main project as plugin component. This would open for more tools to be added by users. 
+
 (1) I want to add some template. I want to have a square template around the volume, I want to add a grid in 3 main axis so it look a bit like a graph.I want to have a grid version too.
 
-[todo] fix the oblique slice creation with the rotation. Fix the import of volume, right now the imported volume always need the same modification, make the oblique slice inherit the transformations. 
 [todo] ajouter une system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
-
+[todo] add 2D/3D ai annotations (using segmentation browser model)
+[todo] saved viewer, the user could think by doucle clicking it will select the existing saved viewer to save on. but it's not the behavior. (ctrl+s, when there's no pointer to a saved state) 
 
 
 [todo?] swap the toggle on layes panel to an automation as the base automation. 
-[todo] saved viewer, the user could think by doucle clicking it will select the existing saved viewer to save on. but it's not the behavior. (ctrl+s, when there's no pointer to a saved state) 
-
-[todo] update panel (i) button, past version update message. Pupop when user is update from a previous version. Have a version maanger where the user can manager the version of the software?  
+[todo?] update panel (i) button, past version update message. Pupop when user is update from a previous version. Have a version maanger where the user can manager the version of the software?  
 
 Automations {
   chat {
@@ -70,8 +70,7 @@ Extracter {
 [NTH] support tablet/phone control (pen and fingers)
 [NTH] coworking session? Browser connect to another browser? This may needs a backend with a commen open session? 
 [NTH] add cube annotations in the gemoetrical annotations. 
-
-
+[NTH] add space bar to fix the axis that point to te camera. 
 
 --- small fixes
 [fix] The pipeline icon should not be blue when it's not selected (the number is good, but the icon should not always be highlited) 

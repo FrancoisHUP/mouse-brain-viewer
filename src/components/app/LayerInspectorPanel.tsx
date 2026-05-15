@@ -1,7 +1,38 @@
-import type { ReactNode } from 'react';
-import type { LayerItemNode, LayerTreeNode, AnnotationShape, NodeTransform, IntensityWindow, MeshStyle } from '../../layerTypes';
+import { useState, type KeyboardEvent, type ReactNode } from 'react';
+import type {
+  LayerItemNode,
+  LayerTreeNode,
+  AnnotationShape,
+  NodeTransform,
+  IntensityWindow,
+  MeshStyle,
+  VolumeOrientationPresetId,
+} from '../../layerTypes';
 import type { SelectedLayerRuntimeInfo } from '../../WebGLCanvas';
 import { MetadataRichContent } from './MetadataRichContent';
+import {
+  getAxisSliceViewStateForOrientationPreset,
+  getDefaultTransformForOrientationPreset,
+  getEffectiveVolumeOrientationPresetForLayer,
+  isVolumeOrientationAdjustableLayer,
+  type StoredTransformPreset,
+} from '../../volumeOrientation';
+
+function stableTransformSignature(
+  orientationPreset: VolumeOrientationPresetId | null,
+  transform: NodeTransform | undefined,
+  axisSliceViewState: LayerItemNode['axisSliceViewState'] | undefined
+) {
+  return JSON.stringify({
+    orientationPreset: orientationPreset ?? 'identity',
+    transform: {
+      translation: readTransformVector(transform?.translation, [0, 0, 0]),
+      rotation: readTransformVector(transform?.rotation, [0, 0, 0]),
+      scale: readTransformVector(transform?.scale, [1, 1, 1]),
+    },
+    axisSliceViewState: axisSliceViewState ?? {},
+  });
+}
 
 type AnnotationDraftSettings = {
   shape: AnnotationShape;
@@ -329,14 +360,132 @@ function TransformEditor({
   transform,
   onUpdate,
   onReset,
+  canAdjustOrientation,
+  orientationPreset,
+  axisSliceViewState,
+  orientationPresetOptions,
+  onUpdateOrientationPreset,
+  showRasReference,
+  onToggleShowRasReference,
+  transformPresets,
+  onSaveTransformPreset,
+  onApplyTransformPreset,
+  onRenameTransformPreset,
+  onDeleteTransformPreset,
 }: {
   transform: NodeTransform | undefined;
   onUpdate: (patch: Partial<NodeTransform>) => void;
   onReset: () => void;
+  canAdjustOrientation: boolean;
+  orientationPreset: VolumeOrientationPresetId | null;
+  axisSliceViewState: LayerItemNode['axisSliceViewState'] | undefined;
+  orientationPresetOptions: Array<{ value: VolumeOrientationPresetId; label: string }>;
+  onUpdateOrientationPreset: (preset: VolumeOrientationPresetId) => void;
+  showRasReference: boolean;
+  onToggleShowRasReference: () => void;
+  transformPresets: StoredTransformPreset[];
+  onSaveTransformPreset: (name: string) => void;
+  onApplyTransformPreset: (presetId: string) => void;
+  onRenameTransformPreset: (presetId: string, name: string) => void;
+  onDeleteTransformPreset: (presetId: string) => void;
 }) {
   const translation = readTransformVector(transform?.translation, [0, 0, 0]);
   const rotation = readTransformVector(transform?.rotation, [0, 0, 0]);
   const scale = readTransformVector(transform?.scale, [1, 1, 1]);
+  const [newPresetName, setNewPresetName] = useState('');
+  const [isCreatingPreset, setIsCreatingPreset] = useState(false);
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  const [editingPresetName, setEditingPresetName] = useState('');
+  const builtInPresetOptions = orientationPresetOptions.filter(
+    (option) => option.value !== 'custom' && option.value !== 'ras+'
+  );
+  const currentSignature = stableTransformSignature(orientationPreset, transform, axisSliceViewState);
+  const matchingCustomPreset = transformPresets.find(
+    (preset) =>
+      stableTransformSignature(
+        preset.orientationPreset,
+        preset.transform,
+        preset.axisSliceViewState
+      ) === currentSignature
+  ) ?? null;
+  const matchingBuiltInPreset = builtInPresetOptions.find(
+    (option) =>
+      stableTransformSignature(
+        option.value,
+        getDefaultTransformForOrientationPreset(option.value),
+        getAxisSliceViewStateForOrientationPreset(option.value)
+      ) === currentSignature
+  ) ?? null;
+  const activePresetKey = matchingCustomPreset
+    ? `custom:${matchingCustomPreset.id}`
+    : matchingBuiltInPreset
+      ? `builtin:${matchingBuiltInPreset.value}`
+      : null;
+
+  const pillBaseStyle = {
+    minHeight: 32,
+    borderRadius: 999,
+    border: '1px solid rgba(255,255,255,0.10)',
+    background: 'rgba(255,255,255,0.04)',
+    color: 'inherit',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '0 12px',
+    fontSize: 12,
+    lineHeight: 1,
+    whiteSpace: 'nowrap' as const,
+    minWidth: 0,
+  };
+
+  const handleCreatePresetCommit = () => {
+    const trimmed = newPresetName.trim();
+    if (!trimmed) {
+      setIsCreatingPreset(false);
+      setNewPresetName('');
+      return;
+    }
+    onSaveTransformPreset(trimmed);
+    setIsCreatingPreset(false);
+    setNewPresetName('');
+  };
+
+  const handleCreatePresetKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleCreatePresetCommit();
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setIsCreatingPreset(false);
+      setNewPresetName('');
+    }
+  };
+
+  const handleRenamePresetCommit = () => {
+    if (!editingPresetId) return;
+    const trimmed = editingPresetName.trim();
+    if (!trimmed) {
+      setEditingPresetId(null);
+      setEditingPresetName('');
+      return;
+    }
+    onRenameTransformPreset(editingPresetId, trimmed);
+    setEditingPresetId(null);
+    setEditingPresetName('');
+  };
+
+  const handleRenamePresetKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleRenamePresetCommit();
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setEditingPresetId(null);
+      setEditingPresetName('');
+    }
+  };
 
   return (
     <Section
@@ -368,6 +517,177 @@ function TransformEditor({
       }
     >
       <div style={{ display: 'grid', gap: 8 }}>
+        {canAdjustOrientation ? (
+          <>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+              }}
+            >
+              <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                Presets
+              </div>
+              <button
+                type="button"
+                onClick={onToggleShowRasReference}
+                style={{
+                  height: 28,
+                  padding: '0 10px',
+                  borderRadius: 999,
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  background: showRasReference ? 'rgba(120,190,255,0.18)' : 'rgba(255,255,255,0.04)',
+                  color: 'inherit',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                {showRasReference ? 'Hide RAS axes' : 'Show RAS axes'}
+              </button>
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                alignItems: 'center',
+              }}
+            >
+              {builtInPresetOptions.map((option) => {
+                const isActive = activePresetKey === `builtin:${option.value}`;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => onUpdateOrientationPreset(option.value)}
+                    style={{
+                      ...pillBaseStyle,
+                      background: isActive ? 'rgba(120,190,255,0.18)' : pillBaseStyle.background,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+              {transformPresets.map((preset) => (
+                editingPresetId === preset.id ? (
+                  <input
+                    key={preset.id}
+                    autoFocus
+                    value={editingPresetName}
+                    onChange={(event) => setEditingPresetName(event.target.value)}
+                    onBlur={handleRenamePresetCommit}
+                    onKeyDown={handleRenamePresetKeyDown}
+                    style={{
+                      ...pillBaseStyle,
+                      minWidth: 140,
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                ) : (
+                  <div
+                    key={preset.id}
+                    style={{
+                      ...pillBaseStyle,
+                      background:
+                        activePresetKey === `custom:${preset.id}`
+                          ? 'rgba(120,190,255,0.18)'
+                          : pillBaseStyle.background,
+                      paddingRight: 8,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onApplyTransformPreset(preset.id)}
+                      onDoubleClick={() => {
+                        setEditingPresetId(preset.id);
+                        setEditingPresetName(preset.name);
+                      }}
+                      title="Apply preset. Double-click to rename."
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'inherit',
+                        padding: 0,
+                        margin: 0,
+                        cursor: 'pointer',
+                        minWidth: 0,
+                        font: 'inherit',
+                      }}
+                    >
+                      {preset.name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteTransformPreset(preset.id);
+                      }}
+                      aria-label={`Delete preset ${preset.name}`}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'rgba(255,255,255,0.75)',
+                        cursor: 'pointer',
+                        padding: 0,
+                        margin: 0,
+                        width: 18,
+                        height: 18,
+                        borderRadius: 999,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 14,
+                        lineHeight: 1,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )
+              ))}
+              {isCreatingPreset ? (
+                <input
+                  autoFocus
+                  value={newPresetName}
+                  onChange={(event) => setNewPresetName(event.target.value)}
+                  onBlur={handleCreatePresetCommit}
+                  onKeyDown={handleCreatePresetKeyDown}
+                  placeholder="New preset"
+                  style={{
+                    ...pillBaseStyle,
+                    minWidth: 140,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingPresetId(null);
+                  setEditingPresetName('');
+                  setIsCreatingPreset(true);
+                }}
+                aria-label="Add preset"
+                style={{
+                  ...pillBaseStyle,
+                  width: 32,
+                  justifyContent: 'center',
+                  padding: 0,
+                  cursor: 'pointer',
+                  fontSize: 18,
+                }}
+              >
+                +
+              </button>
+            </div>
+          </>
+        ) : null}
         <div data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
           Position
         </div>
@@ -485,6 +805,15 @@ export default function LayerInspectorPanel({
   onUpdateSelectedNodeMeshStyle,
   onUpdateSelectedNodeTransform,
   onResetSelectedNodeTransform,
+  orientationPresetOptions,
+  onUpdateSelectedNodeOrientationPreset,
+  showRasReference,
+  onToggleShowRasReference,
+  transformPresets,
+  onSaveSelectedNodeTransformPreset,
+  onApplySelectedNodeTransformPreset,
+  onRenameSelectedNodeTransformPreset,
+  onDeleteSelectedNodeTransformPreset,
   onUpdateSelectedAnnotationLayer,
   onOpenMetadataWindow,
 }: {
@@ -500,6 +829,15 @@ export default function LayerInspectorPanel({
   onUpdateSelectedNodeMeshStyle: (patch: Partial<MeshStyle>) => void;
   onUpdateSelectedNodeTransform: (patch: Partial<NodeTransform>) => void;
   onResetSelectedNodeTransform: () => void;
+  orientationPresetOptions: Array<{ value: VolumeOrientationPresetId; label: string }>;
+  onUpdateSelectedNodeOrientationPreset: (preset: VolumeOrientationPresetId) => void;
+  showRasReference: boolean;
+  onToggleShowRasReference: () => void;
+  transformPresets: StoredTransformPreset[];
+  onSaveSelectedNodeTransformPreset: (name: string) => void;
+  onApplySelectedNodeTransformPreset: (presetId: string) => void;
+  onRenameSelectedNodeTransformPreset: (presetId: string, name: string) => void;
+  onDeleteSelectedNodeTransformPreset: (presetId: string) => void;
   onUpdateSelectedAnnotationLayer: (patch: Partial<NonNullable<LayerItemNode['annotation']>>) => void;
   onOpenMetadataWindow: () => void;
 }) {
@@ -538,6 +876,10 @@ export default function LayerInspectorPanel({
     isAllenVolumeBoundsCubeSource(selectedMeshLayer.source);
   const selectedMeshColor = selectedMeshLayer?.meshStyle?.color ?? '#86d7ff';
   const selectedMeshLineWidth = Math.max(0.5, Math.min(6, selectedMeshLayer?.meshStyle?.lineWidth ?? 1.6));
+  const canAdjustOrientationPreset =
+    selectedNode?.kind === 'layer' && isVolumeOrientationAdjustableLayer(selectedNode);
+  const selectedOrientationPreset =
+    canAdjustOrientationPreset ? getEffectiveVolumeOrientationPresetForLayer(selectedNode) : null;
 
   void isInspectorCollapsed;
   void onToggleCollapsed;
@@ -645,6 +987,18 @@ export default function LayerInspectorPanel({
               transform={selectedNode.transform}
               onUpdate={onUpdateSelectedNodeTransform}
               onReset={onResetSelectedNodeTransform}
+              canAdjustOrientation={!!canAdjustOrientationPreset}
+              orientationPreset={selectedOrientationPreset}
+              axisSliceViewState={selectedNode?.kind === 'layer' ? selectedNode.axisSliceViewState : undefined}
+              orientationPresetOptions={orientationPresetOptions}
+              onUpdateOrientationPreset={onUpdateSelectedNodeOrientationPreset}
+              showRasReference={showRasReference}
+              onToggleShowRasReference={onToggleShowRasReference}
+              transformPresets={transformPresets}
+              onSaveTransformPreset={onSaveSelectedNodeTransformPreset}
+              onApplyTransformPreset={onApplySelectedNodeTransformPreset}
+              onRenameTransformPreset={onRenameSelectedNodeTransformPreset}
+              onDeleteTransformPreset={onDeleteSelectedNodeTransformPreset}
             />
 
             {selectedAnnotationLayer ? (
