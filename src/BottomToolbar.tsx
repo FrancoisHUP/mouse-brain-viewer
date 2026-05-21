@@ -4961,7 +4961,7 @@ export default function BottomToolbar({
                         >
                           {selectedExplorerToolDocumentation.assets.map((asset) => (
                             (() => {
-                              const assetSrc = asset.src ?? asset.suggestedPath;
+                              const assetSrc = asset.src;
                               return (
                             <div
                               key={asset.id}
