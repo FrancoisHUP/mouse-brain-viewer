@@ -1,0 +1,55 @@
+import type { ToolbarToolManifest } from "./types";
+
+export const CORE_TOOL_MANIFESTS: ToolbarToolManifest[] = [
+  {
+    id: "mouse",
+    label: "Move",
+    kind: "core",
+    status: "stable",
+    source: "built-in",
+    version: "1.0.0",
+    publishedAt: "2026-05-19",
+    description: "Navigate the 3D scene, adjust the camera mode, and focus the active layer.",
+    keywords: ["camera", "navigation", "movement", "orbit", "fly"],
+    developerName: "Core viewer",
+    toolbar: {
+      defaultOrder: 0,
+      defaultVisible: true,
+      removable: false,
+    },
+  },
+  {
+    id: "select",
+    label: "Select",
+    kind: "core",
+    status: "stable",
+    source: "built-in",
+    version: "1.0.0",
+    publishedAt: "2026-05-19",
+    description: "Inspect the scene and select layers or picked content.",
+    keywords: ["selection", "inspect", "pick"],
+    developerName: "Core viewer",
+    toolbar: {
+      defaultOrder: 1,
+      defaultVisible: true,
+      removable: false,
+    },
+  },
+  {
+    id: "windows",
+    label: "Windows",
+    kind: "core",
+    status: "stable",
+    source: "built-in",
+    version: "1.0.0",
+    publishedAt: "2026-05-19",
+    description: "Review open floating windows, restore minimized views, and close workspace windows.",
+    keywords: ["windows", "workspace", "floating", "layout", "panels"],
+    developerName: "Core viewer",
+    toolbar: {
+      defaultOrder: 2,
+      defaultVisible: true,
+      removable: false,
+    },
+  },
+];

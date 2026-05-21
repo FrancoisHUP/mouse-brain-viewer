@@ -1,11 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
+import {
+  closestCenter,
+  DndContext,
+  MouseSensor,
+  TouchSensor,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import type { DragEndEvent, DragOverEvent, DragStartEvent } from "@dnd-kit/core";
+import {
+  horizontalListSortingStrategy,
+  SortableContext,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { MetadataRichContent } from "./components/app/MetadataRichContent";
 import type { CameraControlMode } from "./viewerState";
 import type { AnnotationShape, SlicePlane } from "./layerTypes";
 import type { FloatingWindowState } from "./components/app/FloatingWindowManager";
 import type { BrowserResourceSummary, ResourceHistorySample, ResourceMetricId } from "./resourceTelemetry";
 import { formatMetricPercent, getMetricFillColor, getMetricLabel } from "./resourceTelemetry";
+import { DEFAULT_TOOLBAR_TOOL_IDS, getToolExtensionDefinition, getToolbarToolManifest, getUtilityToolExtensionDefinition, TOOLBAR_TOOL_MANIFESTS } from "./tools/registry";
+import { getToolbarToolDocumentation } from "./tools/toolDocumentation";
+import type { ToolId, ToolbarToolId } from "./tools/types";
 
 declare global {
   interface Window {
@@ -14,23 +34,6 @@ declare global {
     };
   }
 }
-
-export type ToolId =
-  | "mouse"
-  | "select"
-  | "capture"
-  | "pencil"
-  | "slice"
-  | "pipeline"
-  | "resources"
-  | "assistant"
-  | "data"
-  | "search"
-  | "library"
-  | "save"
-  | "export"
-  | "settings"
-  | "account";
 
 export type HistoryMenuItem = {
   id: string;
@@ -61,6 +64,28 @@ export type CaptureStillMenuItem = {
   active?: boolean;
 };
 
+type ToolbarButtonEntry = {
+  toolId: ToolbarToolId;
+  kind: "core" | "extension";
+  removable: boolean;
+  node: ReactNode;
+};
+
+type ToolbarRendererVariant =
+  | "default"
+  | "core-mouse"
+  | "core-windows"
+  | "annotation"
+  | "capture"
+  | "slice"
+  | "pipeline"
+  | "assistant"
+  | "resources";
+
+const TOOLBAR_TRASH_DROP_ID = "__toolbar_trash_drop__";
+const TOOLBAR_REVEAL_ZONE_PX = 64;
+const TOOLBAR_HIDDEN_OFFSET_PX = 82;
+
 const PIPELINE_DESCRIPTION_MAX_CHARS = 96;
 
 function getPipelineDescriptionPreview(description?: string): string {
@@ -69,20 +94,6 @@ function getPipelineDescriptionPreview(description?: string): string {
   if (normalized.length <= PIPELINE_DESCRIPTION_MAX_CHARS) return normalized;
   return `${normalized.slice(0, PIPELINE_DESCRIPTION_MAX_CHARS - 1).trimEnd()}…`;
 }
-
-type ToolDefinition = {
-  id: ToolId;
-  label: string;
-};
-
-const TOOLS: ToolDefinition[] = [
-  { id: "mouse", label: "Move" },
-  { id: "select", label: "Select" },
-  { id: "capture", label: "Capture image" },
-  { id: "pencil", label: "Draw" },
-  { id: "slice", label: "Browse slices" },
-  { id: "pipeline", label: "Automation pipelines" },
-];
 
 const CAMERA_MODE_OPTIONS: Array<{
   id: CameraControlMode;
@@ -148,6 +159,8 @@ function Icon({ id }: { id: ToolId }) {
           <path d="M14.5 12.5v10.7a.3.3 0 0 0 .5.2l2.95-2.95a.3.3 0 0 1 .21-.09H22a.3.3 0 0 0 .21-.51l-7.2-7.2a.3.3 0 0 0-.51.21Z" />
         </svg>
       );
+    case "windows":
+      return <WindowsIcon />;
     case "capture":
       return (
         <svg {...common} viewBox="0 0 24 24">
@@ -198,6 +211,8 @@ function Icon({ id }: { id: ToolId }) {
           <path d="M18.4 7.4h1" />
         </svg>
       );
+    case "assistant":
+      return <AssistantToolbarIcon />;
     case "resources":
       return <ResourceBarsIcon />;
     case "data":
@@ -717,6 +732,243 @@ function ToolButton({ id, label, active, onClick, icon }: { id: ToolId; label: s
     </button>
   );
 }
+
+function BackSmallIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+function SearchSmallIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="M16 16l4.5 4.5" />
+    </svg>
+  );
+}
+
+function ToolExplorerIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="4" width="6" height="6" rx="1.5" />
+      <rect x="14" y="4" width="6" height="6" rx="1.5" />
+      <rect x="4" y="14" width="6" height="6" rx="1.5" />
+      <rect x="14" y="14" width="6" height="6" rx="1.5" />
+    </svg>
+  );
+}
+
+function TrashSmallIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M9 7V4.8c0-.4.3-.8.8-.8h4.4c.5 0 .8.4.8.8V7" />
+      <path d="M7.2 7l.7 11.1c0 1 .8 1.9 1.9 1.9h4.4c1 0 1.8-.8 1.9-1.9L16.8 7" />
+      <path d="M10 11.2v4.8" />
+      <path d="M14 11.2v4.8" />
+    </svg>
+  );
+}
+
+function formatToolKindLabel(kind: "core" | "extension") {
+  return kind === "core" ? "Core" : "Extension";
+}
+
+function formatToolStatusLabel(status: "stable" | "beta") {
+  return status === "beta" ? "Beta" : "Stable";
+}
+
+function formatToolSourceLabel(source: "built-in" | "contributed") {
+  return source === "contributed" ? "Contributed" : "Built-in";
+}
+
+function ToolTag({
+  label,
+  tone = "default",
+}: {
+  label: string;
+  tone?: "default" | "beta" | "accent";
+}) {
+  const palette =
+    tone === "beta"
+      ? {
+          border: "1px solid rgba(255,196,92,0.22)",
+          background: "rgba(255,196,92,0.10)",
+          color: "rgba(255,231,179,0.96)",
+        }
+      : tone === "accent"
+        ? {
+            border: "1px solid rgba(120,190,255,0.22)",
+            background: "rgba(120,190,255,0.12)",
+            color: "rgba(218,240,255,0.96)",
+          }
+        : {
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(255,255,255,0.05)",
+            color: "rgba(255,255,255,0.74)",
+          };
+
+  return (
+    <span
+      style={{
+        minHeight: 18,
+        padding: "0 7px",
+        borderRadius: 999,
+        display: "inline-flex",
+        alignItems: "center",
+        lineHeight: 1,
+        fontSize: 9,
+        fontWeight: 800,
+        letterSpacing: 0.2,
+        ...palette,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function SortableToolbarItem({
+  entry,
+  isDropTarget,
+  children,
+}: {
+  entry: ToolbarButtonEntry;
+  isDropTarget: boolean;
+  children: ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: entry.toolId });
+
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      style={{
+        position: "relative",
+        display: "flex",
+        alignItems: "center",
+        borderRadius: 16,
+        padding: 3,
+        outline: isDropTarget ? "2px solid rgba(120,190,255,0.72)" : "none",
+        outlineOffset: 2,
+        opacity: isDragging ? 0.42 : 1,
+        transform: CSS.Transform.toString(transform),
+        transition,
+        cursor: isDragging ? "grabbing" : "grab",
+      }}
+    >
+      <div ref={setActivatorNodeRef} style={{ pointerEvents: "auto" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ToolbarTrashDropTarget({
+  activeTool,
+}: {
+  activeTool: ToolbarButtonEntry | null;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: TOOLBAR_TRASH_DROP_ID,
+    disabled: !activeTool?.removable,
+  });
+  const isActiveRemovableTool = Boolean(activeTool?.removable);
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <button
+        type="button"
+        title={
+          activeTool
+            ? activeTool.removable
+              ? `Remove ${getToolbarToolManifest(activeTool.toolId).label} from toolbar`
+              : `${getToolbarToolManifest(activeTool.toolId).label} cannot be removed`
+            : "Remove tool from toolbar"
+        }
+        aria-label={
+          activeTool
+            ? activeTool.removable
+              ? `Remove ${getToolbarToolManifest(activeTool.toolId).label} from toolbar`
+              : `${getToolbarToolManifest(activeTool.toolId).label} cannot be removed`
+            : "Remove tool from toolbar"
+        }
+        style={{
+          height: 36,
+          width: 36,
+          borderRadius: 12,
+          border: activeTool
+            ? activeTool.removable
+              ? isOver
+                ? "1px solid rgba(255,120,120,0.88)"
+                : "1px solid rgba(255,140,140,0.30)"
+              : "1px solid rgba(255,255,255,0.10)"
+            : "1px solid rgba(255,255,255,0.06)",
+          background: activeTool
+            ? activeTool.removable
+              ? isOver
+                ? "linear-gradient(180deg, rgba(225,82,82,0.50), rgba(176,42,42,0.72))"
+                : "rgba(180,68,68,0.16)"
+              : "rgba(255,255,255,0.04)"
+            : "rgba(255,255,255,0.02)",
+          color: activeTool
+            ? activeTool.removable
+              ? isOver
+                ? "#ffffff"
+                : "rgba(255,225,225,0.96)"
+              : "rgba(255,255,255,0.56)"
+            : "rgba(255,255,255,0.22)",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: activeTool ? (activeTool.removable ? "copy" : "not-allowed") : "default",
+          transition: "all 160ms ease",
+          boxShadow:
+            activeTool && isOver
+              ? "0 0 0 4px rgba(255,90,90,0.18), 0 14px 28px rgba(120,12,12,0.35)"
+              : "none",
+          transform: activeTool && isOver ? "scale(1.1) translateY(-1px)" : "scale(1)",
+          opacity: activeTool ? 1 : 0,
+          pointerEvents: activeTool ? "auto" : "none",
+          overflow: "hidden",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            transform: isActiveRemovableTool && isOver ? "scale(1.12)" : "scale(1)",
+            transition: "transform 160ms ease",
+            filter: isActiveRemovableTool && isOver ? "drop-shadow(0 0 10px rgba(255,255,255,0.18))" : "none",
+          }}
+        >
+          <TrashSmallIcon />
+        </span>
+      </button>
+    </div>
+  );
+}
+
 
 function PipelineToolButton({
   active,
@@ -1779,11 +2031,11 @@ function WindowManagerToolButton({
           left: "50%",
           bottom: "calc(100% + 12px)",
           transform: isOpen ? "translate(-50%, 0)" : "translate(-50%, 8px)",
-          minWidth: hasWindows ? undefined : 180,
+          minWidth: hasWindows ? undefined : 148,
           maxWidth: "min(760px, calc(100vw - 32px))",
           overflowX: "auto",
           overflowY: "hidden",
-          borderRadius: 8,
+          borderRadius: 16,
           border: "1px solid rgba(255,255,255,0.12)",
           background: "rgba(12,14,18,0.94)",
           boxShadow: "0 16px 42px rgba(0,0,0,0.42)",
@@ -1881,30 +2133,60 @@ function WindowManagerToolButton({
             ))}
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={onCreateNoteAnnotation}
+          <div
             style={{
-              minWidth: 188,
-              height: 38,
-              borderRadius: 8,
-              border: "1px solid rgba(130,190,255,0.28)",
-              background: "rgba(120,190,255,0.12)",
-              color: "white",
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
+              display: "grid",
               gap: 8,
-              padding: "0 12px",
-              fontSize: 12,
-              fontWeight: 800,
-              whiteSpace: "nowrap",
+              justifyItems: "center",
+              width: 132,
             }}
           >
-            <AnnotationModeIcon shape="note" />
-            Create note
-          </button>
+            <button
+              type="button"
+              onClick={onCreateNoteAnnotation}
+              title="Create note"
+              aria-label="Create note"
+              style={{
+                width: 132,
+                minHeight: 120,
+                borderRadius: 16,
+                border: "1px solid rgba(130,190,255,0.24)",
+                background: "linear-gradient(180deg, rgba(120,190,255,0.16), rgba(120,190,255,0.08))",
+                color: "white",
+                cursor: "pointer",
+                display: "grid",
+                justifyItems: "center",
+                alignContent: "center",
+                gap: 10,
+                padding: "14px 12px",
+                textAlign: "center",
+                transition: "transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease",
+                boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  background: "rgba(255,255,255,0.08)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <AnnotationModeIcon shape="note" />
+              </span>
+              <span style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, lineHeight: 1.2 }}>Create note</span>
+                <span style={{ fontSize: 10, lineHeight: 1.35, color: "rgba(255,255,255,0.64)" }}>
+                  Open a note window
+                </span>
+              </span>
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -3646,32 +3928,6 @@ function PencilToolButton({
   );
 }
 
-function SaveToolButton({ open, onClick, content }: { open: boolean; onClick: () => void; content?: ReactNode; }) {
-  return (
-    <div style={{ position: "relative" }}>
-      <ToolButton id="save" label="Save viewer" active={open} onClick={onClick} />
-      <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          bottom: "100%",
-          paddingBottom: 12,
-          transform: open ? "translate(-50%, 0) scale(1)" : "translate(-50%, 12px) scale(0.96)",
-          opacity: open ? 1 : 0,
-          visibility: open ? "visible" : "hidden",
-          pointerEvents: open ? "auto" : "none",
-          transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease",
-          zIndex: 42,
-        }}
-      >
-        <div data-theme-surface="panel" style={{ minWidth: 280, maxWidth: 340, borderRadius: 16, background: "rgba(12,14,18,0.96)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
-          {content}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function HistoryButton({ direction, disabled, onClick, items, onJump, canClearHistory = false, onRequestClearHistory, }: { direction: "undo" | "redo"; disabled: boolean; onClick: () => void; items: HistoryMenuItem[]; onJump?: (steps: number) => void; canClearHistory?: boolean; onRequestClearHistory?: () => void; }) {
   const [isHovered, setIsHovered] = useState(false);
   const label = direction === "undo" ? "Undo" : "Redo";
@@ -3782,6 +4038,7 @@ export default function BottomToolbar({
   onTogglePipeline,
   assistantOpen = false,
   onToggleAssistant,
+  onToggleResourceManager,
   onQuickAssistantSubmit,
   resourceManagerOpen = false,
   resourceSummary = null,
@@ -3804,6 +4061,12 @@ export default function BottomToolbar({
   onLoopCaptureSequence,
   onRenameCaptureSequence,
   onDeleteCaptureSequence,
+  toolbarToolIds = DEFAULT_TOOLBAR_TOOL_IDS,
+  toolbarEditMode = false,
+  onToolbarEditModeChange,
+  onToolbarMove,
+  onToolbarHide,
+  onToolbarShow,
 }: {
   activeTool: ToolId;
   onToolChange: (tool: ToolId) => void;
@@ -3880,6 +4143,7 @@ export default function BottomToolbar({
   onTogglePipeline?: (pipelineId: string, active: boolean) => void;
   assistantOpen?: boolean;
   onToggleAssistant?: () => void;
+  onToggleResourceManager?: () => void;
   onQuickAssistantSubmit?: (prompt: string) => void;
   resourceManagerOpen?: boolean;
   resourceSummary?: BrowserResourceSummary | null;
@@ -3902,8 +4166,24 @@ export default function BottomToolbar({
   onLoopCaptureSequence?: (sequenceId: string) => void;
   onRenameCaptureSequence?: (sequenceId: string, nextName: string) => void;
   onDeleteCaptureSequence?: (sequenceId: string) => void;
+  toolbarToolIds?: ToolbarToolId[];
+  hiddenToolbarToolIds?: ToolbarToolId[];
+  toolbarEditMode?: boolean;
+  onToolbarEditModeChange?: (editing: boolean) => void;
+  onToolbarMove?: (draggedToolId: ToolbarToolId, targetToolId: ToolbarToolId) => void;
+  onToolbarHide?: (toolId: ToolbarToolId) => void;
+  onToolbarShow?: (toolId: ToolbarToolId) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const toolExplorerPanelRef = useRef<HTMLDivElement | null>(null);
+  const [draggedToolId, setDraggedToolId] = useState<ToolbarToolId | null>(null);
+  const [dropTargetToolId, setDropTargetToolId] = useState<ToolbarToolId | null>(null);
+  const [toolExplorerOpen, setToolExplorerOpen] = useState(false);
+  const [toolExplorerQuery, setToolExplorerQuery] = useState("");
+  const [selectedExplorerToolId, setSelectedExplorerToolId] = useState<ToolbarToolId | null>(null);
+  const [toolbarPinnedOpen, setToolbarPinnedOpen] = useState(true);
+  const [toolbarRevealActive, setToolbarRevealActive] = useState(false);
+  const [toolbarHovered, setToolbarHovered] = useState(false);
 
   useEffect(() => {
     if (!saveNoticeOpen && !statePopoverOpen) return;
@@ -3931,137 +4211,353 @@ export default function BottomToolbar({
     };
   }, [saveNoticeOpen, statePopoverOpen, onRequestCloseSaveNotice, onRequestCloseStatePopover]);
 
-  const toolbarButtons = useMemo(
-    () =>
-      TOOLS.map((tool) => {
-        const isActive =
-          activeTool === tool.id ||
-          (tool.id === "export" && statePopoverOpen) ||
-          (tool.id === "account" && accountPopoverOpen) ||
-          (tool.id === "save" && saveNoticeOpen);
+  useEffect(() => {
+    if (!toolbarEditMode) {
+      setDraggedToolId(null);
+      setDropTargetToolId(null);
+      return;
+    }
 
-        if (tool.id === "mouse") {
-          return <MoveToolButton key={tool.id} active={isActive} cameraMode={cameraMode} onClick={() => onToolChange(tool.id)} onCameraModeChange={onCameraModeChange} onFocusSelectedLayer={onFocusSelectedLayer} />;
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (rootRef.current?.contains(target)) return;
+      onToolbarEditModeChange?.(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onToolbarEditModeChange?.(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [toolbarEditMode, onToolbarEditModeChange]);
+
+  useEffect(() => {
+    if (!toolExplorerOpen) {
+      setToolExplorerQuery("");
+      setSelectedExplorerToolId(null);
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (rootRef.current?.contains(target)) return;
+      if (toolExplorerPanelRef.current?.contains(target)) return;
+      setToolExplorerOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        if (selectedExplorerToolId) {
+          setSelectedExplorerToolId(null);
+          return;
         }
+        setToolExplorerOpen(false);
+      }
+    }
 
-        if (tool.id === "pencil") {
-          return (
-            <PencilToolButton
-              key={tool.id}
-              active={activeTool === "pencil"}
-              onClick={() => onToolChange(tool.id)}
-              shape={annotationShape}
-              color={annotationColor}
-              opacity={annotationOpacity}
-              size={annotationSize}
-              depth={annotationDepth}
-              recentColors={annotationRecentColors}
-              canUseEyeDropper={typeof window !== "undefined" && typeof window.EyeDropper === "function"}
-              eraseMode={annotationEraseMode}
-              onShapeChange={onAnnotationShapeChange}
-              onColorChange={onAnnotationColorChange}
-              onColorCommit={onAnnotationColorCommit}
-              onOpacityChange={onAnnotationOpacityChange}
-              onSizeChange={onAnnotationSizeChange}
-              onDepthChange={onAnnotationDepthChange}
-              onEraseModeChange={onAnnotationEraseModeChange}
-              onPickColorFromScreen={onAnnotationPickColorFromScreen}
-            />
-          );
-        }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [toolExplorerOpen, selectedExplorerToolId]);
 
-        if (tool.id === "capture") {
-          return (
-            <CaptureToolButton
-              key={tool.id}
-              active={activeTool === "capture" || capturePlaybackActive || capturePlaybackPaused}
-              onOpenEditor={() => {
-                onToolChange(tool.id);
-              }}
-              onCreateSequence={() => onOpenCaptureEditor?.()}
-              onExportFrame={() => onExportCaptureFrame?.()}
-              canExportFrame={captureExportEnabled}
-              exportPending={captureExportPending}
-              isPlaybackActive={capturePlaybackActive}
-              isPlaybackPaused={capturePlaybackPaused}
-              onTogglePlayback={() => onToggleCapturePlayback?.()}
-              onStopPlayback={() => onStopCapturePlayback?.()}
-              stills={captureStills}
-              sequences={captureSequences}
-              onLoadStill={(stillId) => onLoadCaptureStill?.(stillId)}
-              onDownloadStill={(stillId) => onDownloadCaptureStill?.(stillId)}
-              onDeleteStill={(stillId) => onDeleteCaptureStill?.(stillId)}
-              onLoadSequence={(sequenceId) => onLoadCaptureSequence?.(sequenceId)}
-              onPlaySequence={(sequenceId) => onPlayCaptureSequence?.(sequenceId)}
-              onLoopSequence={(sequenceId) => onLoopCaptureSequence?.(sequenceId)}
-              onRenameSequence={(sequenceId, nextName) => onRenameCaptureSequence?.(sequenceId, nextName)}
-              onDeleteSequence={(sequenceId) => onDeleteCaptureSequence?.(sequenceId)}
-            />
-          );
-        }
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
-        if (tool.id === "save") {
-          return <SaveToolButton key={tool.id} open={saveNoticeOpen} onClick={() => onSaveCurrentViewer?.()} content={saveNoticeContent} />;
-        }
+    function handlePointerMove(event: PointerEvent) {
+      const viewportHeight = window.innerHeight;
+      const nearBottomEdge = viewportHeight - event.clientY <= TOOLBAR_REVEAL_ZONE_PX;
+      setToolbarRevealActive(nearBottomEdge);
+    }
 
-        if (tool.id === "slice") {
-          return (
-            <SliceToolButton
-              key={tool.id}
-              active={activeTool === "slice"}
-              onClick={() => onToolChange(tool.id)}
-              onHoverLockChange={onSliceHoverLockChange}
-              mode={sliceMode}
-              selectedLayerName={sliceSelectedLayerName}
-              targetPlane={sliceTargetPlane}
-              hoveredPlane={sliceHoveredPlane}
-              hasSelectedLayer={!!sliceSelectedLayerName}
-              canResetToCenter={sliceCanResetToCenter}
-              canAdjustView={!!sliceSelectedLayerName && (sliceMode === "free" || !!sliceTargetPlane)}
-              rotationDeg={sliceRotationDeg}
-              scale={sliceScale}
-              flipX={sliceFlipX}
-              flipY={sliceFlipY}
-              flipZ={sliceFlipZ}
-              visibilityXY={sliceVisibilityXY}
-              visibilityXZ={sliceVisibilityXZ}
-              visibilityYZ={sliceVisibilityYZ}
-              canCreateFreeSlice={sliceCanCreateFreeSlice}
-              freeSliceOffset={sliceFreeSliceOffset}
-              onToggleVisibility={onSliceToggleVisibility}
-              onResetSliceView={onSliceResetView ?? (() => {})}
-              onToggleFlip={onSliceToggleFlip ?? (() => {})}
-              onResetToCenter={onSliceResetToCenter ?? (() => {})}
-              onRotate={onSliceRotate ?? (() => {})}
-              onScale={onSliceScale ?? (() => {})}
-              onCreateFreeSlice={onSliceCreateFreeSlice ?? (() => {})}
-              onNudgeFreeOffset={onSliceNudgeFreeOffset ?? (() => {})}
-              onTiltFreeSlice={onSliceTiltFreeSlice ?? (() => {})}
-              onSnapFreeSlice={onSliceSnapFreeSlice ?? (() => {})}
-            />
-          );
-        }
+    function handlePointerLeave() {
+      setToolbarRevealActive(false);
+    }
 
-        if (tool.id === "pipeline") {
-          return (
-            <PipelineToolButton
-              key={tool.id}
-              active={activeTool === "pipeline"}
-              pipelines={pipelines}
-              onClick={() => onToolChange(tool.id)}
-              onOpenPipeline={(pipelineId) => {
-                onOpenPipeline?.(pipelineId);
-                onToolChange("pipeline");
-              }}
-              onTogglePipeline={onTogglePipeline ?? (() => {})}
-            />
-          );
-        }
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerleave", handlePointerLeave);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerleave", handlePointerLeave);
+    };
+  }, []);
 
-        return <ToolButton key={tool.id} id={tool.id} label={tool.label} active={isActive} onClick={() => onToolChange(tool.id)} />;
-      }),
-    [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen, pipelines, onOpenPipeline, onTogglePipeline, resourceSamples, resourceSummary]
+  const toolbarButtonEntries = useMemo(() => {
+    const entries: ToolbarButtonEntry[] = [];
+
+    toolbarToolIds.forEach((toolId) => {
+      const tool = getToolbarToolManifest(toolId);
+      const isActive = activeTool === tool.id;
+      const extensionDefinition = getToolExtensionDefinition(tool.id);
+      const utilityDefinition = getUtilityToolExtensionDefinition(tool.id);
+      const rendererVariant: ToolbarRendererVariant =
+        tool.id === "mouse"
+          ? "core-mouse"
+          : tool.id === "windows"
+            ? "core-windows"
+          : (extensionDefinition?.toolbarPresentation.variant ??
+            utilityDefinition?.toolbarPresentation.variant ??
+            "default");
+      const renderers: Record<ToolbarRendererVariant, () => ReactNode> = {
+        default: () => (
+          <ToolButton
+            key={tool.id}
+            id={tool.id}
+            label={tool.label}
+            active={isActive}
+            onClick={() => onToolChange(tool.id)}
+          />
+        ),
+        "core-mouse": () => (
+          <MoveToolButton
+            key={tool.id}
+            active={isActive}
+            cameraMode={cameraMode}
+            onClick={() => onToolChange(tool.id)}
+            onCameraModeChange={onCameraModeChange}
+            onFocusSelectedLayer={onFocusSelectedLayer}
+          />
+        ),
+        "core-windows": () => (
+          <WindowManagerToolButton
+            key={tool.id}
+            windows={windows}
+            onFocusWindow={onFocusWindow ?? (() => {})}
+            onRestoreWindow={onRestoreWindow ?? (() => {})}
+            onCloseWindow={onCloseWindow ?? (() => {})}
+            onCreateNoteAnnotation={onCreateNoteAnnotation ?? (() => {})}
+          />
+        ),
+        annotation: () => (
+          <PencilToolButton
+            key={tool.id}
+            active={activeTool === "pencil"}
+            onClick={() => onToolChange(tool.id)}
+            shape={annotationShape}
+            color={annotationColor}
+            opacity={annotationOpacity}
+            size={annotationSize}
+            depth={annotationDepth}
+            recentColors={annotationRecentColors}
+            canUseEyeDropper={typeof window !== "undefined" && typeof window.EyeDropper === "function"}
+            eraseMode={annotationEraseMode}
+            onShapeChange={onAnnotationShapeChange}
+            onColorChange={onAnnotationColorChange}
+            onColorCommit={onAnnotationColorCommit}
+            onOpacityChange={onAnnotationOpacityChange}
+            onSizeChange={onAnnotationSizeChange}
+            onDepthChange={onAnnotationDepthChange}
+            onEraseModeChange={onAnnotationEraseModeChange}
+            onPickColorFromScreen={onAnnotationPickColorFromScreen}
+          />
+        ),
+        capture: () => (
+          <CaptureToolButton
+            key={tool.id}
+            active={activeTool === "capture" || capturePlaybackActive || capturePlaybackPaused}
+            onOpenEditor={() => {
+              onToolChange(tool.id);
+            }}
+            onCreateSequence={() => onOpenCaptureEditor?.()}
+            onExportFrame={() => onExportCaptureFrame?.()}
+            canExportFrame={captureExportEnabled}
+            exportPending={captureExportPending}
+            isPlaybackActive={capturePlaybackActive}
+            isPlaybackPaused={capturePlaybackPaused}
+            onTogglePlayback={() => onToggleCapturePlayback?.()}
+            onStopPlayback={() => onStopCapturePlayback?.()}
+            stills={captureStills}
+            sequences={captureSequences}
+            onLoadStill={(stillId) => onLoadCaptureStill?.(stillId)}
+            onDownloadStill={(stillId) => onDownloadCaptureStill?.(stillId)}
+            onDeleteStill={(stillId) => onDeleteCaptureStill?.(stillId)}
+            onLoadSequence={(sequenceId) => onLoadCaptureSequence?.(sequenceId)}
+            onPlaySequence={(sequenceId) => onPlayCaptureSequence?.(sequenceId)}
+            onLoopSequence={(sequenceId) => onLoopCaptureSequence?.(sequenceId)}
+            onRenameSequence={(sequenceId, nextName) => onRenameCaptureSequence?.(sequenceId, nextName)}
+            onDeleteSequence={(sequenceId) => onDeleteCaptureSequence?.(sequenceId)}
+          />
+        ),
+        slice: () => (
+          <SliceToolButton
+            key={tool.id}
+            active={activeTool === "slice"}
+            onClick={() => onToolChange(tool.id)}
+            onHoverLockChange={onSliceHoverLockChange}
+            mode={sliceMode}
+            selectedLayerName={sliceSelectedLayerName}
+            targetPlane={sliceTargetPlane}
+            hoveredPlane={sliceHoveredPlane}
+            hasSelectedLayer={!!sliceSelectedLayerName}
+            canResetToCenter={sliceCanResetToCenter}
+            canAdjustView={!!sliceSelectedLayerName && (sliceMode === "free" || !!sliceTargetPlane)}
+            rotationDeg={sliceRotationDeg}
+            scale={sliceScale}
+            flipX={sliceFlipX}
+            flipY={sliceFlipY}
+            flipZ={sliceFlipZ}
+            visibilityXY={sliceVisibilityXY}
+            visibilityXZ={sliceVisibilityXZ}
+            visibilityYZ={sliceVisibilityYZ}
+            canCreateFreeSlice={sliceCanCreateFreeSlice}
+            freeSliceOffset={sliceFreeSliceOffset}
+            onToggleVisibility={onSliceToggleVisibility}
+            onResetSliceView={onSliceResetView ?? (() => {})}
+            onToggleFlip={onSliceToggleFlip ?? (() => {})}
+            onResetToCenter={onSliceResetToCenter ?? (() => {})}
+            onRotate={onSliceRotate ?? (() => {})}
+            onScale={onSliceScale ?? (() => {})}
+            onCreateFreeSlice={onSliceCreateFreeSlice ?? (() => {})}
+            onNudgeFreeOffset={onSliceNudgeFreeOffset ?? (() => {})}
+            onTiltFreeSlice={onSliceTiltFreeSlice ?? (() => {})}
+            onSnapFreeSlice={onSliceSnapFreeSlice ?? (() => {})}
+          />
+        ),
+        pipeline: () => (
+          <PipelineToolButton
+            key={tool.id}
+            active={activeTool === "pipeline"}
+            pipelines={pipelines}
+            onClick={() => onToolChange(tool.id)}
+            onOpenPipeline={(pipelineId) => {
+              onOpenPipeline?.(pipelineId);
+              onToolChange("pipeline");
+            }}
+            onTogglePipeline={onTogglePipeline ?? (() => {})}
+          />
+        ),
+        assistant: () => (
+          <AssistantToolButton
+            key={tool.id}
+            active={assistantOpen}
+            onClick={() => onToggleAssistant?.()}
+            onSubmit={onQuickAssistantSubmit ?? (() => {})}
+          />
+        ),
+        resources: () => (
+          <ResourceToolButton
+            key={tool.id}
+            active={resourceManagerOpen}
+            summary={resourceSummary ?? null}
+            samples={resourceSamples ?? []}
+            onClick={() => onToggleResourceManager?.()}
+          />
+        ),
+      };
+
+      entries.push({
+        toolId: tool.id,
+        kind: tool.kind,
+        removable: tool.toolbar.removable,
+        node: renderers[rendererVariant](),
+      });
+    });
+
+    return entries;
+  }, [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen, pipelines, onOpenPipeline, onTogglePipeline, assistantOpen, onToggleAssistant, onQuickAssistantSubmit, resourceManagerOpen, resourceSummary, resourceSamples, onToggleResourceManager, windows, onFocusWindow, onRestoreWindow, onCloseWindow, onCreateNoteAnnotation, toolbarToolIds]);
+  const activeDraggedToolbarEntry = useMemo(
+    () => toolbarButtonEntries.find((entry) => entry.toolId === draggedToolId) ?? null,
+    [toolbarButtonEntries, draggedToolId]
   );
+
+  const visibleToolbarToolIdSet = useMemo(
+    () => new Set(toolbarToolIds),
+    [toolbarToolIds]
+  );
+
+  const filteredExplorerTools = useMemo(() => {
+    const query = toolExplorerQuery.trim().toLowerCase();
+    if (!query) return TOOLBAR_TOOL_MANIFESTS;
+
+    return TOOLBAR_TOOL_MANIFESTS.filter((tool) => {
+      const searchable = [
+        tool.label,
+        tool.description,
+        tool.developerName,
+        formatToolKindLabel(tool.kind),
+        formatToolSourceLabel(tool.source),
+        formatToolStatusLabel(tool.status),
+        ...tool.keywords,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return searchable.includes(query);
+    });
+  }, [toolExplorerQuery]);
+
+  const selectedExplorerTool = useMemo(
+    () => (selectedExplorerToolId ? getToolbarToolManifest(selectedExplorerToolId) : null),
+    [selectedExplorerToolId]
+  );
+  const selectedExplorerToolDocumentation = useMemo(
+    () => (selectedExplorerToolId ? getToolbarToolDocumentation(selectedExplorerToolId) : null),
+    [selectedExplorerToolId]
+  );
+  const toolbarVisible =
+    toolbarPinnedOpen ||
+    toolbarRevealActive ||
+    toolbarHovered ||
+    toolExplorerOpen ||
+    draggedToolId !== null ||
+    saveNoticeOpen ||
+    statePopoverOpen;
+  const toolbarHandleActive = toolbarVisible || toolbarRevealActive;
+  const toolbarSensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: {
+        distance: 4,
+      },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 100,
+        tolerance: 8,
+      },
+    })
+  );
+
+  function handleToolbarDragStart(event: DragStartEvent) {
+    const toolId = String(event.active.id) as ToolbarToolId;
+    setDraggedToolId(toolId);
+    setDropTargetToolId(toolId);
+  }
+
+  function handleToolbarDragOver(event: DragOverEvent) {
+    const overId = event.over?.id ? String(event.over.id) : null;
+    if (!overId || overId === TOOLBAR_TRASH_DROP_ID) {
+      setDropTargetToolId(null);
+      return;
+    }
+    setDropTargetToolId(overId as ToolbarToolId);
+  }
+
+  function handleToolbarDragEnd(event: DragEndEvent) {
+    const activeId = String(event.active.id) as ToolbarToolId;
+    const overId = event.over?.id ? String(event.over.id) : null;
+    const activeTool = getToolbarToolManifest(activeId);
+
+    if (overId === TOOLBAR_TRASH_DROP_ID) {
+      if (activeTool.toolbar.removable) {
+        onToolbarHide?.(activeId);
+      }
+    } else if (overId && overId !== activeId) {
+      onToolbarMove?.(activeId, overId as ToolbarToolId);
+    }
+
+    setDraggedToolId(null);
+    setDropTargetToolId(null);
+  }
 
   return (
     <>
@@ -4071,8 +4567,27 @@ export default function BottomToolbar({
 	        .history-menu-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); border-radius: 999px; }
 	        .history-menu-scroll::-webkit-scrollbar-thumb { background: linear-gradient(180deg, rgba(140,190,255,0.52), rgba(90,150,230,0.34)); border-radius: 999px; border: 2px solid rgba(12,14,18,0.82); }
 	        .history-menu-scroll::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, rgba(160,210,255,0.68), rgba(110,170,245,0.48)); }
+          @keyframes toolbar-edit-wiggle {
+            0% { transform: rotate(-1.7deg); }
+            50% { transform: rotate(1.7deg); }
+            100% { transform: rotate(-1.7deg); }
+          }
 	      `}</style>
-      <div ref={rootRef} style={{ position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)", zIndex: 50 }}>
+      <div
+        ref={rootRef}
+        onPointerEnter={() => setToolbarHovered(true)}
+        onPointerLeave={() => setToolbarHovered(false)}
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: 10,
+          transform: "translateX(-50%)",
+          zIndex: 50,
+          display: "grid",
+          justifyItems: "center",
+          gap: 10,
+        }}
+      >
         <div style={{ position: "absolute", left: "50%", bottom: "calc(100% + 12px)", transform: statePopoverOpen ? "translate(-50%, 0)" : "translate(-50%, 10px)", opacity: statePopoverOpen ? 1 : 0, pointerEvents: statePopoverOpen ? "auto" : "none", transition: "opacity 180ms ease, transform 220ms ease, visibility 180ms ease", visibility: statePopoverOpen ? "visible" : "hidden" }}>
           <div data-theme-surface="panel" style={{ minWidth: 520, maxWidth: 760, borderRadius: 18, background: "rgba(12,14,18,0.94)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 16px 40px rgba(0,0,0,0.40)", backdropFilter: "blur(14px)", padding: 12, color: "white" }}>
             {shareBlockedLayerNames.length > 0 ? (
@@ -4132,35 +4647,500 @@ export default function BottomToolbar({
             {statePopoverContent}
           </div>
         </div>
+        {toolExplorerOpen && typeof document !== "undefined"
+          ? createPortal(
+              <div
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  zIndex: 1200,
+                  background: "rgba(4,6,10,0.58)",
+                  backdropFilter: "blur(12px)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 20,
+                }}
+                onClick={() => setToolExplorerOpen(false)}
+              >
+                <div
+                  ref={toolExplorerPanelRef}
+                  data-theme-surface="panel"
+                  onClick={(event) => event.stopPropagation()}
+                  style={{
+                    width: "min(1180px, calc(100vw - 32px))",
+                    height: "min(720px, calc(100vh - 40px))",
+                    minHeight: 520,
+                    borderRadius: 26,
+                    background: "rgba(12,14,18,0.96)",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    boxShadow: "0 28px 90px rgba(0,0,0,0.48)",
+                    backdropFilter: "blur(18px)",
+                    color: "white",
+                    overflow: "hidden",
+                  }}
+                >
+            <div style={{ display: "flex", width: "200%", height: "100%", transform: selectedExplorerTool ? "translateX(-50%)" : "translateX(0)", transition: "transform 220ms ease" }}>
+              <div style={{ width: "50%", height: "100%", padding: 18, boxSizing: "border-box", display: "grid", gap: 14, gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 900, letterSpacing: 0.2 }}>Tool explorer</div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+                      Browse built-in tools and extensions, then add the ones you want in your toolbar.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setToolExplorerOpen(false)}
+                    aria-label="Close tool explorer"
+                    title="Close"
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.10)",
+                      background: "rgba(255,255,255,0.04)",
+                      color: "rgba(255,255,255,0.78)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <CloseSmallIcon />
+                  </button>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    minHeight: 40,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(255,255,255,0.04)",
+                    padding: "0 12px",
+                  }}
+                >
+                  <SearchSmallIcon />
+                  <input
+                    value={toolExplorerQuery}
+                    onChange={(event) => setToolExplorerQuery(event.target.value)}
+                    placeholder="Search tools, developers, tags..."
+                    style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "white", fontSize: 13, fontFamily: UI_FONT_FAMILY }}
+                  />
+                </div>
+                <div className="history-menu-scroll" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, overflowY: "auto", paddingRight: 6, alignContent: "start" }}>
+                  {filteredExplorerTools.map((tool) => {
+                    const isVisible = visibleToolbarToolIdSet.has(tool.id);
+                    const canAdd = !isVisible;
+                    return (
+                      <div
+                        key={tool.id}
+                        onClick={() => setSelectedExplorerToolId(tool.id)}
+                        style={{
+                          position: "relative",
+                          borderRadius: 16,
+                          border: "1px solid rgba(255,255,255,0.10)",
+                          background: isVisible ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.05)",
+                          padding: 14,
+                          display: "grid",
+                          gap: 10,
+                          cursor: "pointer",
+                          opacity: isVisible ? 0.62 : 1,
+                        }}
+                      >
+                        <div style={{ display: "grid", gridTemplateColumns: "44px minmax(0, 1fr) 26px", alignItems: "center", gap: 10 }}>
+                          <div style={{ width: 44, height: 44, borderRadius: 13, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.9)" }}>
+                            <Icon id={tool.id} />
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+                              {tool.label}
+                            </div>
+                            <div style={{ marginTop: 3, fontSize: 11, color: "rgba(255,255,255,0.60)" }}>
+                              {tool.developerName}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (canAdd) {
+                                onToolbarShow?.(tool.id);
+                              }
+                            }}
+                            disabled={!canAdd}
+                            title={canAdd ? `Add ${tool.label}` : `${tool.label} is already in the toolbar`}
+                            aria-label={canAdd ? `Add ${tool.label}` : `${tool.label} is already in the toolbar`}
+                            style={{
+                              width: 26,
+                              height: 26,
+                              borderRadius: 999,
+                              border: canAdd ? "1px solid rgba(120,190,255,0.30)" : "1px solid rgba(255,255,255,0.10)",
+                              background: canAdd ? "rgba(120,190,255,0.14)" : "rgba(255,255,255,0.04)",
+                              color: canAdd ? "rgba(230,244,255,0.98)" : "rgba(255,255,255,0.42)",
+                              padding: 0,
+                              cursor: canAdd ? "pointer" : "default",
+                              fontSize: 16,
+                              fontWeight: 700,
+                              lineHeight: 1,
+                              fontFamily: UI_FONT_FAMILY,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
+                            +
+                          </button>
+                        </div>
+                        <div style={{ fontSize: 11, lineHeight: 1.45, color: "rgba(255,255,255,0.74)", minHeight: 62 }}>
+                          {tool.description}
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          <ToolTag label={formatToolSourceLabel(tool.source)} />
+                          <ToolTag label={formatToolKindLabel(tool.kind)} tone={tool.kind === "extension" ? "accent" : "default"} />
+                          <ToolTag label={formatToolStatusLabel(tool.status)} tone={tool.status === "beta" ? "beta" : "default"} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {filteredExplorerTools.length === 0 ? (
+                    <div
+                      style={{
+                        gridColumn: "1 / -1",
+                        minHeight: 140,
+                        borderRadius: 14,
+                        border: "1px dashed rgba(255,255,255,0.14)",
+                        background: "rgba(255,255,255,0.03)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        textAlign: "center",
+                        padding: 24,
+                        fontSize: 12,
+                        color: "rgba(255,255,255,0.60)",
+                      }}
+                    >
+                      No tools match this search.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
 
+              <div style={{ width: "50%", height: "100%", padding: 18, boxSizing: "border-box", borderLeft: "1px solid rgba(255,255,255,0.08)", display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+                {selectedExplorerTool ? (
+                  <>
+                    <div style={{ display: "grid", gap: 16, flex: "0 0 auto" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExplorerToolId(null)}
+                        style={{
+                          height: 32,
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.10)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "white",
+                          padding: "0 10px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8,
+                          cursor: "pointer",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          fontFamily: UI_FONT_FAMILY,
+                        }}
+                      >
+                        <BackSmallIcon />
+                        Back
+                      </button>
+                      {visibleToolbarToolIdSet.has(selectedExplorerTool.id) ? (
+                        selectedExplorerTool.toolbar.removable ? (
+                          <button
+                            type="button"
+                            onClick={() => onToolbarHide?.(selectedExplorerTool.id)}
+                            style={{
+                              height: 32,
+                              borderRadius: 10,
+                              border: "1px solid rgba(255,140,140,0.22)",
+                              background: "rgba(180,68,68,0.14)",
+                              color: "rgba(255,220,220,0.96)",
+                              padding: "0 12px",
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: 800,
+                              fontFamily: UI_FONT_FAMILY,
+                            }}
+                          >
+                            Remove from toolbar
+                          </button>
+                        ) : (
+                          <ToolTag label="Always available" tone="accent" />
+                        )
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onToolbarShow?.(selectedExplorerTool.id)}
+                          style={{
+                            height: 32,
+                            borderRadius: 10,
+                            border: "1px solid rgba(120,190,255,0.30)",
+                            background: "rgba(120,190,255,0.16)",
+                            color: "rgba(230,244,255,0.98)",
+                            padding: "0 12px",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: 800,
+                            fontFamily: UI_FONT_FAMILY,
+                          }}
+                        >
+                          Add to toolbar
+                        </button>
+                      )}
+                    </div>
 
+                    <div style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) auto", alignItems: "center", gap: 12 }}>
+                      <div style={{ width: 60, height: 60, borderRadius: 18, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.9)" }}>
+                        <Icon id={selectedExplorerTool.id} />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 18, fontWeight: 900 }}>{selectedExplorerTool.label}</div>
+                        <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.64)" }}>
+                          by {selectedExplorerTool.developerName}
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(88px, 1fr))", gap: 8 }}>
+                        <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", padding: "8px 10px", display: "grid", gap: 3 }}>
+                          <div style={{ fontSize: 10, fontWeight: 900, color: "rgba(255,255,255,0.54)" }}>Version</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(255,255,255,0.92)" }}>{selectedExplorerTool.version}</div>
+                        </div>
+                        <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)", padding: "8px 10px", display: "grid", gap: 3 }}>
+                          <div style={{ fontSize: 10, fontWeight: 900, color: "rgba(255,255,255,0.54)" }}>Published</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(255,255,255,0.92)" }}>{selectedExplorerTool.publishedAt}</div>
+                        </div>
+                      </div>
+                    </div>
 
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      <ToolTag label={formatToolSourceLabel(selectedExplorerTool.source)} />
+                      <ToolTag label={formatToolKindLabel(selectedExplorerTool.kind)} tone={selectedExplorerTool.kind === "extension" ? "accent" : "default"} />
+                      <ToolTag label={formatToolStatusLabel(selectedExplorerTool.status)} tone={selectedExplorerTool.status === "beta" ? "beta" : "default"} />
+                      {visibleToolbarToolIdSet.has(selectedExplorerTool.id) ? <ToolTag label="In toolbar" tone="accent" /> : null}
+                    </div>
 
-        <div data-theme-surface="panel" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 18, background: "rgba(12,14,18,0.78)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 10px 30px rgba(0,0,0,0.35)", backdropFilter: "blur(12px)" }}>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.86)" }}>Description</div>
+                      <div style={{ fontSize: 13, lineHeight: 1.6, color: "rgba(255,255,255,0.78)" }}>
+                        {selectedExplorerTool.description}
+                      </div>
+                    </div>
+                    </div>
+
+                    {selectedExplorerToolDocumentation ? (
+                      <div
+                        style={{
+                          flex: 1,
+                          minHeight: 0,
+                          borderRadius: 14,
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          background: "rgba(255,255,255,0.04)",
+                          overflow: "hidden",
+                          display: "flex",
+                          flexDirection: "column",
+                        }}
+                      >
+                        <div style={{ width: "100%", height: 1, background: "rgba(255,255,255,0.10)", flexShrink: 0 }} />
+                        <div
+                          className="history-menu-scroll"
+                          style={{
+                            minHeight: 0,
+                            overflowY: "auto",
+                            padding: 14,
+                            paddingRight: 8,
+                            display: "grid",
+                            gap: 12,
+                          }}
+                        >
+                          {selectedExplorerToolDocumentation.assets.map((asset) => (
+                            (() => {
+                              const assetSrc = asset.src ?? asset.suggestedPath;
+                              return (
+                            <div
+                              key={asset.id}
+                              style={{
+                                display: "grid",
+                                gap: 10,
+                              }}
+                            >
+                              {assetSrc ? (
+                                <div style={{ display: "grid", gap: 8, justifyItems: "center" }}>
+                                  <img
+                                    src={assetSrc}
+                                    alt={asset.alt}
+                                    style={{
+                                      width: "min(100%, 560px)",
+                                      maxHeight: 512,
+                                      borderRadius: 12,
+                                      border: "1px solid rgba(255,255,255,0.08)",
+                                      background: "rgba(0,0,0,0.18)",
+                                      objectFit: "contain",
+                                      justifySelf: "center",
+                                    }}
+                                  />
+                                  <div
+                                    style={{
+                                      width: "min(100%, 560px)",
+                                      fontSize: 12,
+                                      lineHeight: 1.45,
+                                      color: "rgba(255,255,255,0.66)",
+                                      textAlign: "center",
+                                    }}
+                                  >
+                                    {asset.title}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div
+                                  style={{
+                                    minHeight: 132,
+                                    borderRadius: 12,
+                                    border: "1px dashed rgba(255,255,255,0.16)",
+                                    background:
+                                      "linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02))",
+                                    display: "grid",
+                                    placeItems: "center",
+                                    textAlign: "center",
+                                    padding: 18,
+                                    color: "rgba(255,255,255,0.56)",
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  GIF placeholder
+                                </div>
+                              )}
+                            </div>
+                              );
+                            })()
+                          ))}
+                          <MetadataRichContent value={selectedExplorerToolDocumentation.content} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div style={{ minHeight: 300, display: "grid", placeItems: "center", textAlign: "center", color: "rgba(255,255,255,0.58)", padding: 24 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 900, color: "rgba(255,255,255,0.82)" }}>Tool details</div>
+                      <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5 }}>
+                        Select a tool from the explorer to inspect its details, tags, version, and toolbar availability.
+                      </div>
+                    </div>
+                  </div>
+                )}
+                  </div>
+                </div>
+              </div>
+            </div>,
+              document.body
+            )
+          : null}
+
+        <div
+          data-theme-surface="panel"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 12px",
+            borderRadius: 18,
+            background: "rgba(12,14,18,0.78)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+            backdropFilter: "blur(12px)",
+            transform: toolbarVisible ? "translateY(0)" : `translateY(${TOOLBAR_HIDDEN_OFFSET_PX}px)`,
+            opacity: toolbarVisible ? 1 : 0,
+            pointerEvents: toolbarVisible ? "auto" : "none",
+            transition: "transform 220ms ease, opacity 180ms ease",
+          }}
+        >
           <HistoryButton direction="undo" disabled={!canUndo} onClick={() => onUndo?.()} items={undoItems} onJump={onJumpUndo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
 	          <HistoryButton direction="redo" disabled={!canRedo} onClick={() => onRedo?.()} items={redoItems} onJump={onJumpRedo} canClearHistory={canClearHistory} onRequestClearHistory={onRequestClearHistory} />
 	          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
-		          {toolbarButtons}
-            <AssistantToolButton
-              active={assistantOpen}
-              onClick={() => onToggleAssistant?.()}
-              onSubmit={onQuickAssistantSubmit ?? (() => {})}
-            />
-            <ResourceToolButton
-              active={resourceManagerOpen}
-              summary={resourceSummary ?? null}
-              samples={resourceSamples ?? []}
-              onClick={() => onToolChange("resources")}
-            />
-		          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
-	          <WindowManagerToolButton
-	            windows={windows}
-	            onFocusWindow={onFocusWindow ?? (() => {})}
-	            onRestoreWindow={onRestoreWindow ?? (() => {})}
-	            onCloseWindow={onCloseWindow ?? (() => {})}
-	            onCreateNoteAnnotation={onCreateNoteAnnotation ?? (() => {})}
-	          />
+              <DndContext
+                sensors={toolbarSensors}
+                collisionDetection={closestCenter}
+                onDragStart={handleToolbarDragStart}
+                onDragOver={handleToolbarDragOver}
+                onDragEnd={handleToolbarDragEnd}
+                onDragCancel={() => {
+                  setDraggedToolId(null);
+                  setDropTargetToolId(null);
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <SortableContext items={toolbarButtonEntries.map((entry) => entry.toolId)} strategy={horizontalListSortingStrategy}>
+                    {toolbarButtonEntries.map((entry) => (
+                      <SortableToolbarItem
+                        key={entry.toolId}
+                        entry={entry}
+                        isDropTarget={dropTargetToolId === entry.toolId && draggedToolId !== entry.toolId}
+                      >
+                        {entry.node}
+                      </SortableToolbarItem>
+                    ))}
+                  </SortableContext>
+                  <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.10)", margin: "0 2px" }} />
+                  {activeDraggedToolbarEntry ? (
+                    <ToolbarTrashDropTarget activeTool={activeDraggedToolbarEntry} />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setToolExplorerOpen((current) => !current)}
+                      title="Open tool explorer"
+                      aria-label="Open tool explorer"
+                      style={{
+                        height: 36,
+                        minWidth: 36,
+                        borderRadius: 12,
+                        border: toolExplorerOpen ? "1px solid rgba(120,190,255,0.72)" : "1px solid rgba(255,255,255,0.10)",
+                        background: toolExplorerOpen ? "rgba(120,190,255,0.18)" : "rgba(255,255,255,0.04)",
+                        color: toolExplorerOpen ? "#d7eeff" : "rgba(255,255,255,0.82)",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer",
+                        transition: "all 160ms ease",
+                      }}
+                    >
+                      <ToolExplorerIcon />
+                    </button>
+                  )}
+                </div>
+              </DndContext>
 	        </div>
+        <button
+          type="button"
+          onClick={() => setToolbarPinnedOpen((current) => !current)}
+          aria-label={toolbarPinnedOpen ? "Enable toolbar auto-hide" : "Pin toolbar open"}
+          title={toolbarPinnedOpen ? "Enable toolbar auto-hide" : "Pin toolbar open"}
+          style={{
+            width: toolbarHandleActive ? 96 : 72,
+            height: 12,
+            borderRadius: 999,
+            border: toolbarPinnedOpen
+              ? "1px solid rgba(255,255,255,0.16)"
+              : "1px solid rgba(120,190,255,0.34)",
+            background: toolbarPinnedOpen
+              ? "rgba(255,255,255,0.10)"
+              : "rgba(120,190,255,0.18)",
+            boxShadow: toolbarHandleActive
+              ? "0 10px 24px rgba(0,0,0,0.28)"
+              : "0 6px 14px rgba(0,0,0,0.18)",
+            opacity: toolbarHandleActive ? 0.96 : 0.42,
+            cursor: "pointer",
+            transition:
+              "width 180ms ease, opacity 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease",
+          }}
+        />
       </div>
     </>
   );

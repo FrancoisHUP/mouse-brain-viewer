@@ -13,8 +13,21 @@ import BottomToolbar, {
   type CaptureSequenceMenuItem,
   type HistoryMenuItem,
   type PipelineMenuItem,
-  type ToolId,
 } from "./BottomToolbar";
+import type { ToolExtensionContext } from "./tools/extensionApi";
+import { getToolExtensionDefinition, getUtilityToolExtensionDefinition } from "./tools/registry";
+import {
+  getHiddenToolbarToolIds,
+  getVisibleToolbarToolIds,
+  hideToolbarTool,
+  loadToolbarLayout,
+  moveToolbarTool,
+  resetToolbarLayout,
+  saveToolbarLayout,
+  showToolbarTool,
+  type ToolbarLayout,
+} from "./toolbarLayoutStore";
+import type { ToolId, ToolbarToolId } from "./tools/types";
 import LayerPanel from "./LayerPanel";
 import ImportDataPanel from "./ImportDataPanel";
 import LocalDatasetManagerPanel from "./LocalDatasetManagerPanel";
@@ -1218,6 +1231,31 @@ function resolveOwnedSavedViewerId(entryId: string | null, entries: SavedViewerE
   return entry?.ownerKind === "owned" ? entry.id : null;
 }
 
+function buildUniqueSavedViewerName(
+  requestedName: string,
+  entries: SavedViewerEntry[],
+  excludedEntryId?: string
+) {
+  const trimmed = requestedName.trim();
+  if (!trimmed) return trimmed;
+
+  const usedNames = new Set(
+    entries
+      .filter((entry) => entry.id !== excludedEntryId)
+      .map((entry) => entry.name.trim())
+  );
+
+  if (!usedNames.has(trimmed)) return trimmed;
+
+  let suffix = 1;
+  let candidate = `${trimmed} (${suffix})`;
+  while (usedNames.has(candidate)) {
+    suffix += 1;
+    candidate = `${trimmed} (${suffix})`;
+  }
+  return candidate;
+}
+
 function buildLibrarySavePlaceholder(entries: SavedViewerEntry[]) {
   const nextIndex = entries.filter((entry) => entry.ownerKind === "owned").length + 1;
   return `Viewer ${nextIndex}`;
@@ -1431,6 +1469,10 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
     loadAppPreferences()
   );
+  const [toolbarLayout, setToolbarLayout] = useState<ToolbarLayout>(() =>
+    loadToolbarLayout()
+  );
+  const [isToolbarEditMode, setIsToolbarEditMode] = useState(false);
   const [profileDataRevision, setProfileDataRevision] = useState(0);
   const [hasPersistedViewerState, setHasPersistedViewerState] = useState(false);
   const [shortcutBindings, setShortcutBindings] = useState<ShortcutBindingMap>(() => loadShortcutBindings());
@@ -1462,6 +1504,103 @@ export default function App({ startupSlices = [] }: AppProps) {
   const nextFloatingWindowZRef = useRef(1);
   const captureTimelineFrameRef = useRef<number | null>(null);
   const captureTimelineTokenRef = useRef(0);
+  const visibleToolbarToolIds = useMemo<ToolbarToolId[]>(
+    () => getVisibleToolbarToolIds(toolbarLayout),
+    [toolbarLayout]
+  );
+  const hiddenToolbarToolIds = useMemo<ToolbarToolId[]>(
+    () => getHiddenToolbarToolIds(toolbarLayout),
+    [toolbarLayout]
+  );
+
+  const extensionContext = useMemo<ToolExtensionContext>(
+    () => ({
+      viewer: {
+        activeTool,
+        selectedNodeId,
+      },
+      toolbar: {
+        visibleToolIds: visibleToolbarToolIds,
+        hiddenToolIds: hiddenToolbarToolIds,
+        editMode: isToolbarEditMode,
+      },
+      commands: {
+        activateToolbarTool: (toolId) => applyToolbarToolChange(toolId),
+        setAnnotationShape: (shape) => setAnnotationDraftShape(shape as AnnotationShape),
+        setAnnotationColor: (color) => handleAnnotationDraftColorChange(color),
+        commitAnnotationColor: (color) => handleAnnotationDraftColorCommit(color),
+        setAnnotationOpacity: (opacity) => handleAnnotationDraftOpacityChange(opacity),
+        setAnnotationSize: (size) => handleAnnotationDraftSizeChange(size),
+        setAnnotationDepth: (depth) => handleAnnotationDraftDepthChange(depth),
+        setAnnotationEraseMode: (mode) => {
+          setAnnotationDraft((prev) => ({ ...prev, eraseMode: mode }));
+          setActiveTool("pencil");
+        },
+        pickAnnotationColorFromScreen: () => handlePickAnnotationColorFromScreen(),
+        openCaptureEditor: () => handleCreateCaptureSequence({ openPanel: true }),
+        exportCaptureFrame: () => handleRequestCaptureImage(),
+        toggleCapturePlayback: () => handleToggleCaptureTimelinePlayback(),
+        stopCapturePlayback: () => stopCaptureTimelinePlayback(),
+        loadCaptureStill: (stillId) => handleApplyCaptureStill(stillId),
+        downloadCaptureStill: (stillId) => handleDownloadCaptureStill(stillId),
+        deleteCaptureStill: (stillId) => handleDeleteCaptureStill(stillId),
+        loadCaptureSequence: (sequenceId) =>
+          handleLoadCaptureSequence(sequenceId, { openPanel: true }),
+        playCaptureSequence: (sequenceId, mode) =>
+          handlePlayCaptureSequenceFromLibrary(sequenceId, mode),
+        renameCaptureSequence: (sequenceId, nextName) =>
+          handleRenameCaptureSequence(sequenceId, nextName),
+        deleteCaptureSequence: (sequenceId) =>
+          handleDeleteCaptureSequence(sequenceId),
+        openAutomationPipelineWorkspace: (pipelineId) => {
+          if (pipelineId) {
+            setActiveAutomationPipelineId(pipelineId);
+          }
+          applyToolbarToolChange("pipeline");
+        },
+        setAutomationPipelineEnabled: (pipelineId, enabled) => {
+          setAutomationPipelines((prev) =>
+            prev.map((pipeline) =>
+              pipeline.id === pipelineId
+                ? { ...pipeline, active: enabled, autoRun: enabled, updatedAt: Date.now() }
+                : pipeline
+            )
+          );
+        },
+        toggleAssistantWorkspace: () => {
+          applyToolbarToolChange("assistant");
+        },
+        submitAssistantQuickPrompt: (prompt) => {
+          setActiveTool((current) => current === "assistant" ? "mouse" : current);
+          setAppAssistantQuickPrompt({ id: `quick-${Date.now()}`, prompt });
+        },
+        toggleResourceManagerWorkspace: () => {
+          applyToolbarToolChange("resources");
+        },
+        showToolbarTool: (toolId) => handleToolbarShow(toolId),
+        hideToolbarTool: (toolId) => handleToolbarHide(toolId),
+        setToolbarEditMode: (editing) => setIsToolbarEditMode(editing),
+      },
+    }),
+    [activeTool, selectedNodeId, visibleToolbarToolIds, hiddenToolbarToolIds, isToolbarEditMode]
+  );
+
+  useEffect(() => {
+    saveToolbarLayout(toolbarLayout);
+  }, [toolbarLayout]);
+
+  function handleToolbarMove(draggedToolId: ToolbarToolId, targetToolId: ToolbarToolId) {
+    setToolbarLayout((current) => moveToolbarTool(current, draggedToolId, targetToolId));
+  }
+
+  function handleToolbarHide(toolId: ToolbarToolId) {
+    setToolbarLayout((current) => hideToolbarTool(current, toolId));
+    setActiveTool((current) => (current === toolId ? "mouse" : current));
+  }
+
+  function handleToolbarShow(toolId: ToolbarToolId) {
+    setToolbarLayout((current) => showToolbarTool(current, toolId));
+  }
   const isCaptureTimelinePlayingRef = useRef(false);
   const captureTimelinePlaybackModeRef = useRef<CaptureTimelinePlaybackMode>("once");
   const captureTimelineViewportRef = useRef<HTMLDivElement | null>(null);
@@ -5280,19 +5419,21 @@ export default function App({ startupSlices = [] }: AppProps) {
     const trimmed = nextName.trim();
     if (!trimmed) return;
 
-    setViewerLibrary((prev) =>
-      prev.map((entry) =>
+    let resolvedName = trimmed;
+    setViewerLibrary((prev) => {
+      resolvedName = buildUniqueSavedViewerName(trimmed, prev, entryId);
+      return prev.map((entry) =>
         entry.id === entryId
-          ? { ...entry, name: trimmed }
+          ? { ...entry, name: resolvedName }
           : entry
-      )
-    );
+      );
+    });
     setLibraryError(null);
     setLibraryMessage(null);
     enqueueToast({
       tone: "info",
       title: "Viewer renamed",
-      message: `This saved viewer is now called "${trimmed}".`,
+      message: `This saved viewer is now called "${resolvedName}".`,
     });
   }
 
@@ -5303,7 +5444,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     setActiveTool((current) => (current === "resources" ? "mouse" : current));
   }
 
-  function handleToolChange(tool: ToolId) {
+  function applyToolbarToolChange(tool: ToolId) {
     if (tool === "resources") {
       setIsResourceManagerOpen((current) => {
         const next = !current;
@@ -5346,6 +5487,219 @@ export default function App({ startupSlices = [] }: AppProps) {
         setSliceVolumeLayerId(preferredLayer.id);
       }
     }
+  }
+
+  function handleToolChange(tool: ToolId) {
+    const extensionDefinition = getToolExtensionDefinition(tool as ToolbarToolId);
+    if (extensionDefinition?.onToolbarSelect) {
+      const handled = extensionDefinition.onToolbarSelect(extensionContext, {
+        source: "toolbar",
+      });
+      if (handled) return;
+    }
+    applyToolbarToolChange(tool);
+  }
+
+  function handleOpenPipelineFromExtension(pipelineId: string) {
+    const extensionDefinition = getToolExtensionDefinition("pipeline");
+    if (extensionDefinition?.onPipelineMenuSelect) {
+      const handled = extensionDefinition.onPipelineMenuSelect(extensionContext, {
+        pipelineId,
+      });
+      if (handled) return;
+    }
+    setActiveAutomationPipelineId(pipelineId);
+  }
+
+  function handleTogglePipelineFromExtension(pipelineId: string, enabled: boolean) {
+    const extensionDefinition = getToolExtensionDefinition("pipeline");
+    if (extensionDefinition?.onPipelineToggleSelect) {
+      const handled = extensionDefinition.onPipelineToggleSelect(extensionContext, {
+        pipelineId,
+        enabled,
+      });
+      if (handled) return;
+    }
+    setAutomationPipelines((prev) =>
+      prev.map((pipeline) =>
+        pipeline.id === pipelineId
+          ? { ...pipeline, active: enabled, autoRun: enabled, updatedAt: Date.now() }
+          : pipeline
+      )
+    );
+  }
+
+  function handleCapturePrimaryActionFromExtension(
+    action: "open-editor" | "export-frame" | "toggle-playback" | "stop-playback"
+  ) {
+    const extensionDefinition = getToolExtensionDefinition("capture");
+    if (extensionDefinition?.onCapturePrimarySelect) {
+      const handled = extensionDefinition.onCapturePrimarySelect(extensionContext, {
+        action,
+      });
+      if (handled) return;
+    }
+
+    if (action === "open-editor") {
+      handleToolChange("capture");
+      return;
+    }
+    if (action === "export-frame") {
+      handleRequestCaptureImage();
+      return;
+    }
+    if (action === "toggle-playback") {
+      handleToggleCaptureTimelinePlayback();
+      return;
+    }
+    stopCaptureTimelinePlayback();
+  }
+
+  function handleCaptureStillActionFromExtension(
+    action: "load" | "download" | "delete",
+    stillId: string
+  ) {
+    const extensionDefinition = getToolExtensionDefinition("capture");
+    if (extensionDefinition?.onCaptureStillSelect) {
+      const handled = extensionDefinition.onCaptureStillSelect(extensionContext, {
+        action,
+        stillId,
+      });
+      if (handled) return;
+    }
+
+    if (action === "load") {
+      handleApplyCaptureStill(stillId);
+      return;
+    }
+    if (action === "download") {
+      handleDownloadCaptureStill(stillId);
+      return;
+    }
+    handleDeleteCaptureStill(stillId);
+  }
+
+  function handleCaptureSequenceActionFromExtension(
+    action: "load" | "play-once" | "play-loop" | "rename" | "delete",
+    sequenceId: string,
+    nextName?: string
+  ) {
+    const extensionDefinition = getToolExtensionDefinition("capture");
+    if (extensionDefinition?.onCaptureSequenceSelect) {
+      const handled = extensionDefinition.onCaptureSequenceSelect(extensionContext, {
+        action,
+        sequenceId,
+        nextName,
+      });
+      if (handled) return;
+    }
+
+    if (action === "load") {
+      handleLoadCaptureSequence(sequenceId, { openPanel: true });
+      return;
+    }
+    if (action === "play-once") {
+      handlePlayCaptureSequenceFromLibrary(sequenceId, "once");
+      return;
+    }
+    if (action === "play-loop") {
+      handlePlayCaptureSequenceFromLibrary(sequenceId, "loop");
+      return;
+    }
+    if (action === "rename" && nextName) {
+      handleRenameCaptureSequence(sequenceId, nextName);
+      return;
+    }
+    handleDeleteCaptureSequence(sequenceId);
+  }
+
+  function handleAnnotationSettingActionFromExtension(
+    action:
+      | "set-shape"
+      | "set-color"
+      | "commit-color"
+      | "set-opacity"
+      | "set-size"
+      | "set-depth"
+      | "set-erase-mode"
+      | "pick-color",
+    value?: string | number
+  ) {
+    const extensionDefinition = getToolExtensionDefinition("pencil");
+    if (extensionDefinition?.onAnnotationSettingSelect) {
+      const handled = extensionDefinition.onAnnotationSettingSelect(extensionContext, {
+        action,
+        value,
+      });
+      if (handled) return;
+    }
+
+    if (action === "set-shape" && typeof value === "string") {
+      setAnnotationDraftShape(value as AnnotationShape);
+      return;
+    }
+    if (action === "set-color" && typeof value === "string") {
+      handleAnnotationDraftColorChange(value);
+      return;
+    }
+    if (action === "commit-color" && typeof value === "string") {
+      handleAnnotationDraftColorCommit(value);
+      return;
+    }
+    if (action === "set-opacity" && typeof value === "number") {
+      handleAnnotationDraftOpacityChange(value);
+      return;
+    }
+    if (action === "set-size" && typeof value === "number") {
+      handleAnnotationDraftSizeChange(value);
+      return;
+    }
+    if (action === "set-depth" && typeof value === "number") {
+      handleAnnotationDraftDepthChange(value);
+      return;
+    }
+    if (action === "set-erase-mode" && (value === "all" || value === "color")) {
+      setAnnotationDraft((prev) => ({ ...prev, eraseMode: value }));
+      setActiveTool("pencil");
+      return;
+    }
+    if (action === "pick-color") {
+      void handlePickAnnotationColorFromScreen();
+    }
+  }
+
+  function handleAssistantToolbarSelectFromExtension() {
+    const extensionDefinition = getUtilityToolExtensionDefinition("assistant");
+    if (extensionDefinition?.onToolbarSelect) {
+      const handled = extensionDefinition.onToolbarSelect(extensionContext, {
+        source: "toolbar",
+      });
+      if (handled) return;
+    }
+    handleToolChange("assistant");
+  }
+
+  function handleAssistantQuickPromptFromExtension(prompt: string) {
+    const extensionDefinition = getUtilityToolExtensionDefinition("assistant");
+    if (extensionDefinition?.onAssistantQuickPromptSelect) {
+      const handled = extensionDefinition.onAssistantQuickPromptSelect(extensionContext, {
+        prompt,
+      });
+      if (handled) return;
+    }
+    setActiveTool((current) => current === "assistant" ? "mouse" : current);
+    setAppAssistantQuickPrompt({ id: `quick-${Date.now()}`, prompt });
+  }
+
+  function handleResourceManagerToolbarSelectFromExtension() {
+    const extensionDefinition = getUtilityToolExtensionDefinition("resources");
+    if (extensionDefinition?.onToolbarSelect) {
+      const handled = extensionDefinition.onToolbarSelect(extensionContext, {
+        source: "toolbar",
+      });
+      if (handled) return;
+    }
+    handleToolChange("resources");
   }
 
   function buildCaptureFileName() {
@@ -7455,6 +7809,7 @@ export default function App({ startupSlices = [] }: AppProps) {
           name: item.name.trim() || "Remote Data",
           type: "remote",
           visible: true,
+          opacity: item.id === "allen-brain-skeleton-mesh" ? 0.5 : undefined,
           source: trimmedUrl,
           sourceKind: item.builtIn ? "built-in" : "external",
           description:
@@ -7541,6 +7896,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     setCaptureTimelineZoom(DEFAULT_CAPTURE_TIMELINE_ZOOM);
     setViewerLibraryMode("browse");
     setAnnotationRecentColors([]);
+    setToolbarLayout(resetToolbarLayout());
+    setIsToolbarEditMode(false);
     pastStatesRef.current = [];
     futureStatesRef.current = [];
     lastCommittedStateRef.current = currentViewerState;
@@ -8549,6 +8906,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         errorMessage={libraryError}
         saveNamePlaceholder={viewerLibrarySavePlaceholder}
         onSaveNewViewer={handleSaveCurrentViewerToLibrary}
+        onOverwriteViewer={handleOverwriteSavedViewer}
         onOpenViewer={handleOpenSavedViewer}
         onDeleteViewers={handleDeleteSavedViewer}
         onRenameViewer={handleRenameSavedViewer}
@@ -8606,6 +8964,13 @@ export default function App({ startupSlices = [] }: AppProps) {
 
       <BottomToolbar
         activeTool={activeTool}
+        toolbarToolIds={visibleToolbarToolIds}
+        hiddenToolbarToolIds={hiddenToolbarToolIds}
+        toolbarEditMode={isToolbarEditMode}
+        onToolbarEditModeChange={setIsToolbarEditMode}
+        onToolbarMove={handleToolbarMove}
+        onToolbarHide={handleToolbarHide}
+        onToolbarShow={handleToolbarShow}
         onToolChange={handleToolChange}
         resourceManagerOpen={isResourceManagerOpen}
         cameraMode={cameraState.mode}
@@ -8616,20 +8981,20 @@ export default function App({ startupSlices = [] }: AppProps) {
         captureSequences={captureSequenceMenuItems}
         capturePlaybackActive={isCaptureTimelinePlaying}
         capturePlaybackPaused={isCaptureTimelinePaused}
-        onOpenCaptureEditor={() => handleCreateCaptureSequence({ openPanel: true })}
-        onExportCaptureFrame={handleRequestCaptureImage}
+        onOpenCaptureEditor={() => handleCapturePrimaryActionFromExtension("open-editor")}
+        onExportCaptureFrame={() => handleCapturePrimaryActionFromExtension("export-frame")}
         captureExportEnabled={visibleCaptureLayerIds.length > 0}
         captureExportPending={isCapturePending}
-        onToggleCapturePlayback={handleToggleCaptureTimelinePlayback}
-        onStopCapturePlayback={stopCaptureTimelinePlayback}
-        onLoadCaptureStill={handleApplyCaptureStill}
-        onDownloadCaptureStill={handleDownloadCaptureStill}
-        onDeleteCaptureStill={handleDeleteCaptureStill}
-        onLoadCaptureSequence={(sequenceId) => handleLoadCaptureSequence(sequenceId, { openPanel: true })}
-        onPlayCaptureSequence={(sequenceId) => handlePlayCaptureSequenceFromLibrary(sequenceId, "once")}
-        onLoopCaptureSequence={(sequenceId) => handlePlayCaptureSequenceFromLibrary(sequenceId, "loop")}
-        onRenameCaptureSequence={handleRenameCaptureSequence}
-        onDeleteCaptureSequence={handleDeleteCaptureSequence}
+        onToggleCapturePlayback={() => handleCapturePrimaryActionFromExtension("toggle-playback")}
+        onStopCapturePlayback={() => handleCapturePrimaryActionFromExtension("stop-playback")}
+        onLoadCaptureStill={(stillId) => handleCaptureStillActionFromExtension("load", stillId)}
+        onDownloadCaptureStill={(stillId) => handleCaptureStillActionFromExtension("download", stillId)}
+        onDeleteCaptureStill={(stillId) => handleCaptureStillActionFromExtension("delete", stillId)}
+        onLoadCaptureSequence={(sequenceId) => handleCaptureSequenceActionFromExtension("load", sequenceId)}
+        onPlayCaptureSequence={(sequenceId) => handleCaptureSequenceActionFromExtension("play-once", sequenceId)}
+        onLoopCaptureSequence={(sequenceId) => handleCaptureSequenceActionFromExtension("play-loop", sequenceId)}
+        onRenameCaptureSequence={(sequenceId, nextName) => handleCaptureSequenceActionFromExtension("rename", sequenceId, nextName)}
+        onDeleteCaptureSequence={(sequenceId) => handleCaptureSequenceActionFromExtension("delete", sequenceId)}
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={() => handleUndo()}
@@ -8650,14 +9015,14 @@ export default function App({ startupSlices = [] }: AppProps) {
         annotationDepth={annotationDraft.depth}
         annotationEraseMode={annotationDraft.eraseMode}
         annotationRecentColors={annotationRecentColors}
-        onAnnotationShapeChange={setAnnotationDraftShape}
-        onAnnotationColorChange={handleAnnotationDraftColorChange}
-        onAnnotationColorCommit={handleAnnotationDraftColorCommit}
-        onAnnotationOpacityChange={handleAnnotationDraftOpacityChange}
-        onAnnotationSizeChange={handleAnnotationDraftSizeChange}
-        onAnnotationDepthChange={handleAnnotationDraftDepthChange}
-        onAnnotationEraseModeChange={(mode) => setAnnotationDraft((prev) => ({ ...prev, eraseMode: mode }))}
-        onAnnotationPickColorFromScreen={handlePickAnnotationColorFromScreen}
+        onAnnotationShapeChange={(shape) => handleAnnotationSettingActionFromExtension("set-shape", shape)}
+        onAnnotationColorChange={(color) => handleAnnotationSettingActionFromExtension("set-color", color)}
+        onAnnotationColorCommit={(color) => handleAnnotationSettingActionFromExtension("commit-color", color)}
+        onAnnotationOpacityChange={(opacity) => handleAnnotationSettingActionFromExtension("set-opacity", opacity)}
+        onAnnotationSizeChange={(size) => handleAnnotationSettingActionFromExtension("set-size", size)}
+        onAnnotationDepthChange={(depth) => handleAnnotationSettingActionFromExtension("set-depth", depth)}
+        onAnnotationEraseModeChange={(mode) => handleAnnotationSettingActionFromExtension("set-erase-mode", mode)}
+        onAnnotationPickColorFromScreen={() => handleAnnotationSettingActionFromExtension("pick-color")}
         sliceMode={sliceToolMode}
         sliceSelectedLayerName={sliceToolSelectedLayerName}
         sliceTargetPlane={sliceToolTargetPlane}
@@ -8698,23 +9063,13 @@ export default function App({ startupSlices = [] }: AppProps) {
           onCreateNoteAnnotation={handleCreateNoteAnnotation}
           pipelines={pipelineMenuItems}
           assistantOpen={activeTool === "assistant"}
-          onToggleAssistant={() => handleToolChange("assistant")}
+          onToggleAssistant={handleAssistantToolbarSelectFromExtension}
+          onToggleResourceManager={handleResourceManagerToolbarSelectFromExtension}
           resourceSummary={resourceSummary}
           resourceSamples={resourceHistorySamples}
-          onQuickAssistantSubmit={(prompt) => {
-            setActiveTool((current) => current === "assistant" ? "mouse" : current);
-            setAppAssistantQuickPrompt({ id: `quick-${Date.now()}`, prompt });
-          }}
-          onOpenPipeline={(pipelineId) => setActiveAutomationPipelineId(pipelineId)}
-          onTogglePipeline={(pipelineId, isActive) =>
-            setAutomationPipelines((prev) =>
-              prev.map((pipeline) =>
-                pipeline.id === pipelineId
-                  ? { ...pipeline, active: isActive, autoRun: isActive, updatedAt: Date.now() }
-                  : pipeline
-              )
-            )
-          }
+          onQuickAssistantSubmit={handleAssistantQuickPromptFromExtension}
+          onOpenPipeline={handleOpenPipelineFromExtension}
+          onTogglePipeline={handleTogglePipelineFromExtension}
 	      />
 
       </div>

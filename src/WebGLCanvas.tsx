@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { mat4, vec3 } from "gl-matrix";
 import type { SerializableCameraState, CameraControlMode } from "./viewerState";
-import type { ToolId } from "./BottomToolbar";
+import type { ToolId } from "./tools/types";
 import type { AnnotationShape, LayerTreeNode, LayerItemNode, RemoteContentKind, RemoteOmeResolution, SliceLayerParams } from "./layerTypes";
 import {
   collectLayerIdsInSubtree,
@@ -308,6 +308,13 @@ function getMeshStyleLineWidth(layer: LayerItemNode): number {
   const value = layer.meshStyle?.lineWidth;
   if (!Number.isFinite(value)) return 1.6;
   return clamp(Number(value), 0.5, 6);
+}
+
+function getMeshSurfaceOpacity(layerOpacity: number, highlighted: boolean): number {
+  const normalizedOpacity = clamp(layerOpacity, 0, 1);
+  const baseAlpha = Math.pow(normalizedOpacity, 2.85);
+  const boostedAlpha = highlighted ? baseAlpha * 1.22 : baseAlpha;
+  return clamp(boostedAlpha, 0.02, 1);
 }
 
 function resolveRenderedCustomSliceOpacity(rawOpacity: number | undefined): number {
@@ -3760,6 +3767,20 @@ function drawColorCylinder(
       gl.disable(gl.BLEND);
     }
 
+    function drawMeshOverlaySurface(
+      mesh: LoadedMesh,
+      mvp: mat4,
+      color: [number, number, number, number]
+    ) {
+      const overlayColor: [number, number, number, number] = [
+        color[0],
+        color[1],
+        color[2],
+        clamp(color[3] * 0.24, 0.1, 0.32),
+      ];
+      drawMeshSurface(mesh, mvp, overlayColor);
+    }
+
     function drawMeshLines(mesh: LoadedMesh, mvp: mat4, color: [number, number, number, number], lineWidth: number = 1.4) {
       const entry = getOrCreateMeshBuffer(mesh);
       if (!entry.lineBuffer || entry.lineVertexCount <= 0) {
@@ -3839,7 +3860,11 @@ function drawColorCylinder(
         const mvp = mat4.create();
         mat4.multiply(mv, view, model);
         mat4.multiply(mvp, projection, mv);
-        drawMeshLines(mesh, mvp, color, Math.max(1.6, getMeshStyleLineWidth(layer)));
+        if (isAllenVolumeBoundsCubeSource(layer.source)) {
+          drawMeshLines(mesh, mvp, color, Math.max(1.6, getMeshStyleLineWidth(layer)));
+        } else {
+          drawMeshOverlaySurface(mesh, mvp, color);
+        }
         return;
       }
 
@@ -4414,7 +4439,7 @@ function drawColorCylinder(
               mr,
               mg,
               mb,
-              clamp((isHoveredSelectionLayer ? 0.18 : 0.14) * layerEntry.opacity, 0.03, 1),
+              getMeshSurfaceOpacity(layerEntry.opacity, isHoveredSelectionLayer),
             ];
             const drawSurface = () => drawMeshSurface(mesh, mvp, surfaceColor);
             if (surfaceColor[3] < 0.999) {
@@ -4429,10 +4454,10 @@ function drawColorCylinder(
               mb,
               clamp((isHoveredSelectionLayer ? 1 : 0.92) * layerEntry.opacity, 0.05, 1),
             ];
-              if (isBoundsCube) {
-                const drawBoundsCubeEdges = () => {
-                  const positions = mesh.linePositions;
-                  const edgeRadius = Math.max(0.0012, lineWidth * 0.00135);
+            if (isBoundsCube) {
+              const drawBoundsCubeEdges = () => {
+                const positions = mesh.linePositions;
+                const edgeRadius = Math.max(0.0012, lineWidth * 0.00135);
                 for (let i = 0; i <= positions.length - 6; i += 6) {
                   const startVec = transformPoint(model, [positions[i], positions[i + 1], positions[i + 2]]);
                   const endVec = transformPoint(model, [positions[i + 3], positions[i + 4], positions[i + 5]]);
@@ -4459,20 +4484,13 @@ function drawColorCylinder(
                   } else {
                     drawColorCylinder(lineMvp, lineColor, true, lineModel);
                   }
-                  }
-                };
-                // Draw bounds-cube edges in the same immediate clipped pass as 3D
-                // annotation cylinders. Queuing the whole cube as one transparent
-                // batch can make the "behind the slice" half composite on top of
-                // canonical slice planes once the slice alpha drops below 1.
-                drawBoundsCubeEdges();
-              } else {
-              const drawLines = () => drawMeshLines(mesh, mvp, lineColor, lineWidth);
-              if (lineColor[3] < 0.999) {
-                enqueueTransparentDraw(getModelDistanceToCamera(model), 2, drawLines);
-              } else {
-                drawLines();
-              }
+                }
+              };
+              // Draw bounds-cube edges in the same immediate clipped pass as 3D
+              // annotation cylinders. Queuing the whole cube as one transparent
+              // batch can make the "behind the slice" half composite on top of
+              // canonical slice planes once the slice alpha drops below 1.
+              drawBoundsCubeEdges();
             }
           }
 

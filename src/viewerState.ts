@@ -4,7 +4,7 @@ import {
   type AutomationCustomTool,
   type AutomationPipeline,
 } from "./automationTypes";
-import type { ToolId } from "./BottomToolbar";
+import type { ToolId } from "./tools/types";
 import type { LayerTreeNode, SliceLayerParams } from "./layerTypes";
 
 export type CameraControlMode = "fly" | "orbit";
@@ -68,7 +68,7 @@ export type ViewerStatePatchV1 = {
 };
 
 export const DEFAULT_CAMERA_STATE: SerializableCameraState = {
-  mode: "fly",
+  mode: "orbit",
   position: [0, 0, 5],
   yaw: -90,
   pitch: 0,

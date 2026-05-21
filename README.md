@@ -91,6 +91,25 @@ Some datasets can be loaded from remote sources, while others are stored only in
 
 The project includes tools for scientific data exploration, so some features are designed around slice navigation, orientation handling, and local dataset management.
 
+## Extensions
+
+The viewer now includes an in-repo extension system for toolbar tools and utility toolbar features.
+
+If you want to add a new extension, start here:
+
+- [src/extensions/README.md](/home/frank/mouse-brain-viewer/src/extensions/README.md)
+
+That guide explains:
+
+- how toolbar extensions are registered
+- how utility extensions differ from customizable toolbar extensions
+- which files to edit when adding new commands or behaviors
+- how to keep extension code decoupled from `App.tsx`
+
+Tool explorer documentation content now lives in:
+
+- [src/tools/toolDocumentation.ts](/home/frank/mouse-brain-viewer/src/tools/toolDocumentation.ts)
+
 ## Status
 
 This project is under active development, and the viewer continues to evolve with new interaction tools, UI improvements, and data handling features.

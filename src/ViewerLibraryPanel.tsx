@@ -100,7 +100,7 @@ function ViewerCard({
   renameDraft,
   renameInputRef,
   onSelect,
-  onOpen,
+  onActivate,
   onOpenMenu,
   onRenameDraftChange,
   onRenameCommit,
@@ -113,7 +113,7 @@ function ViewerCard({
   renameDraft: string;
   renameInputRef: React.RefObject<HTMLInputElement | null>;
   onSelect: (modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => void;
-  onOpen: () => void;
+  onActivate: () => void;
   onOpenMenu: (rect: DOMRect) => void;
   onRenameDraftChange: (value: string) => void;
   onRenameCommit: () => void;
@@ -136,7 +136,7 @@ function ViewerCard({
       onDoubleClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        onOpen();
+        onActivate();
       }}
       onKeyDown={handleKeyDown}
       style={{
@@ -323,6 +323,7 @@ export default function ViewerLibraryPanel({
   errorMessage,
   saveNamePlaceholder,
   onSaveNewViewer,
+  onOverwriteViewer,
   onOpenViewer,
   onDeleteViewers,
   onRenameViewer,
@@ -336,6 +337,7 @@ export default function ViewerLibraryPanel({
   errorMessage?: string | null;
   saveNamePlaceholder: string;
   onSaveNewViewer: (name: string) => void;
+  onOverwriteViewer: (entryId: string) => void;
   onOpenViewer: (entry: SavedViewerEntry, revision: SavedViewerRevision | null) => void;
   onDeleteViewers: (entryIds: string[]) => void;
   onRenameViewer: (entryId: string, nextName: string) => void;
@@ -350,6 +352,8 @@ export default function ViewerLibraryPanel({
   const [versionEntryId, setVersionEntryId] = useState<string | null>(null);
   const [selectedVersionKey, setSelectedVersionKey] = useState<string | null>(null);
   const [pendingDeleteEntryIds, setPendingDeleteEntryIds] = useState<string[] | null>(null);
+  const [pendingOverwriteEntryId, setPendingOverwriteEntryId] = useState<string | null>(null);
+  const [localSaveError, setLocalSaveError] = useState<string | null>(null);
   const saveInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -385,6 +389,16 @@ export default function ViewerLibraryPanel({
     return versionEntry.revisions.find((revision) => revision.id === revisionId) ?? null;
   }, [selectedVersionKey, versionEntry]);
 
+  const pendingOverwriteEntry =
+    pendingOverwriteEntryId ? entries.find((entry) => entry.id === pendingOverwriteEntryId) ?? null : null;
+
+  const displayedErrorMessage = errorMessage ?? localSaveError;
+  const selectedOwnedEntry = selectedSingleEntry?.ownerKind === "owned" ? selectedSingleEntry : null;
+  const isSaveOverwriteSelection =
+    mode === "save" &&
+    !!selectedOwnedEntry &&
+    saveDraft.trim() === selectedOwnedEntry.name.trim();
+
   useEffect(() => {
     if (!open) {
       setSelectedEntryIds([]);
@@ -397,6 +411,8 @@ export default function ViewerLibraryPanel({
       setVersionEntryId(null);
       setSelectedVersionKey(null);
       setPendingDeleteEntryIds(null);
+      setPendingOverwriteEntryId(null);
+      setLocalSaveError(null);
       return;
     }
 
@@ -415,6 +431,11 @@ export default function ViewerLibraryPanel({
       setSelectionAnchorId(activeSavedViewerId);
     }
   }, [activeSavedViewerId, entries, mode, open, selectedEntryIds.length]);
+
+  useEffect(() => {
+    setPendingOverwriteEntryId(null);
+    setLocalSaveError(null);
+  }, [mode]);
 
   useEffect(() => {
     setSelectedEntryIds((prev) => prev.filter((entryId) => entries.some((entry) => entry.id === entryId)));
@@ -496,6 +517,17 @@ export default function ViewerLibraryPanel({
   }
 
   function handleEntrySelect(entryId: string, modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) {
+    if (mode === "save") {
+      const targetEntry = entries.find((entry) => entry.id === entryId) ?? null;
+      setSelectedEntryIds([entryId]);
+      setSelectionAnchorId(entryId);
+      if (targetEntry) {
+        setSaveDraft(targetEntry.name);
+        setLocalSaveError(null);
+      }
+      return;
+    }
+
     const keepExistingSelection = modifiers.ctrlKey || modifiers.metaKey;
     const useRangeSelection = modifiers.shiftKey;
 
@@ -521,10 +553,56 @@ export default function ViewerLibraryPanel({
     onOpenViewer(selectedSingleEntry, null);
   }
 
+  function requestOverwriteEntry(entry: SavedViewerEntry) {
+    if (entry.ownerKind !== "owned") {
+      setLocalSaveError("Shared viewers cannot be replaced. Enter a new name to save a new local viewer.");
+      return;
+    }
+    if (entry.id === activeSavedViewerId) {
+      setLocalSaveError(null);
+      onOverwriteViewer(entry.id);
+      setSaveDraft("");
+      setPendingOverwriteEntryId(null);
+      return;
+    }
+    setLocalSaveError(null);
+    setPendingOverwriteEntryId(entry.id);
+  }
+
+  function handleActivateEntry(entry: SavedViewerEntry) {
+    if (mode === "save") {
+      requestOverwriteEntry(entry);
+      return;
+    }
+    onOpenViewer(entry, null);
+  }
+
   function handleCreateSavedViewer() {
     const nextName = saveDraft.trim() || saveNamePlaceholder;
+    if (selectedOwnedEntry && nextName === selectedOwnedEntry.name.trim()) {
+      requestOverwriteEntry(selectedOwnedEntry);
+      return;
+    }
+    const matchingEntry = entries.find((entry) => entry.name.trim() === nextName);
+    if (matchingEntry?.ownerKind === "owned") {
+      requestOverwriteEntry(matchingEntry);
+      return;
+    }
+    if (matchingEntry?.ownerKind === "shared") {
+      setLocalSaveError("That name is already used by a shared viewer. Choose a different name to create a new local save.");
+      return;
+    }
+    setLocalSaveError(null);
     onSaveNewViewer(nextName);
     setSaveDraft("");
+  }
+
+  function confirmOverwriteEntry() {
+    if (!pendingOverwriteEntry) return;
+    onOverwriteViewer(pendingOverwriteEntry.id);
+    setPendingOverwriteEntryId(null);
+    setSaveDraft("");
+    setLocalSaveError(null);
   }
 
   function startRename(entry: SavedViewerEntry) {
@@ -582,6 +660,29 @@ export default function ViewerLibraryPanel({
 
   if (!open) return null;
 
+  function handleSaveDraftChange(value: string) {
+    setSaveDraft(value);
+    if (mode !== "save") return;
+
+    const trimmed = value.trim();
+    const matchingEntry = trimmed
+      ? entries.find((entry) => entry.name.trim() === trimmed) ?? null
+      : null;
+
+    if (matchingEntry) {
+      setSelectedEntryIds([matchingEntry.id]);
+      setSelectionAnchorId(matchingEntry.id);
+      setLocalSaveError(null);
+      return;
+    }
+
+    if (selectedSingleEntry && trimmed !== selectedSingleEntry.name.trim()) {
+      setSelectedEntryIds([]);
+      setSelectionAnchorId(null);
+      setLocalSaveError(null);
+    }
+  }
+
   return (
     <div
       onClick={onClose}
@@ -624,9 +725,11 @@ export default function ViewerLibraryPanel({
           }}
         >
           <div style={{ minWidth: 0, flex: "1 1 auto" }}>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>Saved Viewers</div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>{mode === "save" ? "Save Viewer" : "Saved Viewers"}</div>
             <div style={{ fontSize: 12, opacity: 0.72, marginTop: 4 }}>
-              Click to select. Hold `Ctrl` and click to add or remove viewers. Hold `Shift` and click to select a range.
+              {mode === "save"
+                ? "Select a saved viewer to fill in its name, or type a new name to create a saved viewer."
+                : "Click to select. Hold `Ctrl` and click to add or remove viewers. Hold `Shift` and click to select a range."}
             </div>
             {selectedEntryIds.length ? (
               <div style={{ fontSize: 12, opacity: 0.86, marginTop: 8 }}>
@@ -635,17 +738,9 @@ export default function ViewerLibraryPanel({
             ) : null}
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 10 }}>
-            {selectedSingleEntry ? (
+            {mode === "browse" && selectedSingleEntry ? (
               <PrimaryButton onClick={handleOpenSelectedEntry}>Open Selected</PrimaryButton>
             ) : null}
-            <SecondaryButton
-              onClick={() => {
-                setSaveDraft("");
-                onSetMode("save");
-              }}
-            >
-              Save As New
-            </SecondaryButton>
             {selectedEntryIds.length > 1 ? (
               <SecondaryButton onClick={requestDeleteSelectedEntries}>
                 Delete Selected
@@ -724,16 +819,16 @@ export default function ViewerLibraryPanel({
               }}
             >
               <div>
-                <div style={{ fontSize: 14, fontWeight: 800 }}>Save current viewer as a new saved slot</div>
+                <div style={{ fontSize: 14, fontWeight: 800 }}>Save current viewer</div>
                 <div style={{ fontSize: 12, opacity: 0.76, marginTop: 4 }}>
-                  This creates a new saved viewer. Future `Ctrl+S` presses will update that slot.
+                  Select one of your saved viewers to fill in its name, or type a new name to create a new saved viewer.
                 </div>
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 <input
                   ref={saveInputRef}
                   value={saveDraft}
-                  onChange={(event) => setSaveDraft(event.target.value)}
+                  onChange={(event) => handleSaveDraftChange(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       handleCreateSavedViewer();
@@ -757,7 +852,9 @@ export default function ViewerLibraryPanel({
                     boxSizing: "border-box",
                   }}
                 />
-                <PrimaryButton onClick={handleCreateSavedViewer}>Save Viewer</PrimaryButton>
+                <PrimaryButton onClick={handleCreateSavedViewer}>
+                  {isSaveOverwriteSelection ? "Save Over Selected" : "Save Viewer"}
+                </PrimaryButton>
                 <SecondaryButton
                   onClick={() => {
                     setSaveDraft("");
@@ -770,7 +867,7 @@ export default function ViewerLibraryPanel({
             </div>
           </div>
 
-          {errorMessage ? (
+          {displayedErrorMessage ? (
             <div
               style={{
                 color: "#ffb4b4",
@@ -782,7 +879,7 @@ export default function ViewerLibraryPanel({
                 padding: "10px 12px",
               }}
             >
-              {errorMessage}
+              {displayedErrorMessage}
             </div>
           ) : null}
 
@@ -805,7 +902,7 @@ export default function ViewerLibraryPanel({
                   renameDraft={renameDraft}
                   renameInputRef={renameInputRef}
                   onSelect={(modifiers) => handleEntrySelect(entry.id, modifiers)}
-                  onOpen={() => onOpenViewer(entry, null)}
+                  onActivate={() => handleActivateEntry(entry)}
                   onOpenMenu={(rect) => {
                     setMenuEntryId(entry.id);
                     setMenuPosition({ top: rect.bottom + 8, left: rect.right - 12 });
@@ -1044,6 +1141,51 @@ export default function ViewerLibraryPanel({
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
                   <SecondaryButton onClick={() => setPendingDeleteEntryIds(null)}>Cancel</SecondaryButton>
                   <PrimaryButton onClick={confirmDeleteEntries}>Delete</PrimaryButton>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {pendingOverwriteEntry
+        ? createPortal(
+            <div
+              onClick={() => setPendingOverwriteEntryId(null)}
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.42)",
+                zIndex: 10000,
+                display: "grid",
+                placeItems: "center",
+                padding: 20,
+              }}
+            >
+              <div
+                data-theme-surface="panel"
+                onClick={(event) => event.stopPropagation()}
+                style={{
+                  width: "min(440px, calc(100vw - 32px))",
+                  borderRadius: 18,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: "rgba(14,17,22,0.98)",
+                  padding: 18,
+                  display: "grid",
+                  gap: 14,
+                  color: "white",
+                  fontFamily: "sans-serif",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>Replace saved viewer?</div>
+                  <div style={{ fontSize: 12, opacity: 0.76, marginTop: 4 }}>
+                    Save the current viewer on top of "{pendingOverwriteEntry.name}"? The previous saved version will stay available in version history.
+                  </div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <SecondaryButton onClick={() => setPendingOverwriteEntryId(null)}>Cancel</SecondaryButton>
+                  <PrimaryButton onClick={confirmOverwriteEntry}>Replace Saved Viewer</PrimaryButton>
                 </div>
               </div>
             </div>,
