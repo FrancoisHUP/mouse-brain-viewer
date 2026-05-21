@@ -1,8 +1,8 @@
-[todo] I want to add some template. I want to have a square template around the volume, I want to add a grid in 3 main axis so it look a bit like a graph. I want to have a grid version too.
 [todo] add streamline in the app ; add volumetric for virus (allen)
+
 [todo] add a version notes window. Only to show the current version and to display the changes of the latest versions. 
 [todo] move the orientation of one slice into the apperance section in the layers panel. 
-[TOOL] ajouter une system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
+[TOOL] ajouter un system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
 [TOOL] add cli support (like the current ressource manager). The user should see every command, and should also be able to enter command to controle the state of the application. 
 
 [TOOL] add 2D/3D ai annotations (using segmentation browser model)
@@ -76,6 +76,7 @@ Extracter {
 [NTH] coworking session? Browser connect to another browser? This may needs a backend with a commen open session? 
 [NTH] add cube annotations in the gemoetrical annotations. 
 [NTH] add space bar to fix the axis that point to te camera. 
+[NTH] I want to add some template. I want to have a square template around the volume, I want to add a grid in 3 main axis so it look a bit like a graph. I want to have a grid version too.
 
 --- small fixes
 [fix] The pipeline icon should not be blue when it's not selected (the number is good, but the icon should not always be highlited) 

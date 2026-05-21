@@ -5076,7 +5076,7 @@ export default function BottomToolbar({
                   setDropTargetToolId(null);
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                   <SortableContext items={toolbarButtonEntries.map((entry) => entry.toolId)} strategy={horizontalListSortingStrategy}>
                     {toolbarButtonEntries.map((entry) => (
                       <SortableToolbarItem
@@ -5124,7 +5124,7 @@ export default function BottomToolbar({
           title={toolbarPinnedOpen ? "Enable toolbar auto-hide" : "Pin toolbar open"}
           style={{
             width: toolbarHandleActive ? 96 : 72,
-            height: 12,
+            height: 7,
             borderRadius: 999,
             border: toolbarPinnedOpen
               ? "1px solid rgba(255,255,255,0.16)"

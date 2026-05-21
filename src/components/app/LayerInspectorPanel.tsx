@@ -914,92 +914,96 @@ export default function LayerInspectorPanel({
               />
             </label>
 
-            <Section title="Appearance">
-              <div style={{ display: 'grid', gap: 6 }}>
-                <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                  Opacity
-                </span>
-                <SingleRangeSlider
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={selectedOpacity}
-                  onChange={onUpdateSelectedNodeOpacity}
-                  valueLabel={`${Math.round(selectedOpacity * 100)}%`}
-                />
-                {canAdjustIntensityWindow ? (
-                  <>
+            {!isNoteAnnotation ? (
+              <>
+                <Section title="Appearance">
+                  <div style={{ display: 'grid', gap: 6 }}>
                     <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                      Intensity range
+                      Opacity
                     </span>
-                    <DualRangeSlider
+                    <SingleRangeSlider
                       min={0}
                       max={1}
                       step={0.01}
-                      valueMin={selectedIntensityWindow.min}
-                      valueMax={selectedIntensityWindow.max}
-                      onChange={onUpdateSelectedNodeIntensityWindow}
+                      value={selectedOpacity}
+                      onChange={onUpdateSelectedNodeOpacity}
+                      valueLabel={`${Math.round(selectedOpacity * 100)}%`}
                     />
-                  </>
-                ) : null}
-                {canAdjustMeshStyle ? (
-                  <>
-                    <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                      Mesh color
-                    </span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input
-                        type="color"
-                        value={selectedMeshColor}
-                        onChange={(event) => onUpdateSelectedNodeMeshStyle({ color: event.target.value })}
-                        style={{
-                          width: 40,
-                          height: 34,
-                          padding: 0,
-                          border: 'none',
-                          background: 'transparent',
-                          cursor: 'pointer',
-                        }}
-                      />
-                      <div style={{ fontSize: 11, opacity: 0.72 }}>{selectedMeshColor.toUpperCase()}</div>
-                    </div>
-                    {canAdjustMeshThickness ? (
+                    {canAdjustIntensityWindow ? (
                       <>
                         <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
-                          Line thickness
+                          Intensity range
                         </span>
-                        <SingleRangeSlider
-                          min={0.5}
-                          max={6}
-                          step={0.1}
-                          value={selectedMeshLineWidth}
-                          onChange={(value) => onUpdateSelectedNodeMeshStyle({ lineWidth: value })}
-                          valueLabel={`${selectedMeshLineWidth.toFixed(1)} px`}
+                        <DualRangeSlider
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          valueMin={selectedIntensityWindow.min}
+                          valueMax={selectedIntensityWindow.max}
+                          onChange={onUpdateSelectedNodeIntensityWindow}
                         />
                       </>
                     ) : null}
-                  </>
-                ) : null}
-              </div>
-            </Section>
+                    {canAdjustMeshStyle ? (
+                      <>
+                        <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                          Mesh color
+                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <input
+                            type="color"
+                            value={selectedMeshColor}
+                            onChange={(event) => onUpdateSelectedNodeMeshStyle({ color: event.target.value })}
+                            style={{
+                              width: 40,
+                              height: 34,
+                              padding: 0,
+                              border: 'none',
+                              background: 'transparent',
+                              cursor: 'pointer',
+                            }}
+                          />
+                          <div style={{ fontSize: 11, opacity: 0.72 }}>{selectedMeshColor.toUpperCase()}</div>
+                        </div>
+                        {canAdjustMeshThickness ? (
+                          <>
+                            <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                              Line thickness
+                            </span>
+                            <SingleRangeSlider
+                              min={0.5}
+                              max={6}
+                              step={0.1}
+                              value={selectedMeshLineWidth}
+                              onChange={(value) => onUpdateSelectedNodeMeshStyle({ lineWidth: value })}
+                              valueLabel={`${selectedMeshLineWidth.toFixed(1)} px`}
+                            />
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
+                </Section>
 
-            <TransformEditor
-              transform={selectedNode.transform}
-              onUpdate={onUpdateSelectedNodeTransform}
-              onReset={onResetSelectedNodeTransform}
-              canAdjustOrientation={!!canAdjustOrientationPreset}
-              orientationPreset={selectedOrientationPreset}
-              axisSliceViewState={selectedNode?.kind === 'layer' ? selectedNode.axisSliceViewState : undefined}
-              orientationPresetOptions={orientationPresetOptions}
-              onUpdateOrientationPreset={onUpdateSelectedNodeOrientationPreset}
-              showRasReference={showRasReference}
-              onToggleShowRasReference={onToggleShowRasReference}
-              transformPresets={transformPresets}
-              onSaveTransformPreset={onSaveSelectedNodeTransformPreset}
-              onApplyTransformPreset={onApplySelectedNodeTransformPreset}
-              onRenameTransformPreset={onRenameSelectedNodeTransformPreset}
-              onDeleteTransformPreset={onDeleteSelectedNodeTransformPreset}
-            />
+                <TransformEditor
+                  transform={selectedNode.transform}
+                  onUpdate={onUpdateSelectedNodeTransform}
+                  onReset={onResetSelectedNodeTransform}
+                  canAdjustOrientation={!!canAdjustOrientationPreset}
+                  orientationPreset={selectedOrientationPreset}
+                  axisSliceViewState={selectedNode?.kind === 'layer' ? selectedNode.axisSliceViewState : undefined}
+                  orientationPresetOptions={orientationPresetOptions}
+                  onUpdateOrientationPreset={onUpdateSelectedNodeOrientationPreset}
+                  showRasReference={showRasReference}
+                  onToggleShowRasReference={onToggleShowRasReference}
+                  transformPresets={transformPresets}
+                  onSaveTransformPreset={onSaveSelectedNodeTransformPreset}
+                  onApplyTransformPreset={onApplySelectedNodeTransformPreset}
+                  onRenameTransformPreset={onRenameSelectedNodeTransformPreset}
+                  onDeleteTransformPreset={onDeleteSelectedNodeTransformPreset}
+                />
+              </>
+            ) : null}
 
             {selectedAnnotationLayer ? (
               <Section title={isNoteAnnotation ? 'Note' : 'Annotation style'}>

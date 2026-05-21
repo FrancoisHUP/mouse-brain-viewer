@@ -1839,6 +1839,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     const width = Math.min(760, Math.max(460, Math.round(window.innerWidth * 0.42)));
     const height = Math.min(620, Math.max(360, Math.round(window.innerHeight * 0.58)));
     const isNote = annotationLayer.annotation?.shape === "note";
+    const defaultMetadataMode = isNote ? "preview" : "edit";
     setFloatingWindows((prev) => {
       const existing = options?.reuseMetadataWindow
         ? prev.find((windowState) => !!windowState.metadataNodeId)
@@ -1853,7 +1854,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                 metadataNodeId: annotationLayer.id,
                 minimized: false,
                 zIndex: nextZ,
-                metadataMode: options?.mode ?? windowState.metadataMode ?? "edit",
+                metadataMode: options?.mode ?? windowState.metadataMode ?? defaultMetadataMode,
               }
             : windowState
         );
@@ -1873,7 +1874,7 @@ export default function App({ startupSlices = [] }: AppProps) {
           zIndex: nextZ,
           minimized: false,
           maximized: false,
-          metadataMode: options?.mode ?? "edit",
+          metadataMode: options?.mode ?? defaultMetadataMode,
         },
       ];
     });
@@ -6612,6 +6613,10 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function handleOpenSelectedLayerSourceDetails(nodeId: string) {
     const node = findNodeById(layerTree, nodeId);
+    if (node?.kind === "layer" && node.type === "annotation" && node.annotation?.shape === "note") {
+      openMetadataWindowForLayer(node);
+      return;
+    }
     const sourceId = resolveManagedSourceDetailsIdFromNode(node ?? null);
     if (!sourceId) return;
     setRequestedLocalDatasetManagerSourceId(sourceId);
