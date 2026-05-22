@@ -1,9 +1,16 @@
 import type { ViewerStatePatchV1, ViewerStateV1 } from "./viewerState";
+import type {
+  ViewerCommandExecutionResult,
+  ViewerCommandSummary,
+} from "./viewerCommands";
 
 export const ALLEN_VIEWER_EMBED_NAMESPACE = "allen-viewer";
 
 export type ViewerEmbedCommand =
   | "ping"
+  | "listCommands"
+  | "runCommand"
+  | "runCommandLine"
   | "getState"
   | "getStateJson"
   | "setState"
@@ -46,6 +53,9 @@ export type ViewerEmbedMessage =
 
 export type ExternalAllenViewerApi = {
   ping: () => Promise<boolean>;
+  listCommands: () => Promise<ViewerCommandSummary[]>;
+  runCommand: (commandId: string, payload?: unknown) => Promise<unknown>;
+  runCommandLine: (line: string) => Promise<ViewerCommandExecutionResult>;
   getState: () => Promise<ViewerStateV1>;
   getStateJson: () => Promise<string>;
   setState: (state: ViewerStateV1) => Promise<void>;
@@ -127,6 +137,28 @@ export function createAllenViewerEmbedApi(options: {
     async ping() {
       const payload = await request<{ pong?: boolean }>("ping");
       return payload.pong === true;
+    },
+
+    async listCommands() {
+      const payload = await request<{ commands: ViewerCommandSummary[] }>(
+        "listCommands"
+      );
+      return payload.commands;
+    },
+
+    async runCommand(commandId, payload) {
+      const response = await request<{ result?: unknown }>("runCommand", {
+        commandId,
+        payload,
+      });
+      return response.result;
+    },
+
+    async runCommandLine(line) {
+      const payload = await request<{
+        execution: ViewerCommandExecutionResult;
+      }>("runCommandLine", { line });
+      return payload.execution;
     },
 
     async getState() {

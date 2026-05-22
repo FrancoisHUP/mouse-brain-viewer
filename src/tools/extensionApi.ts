@@ -4,6 +4,7 @@ export type ToolExtensionCapability =
   | "toolbar.activate"
   | "annotation.manage"
   | "assistant.workspace"
+  | "command-console.workspace"
   | "toolbar.customize"
   | "capture.openEditor"
   | "capture.manage"
@@ -46,6 +47,7 @@ export type ToolExtensionCommands = {
   openAutomationPipelineWorkspace: (pipelineId?: string | null) => void;
   setAutomationPipelineEnabled: (pipelineId: string, enabled: boolean) => void;
   toggleAssistantWorkspace: () => void;
+  toggleCommandConsoleWorkspace: () => void;
   submitAssistantQuickPrompt: (prompt: string) => void;
   toggleResourceManagerWorkspace: () => void;
   showToolbarTool: (toolId: ToolbarToolId) => void;
@@ -134,6 +136,7 @@ export type ToolExtensionToolbarPresentation =
   | { variant: "slice" }
   | { variant: "pipeline" }
   | { variant: "assistant" }
+  | { variant: "commands" }
   | { variant: "resources" };
 
 export type ToolExtensionDefinition = {

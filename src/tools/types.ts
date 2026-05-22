@@ -7,6 +7,7 @@ export type ToolId =
   | "slice"
   | "pipeline"
   | "resources"
+  | "commands"
   | "assistant"
   | "data"
   | "search"
@@ -25,6 +26,7 @@ export type ToolbarToolId =
   | "slice"
   | "pipeline"
   | "resources"
+  | "commands"
   | "assistant";
 
 export type ToolKind = "core" | "extension";

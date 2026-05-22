@@ -80,6 +80,7 @@ type ToolbarRendererVariant =
   | "slice"
   | "pipeline"
   | "assistant"
+  | "commands"
   | "resources";
 
 const TOOLBAR_TRASH_DROP_ID = "__toolbar_trash_drop__";
@@ -213,6 +214,8 @@ function Icon({ id }: { id: ToolId }) {
       );
     case "assistant":
       return <AssistantToolbarIcon />;
+    case "commands":
+      return <CommandToolbarIcon />;
     case "resources":
       return <ResourceBarsIcon />;
     case "data":
@@ -456,6 +459,34 @@ function AssistantToolbarIcon() {
       <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />
       <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />
     </svg>
+  );
+}
+
+function CommandToolbarIcon() {
+  return (
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2.75" y="3.25" width="18.5" height="17.5" rx="3.5" fill="currentColor" opacity="0.16" stroke="none" />
+      <path d="M7.1 9.2 10.9 12l-3.8 2.8" />
+      <path d="M12.8 15.1h4.2" />
+    </svg>
+  );
+}
+
+function CommandToolButton({
+  active,
+  onClick,
+}: {
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <ToolButton
+      id="commands"
+      label="Command console"
+      active={active}
+      onClick={onClick}
+      icon={<CommandToolbarIcon />}
+    />
   );
 }
 
@@ -4038,6 +4069,8 @@ export default function BottomToolbar({
   onTogglePipeline,
   assistantOpen = false,
   onToggleAssistant,
+  commandConsoleOpen = false,
+  onToggleCommandConsole,
   onToggleResourceManager,
   onQuickAssistantSubmit,
   resourceManagerOpen = false,
@@ -4143,6 +4176,8 @@ export default function BottomToolbar({
   onTogglePipeline?: (pipelineId: string, active: boolean) => void;
   assistantOpen?: boolean;
   onToggleAssistant?: () => void;
+  commandConsoleOpen?: boolean;
+  onToggleCommandConsole?: () => void;
   onToggleResourceManager?: () => void;
   onQuickAssistantSubmit?: (prompt: string) => void;
   resourceManagerOpen?: boolean;
@@ -4445,6 +4480,13 @@ export default function BottomToolbar({
             onSubmit={onQuickAssistantSubmit ?? (() => {})}
           />
         ),
+        commands: () => (
+          <CommandToolButton
+            key={tool.id}
+            active={commandConsoleOpen}
+            onClick={() => onToggleCommandConsole?.()}
+          />
+        ),
         resources: () => (
           <ResourceToolButton
             key={tool.id}
@@ -4465,7 +4507,7 @@ export default function BottomToolbar({
     });
 
     return entries;
-  }, [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen, pipelines, onOpenPipeline, onTogglePipeline, assistantOpen, onToggleAssistant, onQuickAssistantSubmit, resourceManagerOpen, resourceSummary, resourceSamples, onToggleResourceManager, windows, onFocusWindow, onRestoreWindow, onCloseWindow, onCreateNoteAnnotation, toolbarToolIds]);
+  }, [activeTool, statePopoverOpen, accountPopoverOpen, saveNoticeOpen, cameraMode, onCameraModeChange, onFocusSelectedLayer, onSaveCurrentViewer, onToolChange, saveNoticeContent, sliceMode, sliceSelectedLayerName, sliceTargetPlane, sliceHoveredPlane, sliceCanResetToCenter, sliceRotationDeg, sliceScale, sliceFlipX, sliceFlipY, sliceFlipZ, sliceVisibilityXY, sliceVisibilityXZ, sliceVisibilityYZ, sliceCanCreateFreeSlice, sliceFreeSliceOffset, onSliceHoverLockChange, onSliceToggleVisibility, onSliceResetView, onSliceToggleFlip, onSliceResetToCenter, onSliceRotate, onSliceScale, onSliceCreateFreeSlice, onSliceNudgeFreeOffset, onSliceTiltFreeSlice, onSliceSnapFreeSlice, annotationShape, annotationColor, annotationOpacity, annotationSize, annotationDepth, annotationEraseMode, annotationRecentColors, onAnnotationShapeChange, onAnnotationColorChange, onAnnotationColorCommit, onAnnotationOpacityChange, onAnnotationSizeChange, onAnnotationDepthChange, onAnnotationEraseModeChange, onAnnotationPickColorFromScreen, pipelines, onOpenPipeline, onTogglePipeline, assistantOpen, onToggleAssistant, commandConsoleOpen, onToggleCommandConsole, onQuickAssistantSubmit, resourceManagerOpen, resourceSummary, resourceSamples, onToggleResourceManager, windows, onFocusWindow, onRestoreWindow, onCloseWindow, onCreateNoteAnnotation, toolbarToolIds]);
   const activeDraggedToolbarEntry = useMemo(
     () => toolbarButtonEntries.find((entry) => entry.toolId === draggedToolId) ?? null,
     [toolbarButtonEntries, draggedToolId]

@@ -39,6 +39,7 @@ import UserProfilePanel from "./UserProfilePanel";
 import StatePanel from "./StatePanel";
 import AutomationPipelinePanel from "./AutomationPipelinePanel";
 import AppAssistantPanel from "./AppAssistantPanel";
+import CommandConsolePanel from "./CommandConsolePanel";
 import ResourceManagerPanel from "./ResourceManagerPanel";
 import SaveToastStack, { type SaveToast, type TaskNotice } from "./components/app/SaveToastStack";
 import VersionBadge from "./components/app/VersionBadge";
@@ -82,6 +83,11 @@ import {
   type ViewerEmbedRequest,
   type ViewerEmbedResponse,
 } from "./viewerEmbedApi";
+import {
+  createViewerCommandService,
+  type ViewerCommandExecutionResult,
+  type ViewerCommandSummary,
+} from "./viewerCommands";
 import {
   DEFAULT_CAMERA_STATE,
   createViewerState,
@@ -234,6 +240,9 @@ declare global {
     };
     AllenViewerApi?: {
       ping: () => boolean;
+      listCommands: () => ViewerCommandSummary[];
+      runCommand: (commandId: string, payload?: unknown) => Promise<unknown>;
+      runCommandLine: (line: string) => Promise<ViewerCommandExecutionResult>;
       getState: () => ViewerStateV1;
       getStateJson: () => string;
       setState: (state: ViewerStateV1) => ViewerStateV1;
@@ -1278,6 +1287,7 @@ const APP_COMMIT_URL =
       ? APP_REPO_URL
       : `${APP_REPO_URL}/commit/${APP_COMMIT_SHA}`;
 const DEFAULT_RESOURCE_SECTION_HEIGHT = 340;
+const DEFAULT_COMMAND_SECTION_HEIGHT = 360;
 
 const GENERIC_UNEXPECTED_ERROR_MESSAGE =
   "Unexpected error. Please try again or reload the viewer.";
@@ -1425,6 +1435,8 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [activeTool, setActiveTool] = useState<ToolId>("mouse");
   const [resourceSectionHeight, setResourceSectionHeight] = useState(DEFAULT_RESOURCE_SECTION_HEIGHT);
   const [isResourceManagerOpen, setIsResourceManagerOpen] = useState(false);
+  const [commandSectionHeight, setCommandSectionHeight] = useState(DEFAULT_COMMAND_SECTION_HEIGHT);
+  const [isCommandConsoleOpen, setIsCommandConsoleOpen] = useState(false);
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [importPanelView, setImportPanelView] = useState<"library" | "import-external" | "import-local">("library");
   const [isLocalDatasetManagerOpen, setIsLocalDatasetManagerOpen] = useState(false);
@@ -1579,6 +1591,9 @@ export default function App({ startupSlices = [] }: AppProps) {
         toggleAssistantWorkspace: () => {
           applyToolbarToolChange("assistant");
         },
+        toggleCommandConsoleWorkspace: () => {
+          applyToolbarToolChange("commands");
+        },
         submitAssistantQuickPrompt: (prompt) => {
           setActiveTool((current) => current === "assistant" ? "mouse" : current);
           setAppAssistantQuickPrompt({ id: `quick-${Date.now()}`, prompt });
@@ -1609,6 +1624,11 @@ export default function App({ startupSlices = [] }: AppProps) {
     if (!visibleToolbarToolIdSet.has("resources")) {
       setIsResourceManagerOpen(false);
       setResourceSectionHeight(DEFAULT_RESOURCE_SECTION_HEIGHT);
+    }
+
+    if (!visibleToolbarToolIdSet.has("commands")) {
+      setIsCommandConsoleOpen(false);
+      setCommandSectionHeight(DEFAULT_COMMAND_SECTION_HEIGHT);
     }
 
     if (!visibleToolbarToolIdSet.has("assistant")) {
@@ -5494,6 +5514,12 @@ export default function App({ startupSlices = [] }: AppProps) {
     setActiveTool((current) => (current === "resources" ? "mouse" : current));
   }
 
+  function closeCommandConsole() {
+    setCommandSectionHeight(DEFAULT_COMMAND_SECTION_HEIGHT);
+    setIsCommandConsoleOpen(false);
+    setActiveTool((current) => (current === "commands" ? "mouse" : current));
+  }
+
   function applyToolbarToolChange(tool: ToolId) {
     if (
       tool in TOOLBAR_TOOL_MANIFESTS_BY_ID &&
@@ -5503,6 +5529,8 @@ export default function App({ startupSlices = [] }: AppProps) {
     }
 
     if (tool === "resources") {
+      setIsCommandConsoleOpen(false);
+      setCommandSectionHeight(DEFAULT_COMMAND_SECTION_HEIGHT);
       setIsResourceManagerOpen((current) => {
         const next = !current;
         if (!next) {
@@ -5511,6 +5539,21 @@ export default function App({ startupSlices = [] }: AppProps) {
         return next;
       });
       if (activeTool === "resources") {
+        setActiveTool("mouse");
+      }
+      return;
+    }
+    if (tool === "commands") {
+      setIsResourceManagerOpen(false);
+      setResourceSectionHeight(DEFAULT_RESOURCE_SECTION_HEIGHT);
+      setIsCommandConsoleOpen((current) => {
+        const next = !current;
+        if (!next) {
+          setCommandSectionHeight(DEFAULT_COMMAND_SECTION_HEIGHT);
+        }
+        return next;
+      });
+      if (activeTool === "commands") {
         setActiveTool("mouse");
       }
       return;
@@ -5555,6 +5598,252 @@ export default function App({ startupSlices = [] }: AppProps) {
       if (handled) return;
     }
     applyToolbarToolChange(tool);
+  }
+
+  function createAppViewerCommandService() {
+    function requirePipelineById(pipelineId: string) {
+      const pipeline = automationPipelines.find((item) => item.id === pipelineId);
+      if (!pipeline) {
+        throw new Error(`Unknown pipeline '${pipelineId}'.`);
+      }
+      return pipeline;
+    }
+
+    function updatePipelineById(
+      pipelineId: string,
+      updater: (pipeline: AutomationPipeline) => AutomationPipeline
+    ) {
+      const pipeline = requirePipelineById(pipelineId);
+      let nextPipeline = pipeline;
+      setAutomationPipelines((prev) =>
+        prev.map((item) => {
+          if (item.id !== pipelineId) return item;
+          nextPipeline = updater(item);
+          return nextPipeline;
+        })
+      );
+      return nextPipeline;
+    }
+
+    return createViewerCommandService({
+      getState: () => currentViewerState,
+      getSelectedNodeId: () => selectedNodeId,
+      getFloatingWindows: () => currentViewerState.layout.windows ?? [],
+      setState: (state) => commitCurrentStateNow(state),
+      setStateJson: (stateJson) => commitCurrentStateNow(parseViewerState(stateJson)),
+      patchState: (patch) => applyViewerStatePatch(patch),
+      setLayoutCollapsed: (collapsed) =>
+        applyViewerStatePatch({
+          layout: { layerPanelCollapsed: collapsed },
+        }),
+      setInspectorCollapsed: (collapsed) =>
+        applyViewerStatePatch({
+          layout: { inspectorCollapsed: collapsed },
+        }),
+      selectNode: (nodeId) =>
+        applyViewerStatePatch({
+          scene: { selectedNodeId: nodeId },
+        }),
+      setNodeVisibility: (nodeId, visible) => {
+        const nextTree = setNodeVisibleState(layerTree, nodeId, visible);
+        return commitCurrentStateNow(createViewerState({
+          activeTool,
+          selectedNodeId,
+          layerTree: nextTree,
+          sliceVolumeLayerId,
+          sliceName,
+          sliceParamsDraft,
+          layerPanelCollapsed: isLayerPanelCollapsed,
+          inspectorCollapsed: isInspectorCollapsed,
+          windows: floatingWindows,
+          camera: cameraState,
+          automationPipelines,
+          automationCustomTools,
+        }));
+      },
+      toggleNodeVisibility: (nodeId) => {
+        const target = findNodeById(layerTree, nodeId);
+        if (!target) {
+          throw new Error(`Unknown node '${nodeId}'.`);
+        }
+        const nextTree = setNodeVisibleState(layerTree, nodeId, !target.visible);
+        return commitCurrentStateNow(createViewerState({
+          activeTool,
+          selectedNodeId,
+          layerTree: nextTree,
+          sliceVolumeLayerId,
+          sliceName,
+          sliceParamsDraft,
+          layerPanelCollapsed: isLayerPanelCollapsed,
+          inspectorCollapsed: isInspectorCollapsed,
+          windows: floatingWindows,
+          camera: cameraState,
+          automationPipelines,
+          automationCustomTools,
+        }));
+      },
+      setSelectedOpacity: (opacity) => {
+        if (!selectedNodeId) {
+          throw new Error("No selected node to update opacity.");
+        }
+        const safeOpacity = Math.max(0, Math.min(1, opacity));
+        const nextTree = updateNodeById(layerTree, selectedNodeId, (node) => ({
+          ...node,
+          opacity: safeOpacity,
+        }));
+        return commitCurrentStateNow(createViewerState({
+          activeTool,
+          selectedNodeId,
+          layerTree: nextTree,
+          sliceVolumeLayerId,
+          sliceName,
+          sliceParamsDraft,
+          layerPanelCollapsed: isLayerPanelCollapsed,
+          inspectorCollapsed: isInspectorCollapsed,
+          windows: floatingWindows,
+          camera: cameraState,
+          automationPipelines,
+          automationCustomTools,
+        }));
+      },
+      focusSelectedLayer: () => {
+        if (!selectedNode || selectedNode.kind !== "layer") {
+          return { focused: false, selectedNodeId };
+        }
+        handleRequestFocusSelectedLayer();
+        return { focused: true, selectedNodeId };
+      },
+      focusWindow: (id) => {
+        const existing = floatingWindows.find((windowState) => windowState.id === id);
+        if (!existing) {
+          throw new Error(`Unknown window '${id}'.`);
+        }
+        focusFloatingWindow(id);
+        return currentViewerState.layout.windows ?? [];
+      },
+      updateWindow: (id, patch) => {
+        const existing = floatingWindows.find((windowState) => windowState.id === id);
+        if (!existing) {
+          throw new Error(`Unknown window '${id}'.`);
+        }
+        updateFloatingWindow(id, patch);
+        return currentViewerState.layout.windows ?? [];
+      },
+      closeWindow: (id) => {
+        const existing = floatingWindows.find((windowState) => windowState.id === id);
+        if (!existing) {
+          throw new Error(`Unknown window '${id}'.`);
+        }
+        closeFloatingWindow(id);
+        return currentViewerState.layout.windows?.filter((windowState) => windowState.id !== id) ?? [];
+      },
+      openSelectedMetadataWindow: (mode) => {
+        if (!selectedAnnotationLayer) {
+          throw new Error("No selected annotation layer available for a metadata window.");
+        }
+        openMetadataWindowForLayer(selectedAnnotationLayer, {
+          mode,
+          reuseMetadataWindow: false,
+        });
+        return currentViewerState.layout.windows ?? [];
+      },
+      openExport: () => openExportStateModal(),
+      openImport: () => openImportStateModal(),
+      openImportWorkspace: (view) => {
+        setImportPanelView(view);
+        setIsImportPanelOpen(true);
+        setIsLocalDatasetManagerOpen(false);
+        setRequestedLocalDatasetManagerSourceId(null);
+        return { open: true as const, view };
+      },
+      openLocalDatasetManager: (sourceId) => {
+        setRequestedLocalDatasetManagerSourceId(sourceId ?? null);
+        setIsImportPanelOpen(false);
+        setImportPanelView("library");
+        setDroppedLocalEntries(null);
+        setIsLocalDatasetManagerOpen(true);
+        return { open: true as const, sourceId: sourceId ?? null };
+      },
+      openSelectedLayerSourceDetails: (nodeId) => {
+        const resolvedNodeId = nodeId ?? selectedNodeId;
+        if (!resolvedNodeId) {
+          throw new Error("No target node available for source details.");
+        }
+        handleOpenSelectedLayerSourceDetails(resolvedNodeId);
+        return { opened: true, nodeId: resolvedNodeId };
+      },
+      openViewerLibraryWorkspace: () => {
+        setViewerLibraryMode("browse");
+        setActiveTool("library");
+        return { open: true as const };
+      },
+      closeDialogs: () => closeDialogs(),
+      undo: () => handleUndo(),
+      redo: () => handleRedo(),
+      clearHistory: () => {
+        openClearHistoryConfirm();
+        return currentViewerState;
+      },
+      listPipelines: () => automationPipelines,
+      getActivePipeline: () =>
+        automationPipelines.find((pipeline) => pipeline.id === activeAutomationPipelineId) ?? null,
+      openPipeline: (pipelineId) => {
+        const pipeline = requirePipelineById(pipelineId);
+        setActiveAutomationPipelineId(pipelineId);
+        return pipeline;
+      },
+      runPipeline: async (pipelineId) => {
+        const pipeline = requirePipelineById(pipelineId);
+        setActiveAutomationPipelineId(pipelineId);
+        return await runAutomationPipeline(pipeline);
+      },
+      setPipelineEnabled: (pipelineId, enabled) =>
+        updatePipelineById(pipelineId, (pipeline) => ({
+          ...pipeline,
+          active: enabled,
+          updatedAt: Date.now(),
+        })),
+      setPipelineAutoRun: (pipelineId, autoRun) =>
+        updatePipelineById(pipelineId, (pipeline) => ({
+          ...pipeline,
+          autoRun,
+          updatedAt: Date.now(),
+        })),
+      renamePipeline: (pipelineId, name) =>
+        updatePipelineById(pipelineId, (pipeline) => ({
+          ...pipeline,
+          name,
+          updatedAt: Date.now(),
+        })),
+      setPipelineDescription: (pipelineId, description) =>
+        updatePipelineById(pipelineId, (pipeline) => ({
+          ...pipeline,
+          description,
+          updatedAt: Date.now(),
+        })),
+      getResourceSummary: () => resourceSummary,
+      getResourceSamples: (limit) =>
+        typeof limit === "number" && Number.isFinite(limit) && limit >= 0
+          ? resourceHistorySamples.slice(-Math.max(0, Math.floor(limit)))
+          : resourceHistorySamples,
+      runResourceCleanup: (options) => {
+        handleRunResourceCleanup(options);
+        return options;
+      },
+      toggleAssistantWorkspace: () => {
+        applyToolbarToolChange("assistant");
+      },
+      toggleResourceManagerWorkspace: () => {
+        const nextOpen = !isResourceManagerOpen;
+        applyToolbarToolChange("resources");
+        return nextOpen;
+      },
+      toggleCommandConsoleWorkspace: () => {
+        const nextOpen = !isCommandConsoleOpen;
+        applyToolbarToolChange("commands");
+        return nextOpen;
+      },
+    });
   }
 
   function handleOpenPipelineFromExtension(pipelineId: string) {
@@ -5757,6 +6046,17 @@ export default function App({ startupSlices = [] }: AppProps) {
       if (handled) return;
     }
     handleToolChange("resources");
+  }
+
+  function handleCommandConsoleToolbarSelectFromExtension() {
+    const extensionDefinition = getUtilityToolExtensionDefinition("commands");
+    if (extensionDefinition?.onToolbarSelect) {
+      const handled = extensionDefinition.onToolbarSelect(extensionContext, {
+        source: "toolbar",
+      });
+      if (handled) return;
+    }
+    handleToolChange("commands");
   }
 
   function buildCaptureFileName() {
@@ -8003,30 +8303,41 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   useEffect(() => {
+    const commandService = createAppViewerCommandService();
     const api = {
-      ping: () => true,
-      getState: () => currentViewerState,
-      getStateJson: () => JSON.stringify(currentViewerState, null, 2),
-      setState: (state: ViewerStateV1) => commitCurrentStateNow(state),
-      setStateJson: (stateJson: string) => commitCurrentStateNow(parseViewerState(stateJson)),
-      patchState: (patch: ViewerStatePatchV1) => applyViewerStatePatch(patch),
+      ping: () =>
+        (commandService.execute("viewer.ping") as { pong: boolean }).pong,
+      listCommands: () => commandService.listCommands(),
+      runCommand: async (commandId: string, payload?: unknown) =>
+        await Promise.resolve(commandService.execute(commandId, payload)),
+      runCommandLine: async (line: string) => await commandService.runLine(line),
+      getState: () => commandService.execute("viewer.getState") as ViewerStateV1,
+      getStateJson: () => commandService.execute("viewer.getStateJson") as string,
+      setState: (state: ViewerStateV1) =>
+        commandService.execute("viewer.setState", state) as ViewerStateV1,
+      setStateJson: (stateJson: string) =>
+        commandService.execute("viewer.setStateJson", stateJson) as ViewerStateV1,
+      patchState: (patch: ViewerStatePatchV1) =>
+        commandService.execute("viewer.patchState", patch) as ViewerStateV1,
       setLayoutCollapsed: (collapsed: boolean) =>
-        applyViewerStatePatch({
-          layout: { layerPanelCollapsed: collapsed },
-        }),
+        commandService.execute(
+          "layout.setLayerPanelCollapsed",
+          collapsed
+        ) as ViewerStateV1,
       selectNode: (nodeId: string | null) =>
-        applyViewerStatePatch({
-          scene: { selectedNodeId: nodeId },
-        }),
-      openExport: () => openExportStateModal(),
-      openImport: () => openImportStateModal(),
-      closeDialogs: () => closeDialogs(),
-      undo: () => handleUndo(),
-      redo: () => handleRedo(),
-      clearHistory: () => {
-        openClearHistoryConfirm();
-        return currentViewerState;
+        commandService.execute("scene.selectNode", nodeId) as ViewerStateV1,
+      openExport: () => {
+        void commandService.execute("workspace.openExport");
       },
+      openImport: () => {
+        void commandService.execute("workspace.openImport");
+      },
+      closeDialogs: () => {
+        void commandService.execute("workspace.closeDialogs");
+      },
+      undo: () => commandService.execute("history.undo") as ViewerStateV1 | null,
+      redo: () => commandService.execute("history.redo") as ViewerStateV1 | null,
+      clearHistory: () => commandService.execute("history.clear") as ViewerStateV1,
     };
 
     window.AllenViewerApi = api;
@@ -8036,15 +8347,17 @@ export default function App({ startupSlices = [] }: AppProps) {
         delete window.AllenViewerApi;
       }
     };
-  }, [currentViewerState, historyRevision]);
+  }, [currentViewerState, historyRevision, isResourceManagerOpen, isCommandConsoleOpen]);
 
   useEffect(() => {
+    const commandService = createAppViewerCommandService();
+
     function reply(event: MessageEvent, response: ViewerEmbedResponse) {
       if (!event.source || typeof (event.source as Window).postMessage !== "function") return;
       (event.source as Window).postMessage(response, event.origin || "*");
     }
 
-    function handleMessage(event: MessageEvent) {
+    async function handleMessage(event: MessageEvent) {
       const message = event.data as ViewerEmbedMessage | undefined;
       if (!message || message.namespace !== ALLEN_VIEWER_EMBED_NAMESPACE) return;
       if (message.type !== "request") return;
@@ -8053,16 +8366,65 @@ export default function App({ startupSlices = [] }: AppProps) {
 
       try {
         switch (request.command) {
-          case "ping":
+          case "ping": {
+            const result = commandService.execute("viewer.ping") as { pong: boolean };
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
               command: request.command,
               requestId: request.requestId,
               ok: true,
-              payload: { pong: true, history: buildHistoryDebugLabel() },
+              payload: {
+                pong: result.pong,
+                history: buildHistoryDebugLabel(),
+              },
             });
             return;
+          }
+          case "listCommands":
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { commands: commandService.listCommands() },
+            });
+            return;
+          case "runCommand": {
+            const commandId = request.payload?.commandId;
+            if (typeof commandId !== "string" || !commandId.trim()) {
+              throw new Error("Missing 'commandId' payload.");
+            }
+            const result = await Promise.resolve(
+              commandService.execute(commandId, request.payload?.payload)
+            );
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { result },
+            });
+            return;
+          }
+          case "runCommandLine": {
+            const line = request.payload?.line;
+            if (typeof line !== "string" || !line.trim()) {
+              throw new Error("Missing 'line' payload.");
+            }
+            const execution = await commandService.runLine(line);
+            reply(event, {
+              namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
+              type: "response",
+              command: request.command,
+              requestId: request.requestId,
+              ok: true,
+              payload: { execution },
+            });
+            return;
+          }
           case "getState":
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
@@ -8070,7 +8432,9 @@ export default function App({ startupSlices = [] }: AppProps) {
               command: request.command,
               requestId: request.requestId,
               ok: true,
-              payload: { state: currentViewerState },
+              payload: {
+                state: commandService.execute("viewer.getState") as ViewerStateV1,
+              },
             });
             return;
           case "getStateJson":
@@ -8080,13 +8444,15 @@ export default function App({ startupSlices = [] }: AppProps) {
               command: request.command,
               requestId: request.requestId,
               ok: true,
-              payload: { stateJson: JSON.stringify(currentViewerState, null, 2) },
+              payload: {
+                stateJson: commandService.execute("viewer.getStateJson") as string,
+              },
             });
             return;
           case "setState": {
             const incomingState = request.payload?.state as ViewerStateV1 | undefined;
             if (!incomingState) throw new Error("Missing 'state' payload.");
-            const nextState = commitCurrentStateNow(incomingState);
+            const nextState = commandService.execute("viewer.setState", incomingState);
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
@@ -8100,7 +8466,7 @@ export default function App({ startupSlices = [] }: AppProps) {
           case "setStateJson": {
             const stateJson = request.payload?.stateJson;
             if (typeof stateJson !== "string") throw new Error("Missing 'stateJson' payload.");
-            const nextState = commitCurrentStateNow(parseViewerState(stateJson));
+            const nextState = commandService.execute("viewer.setStateJson", stateJson);
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
@@ -8114,7 +8480,7 @@ export default function App({ startupSlices = [] }: AppProps) {
           case "patchState": {
             const patch = request.payload?.patch as ViewerStatePatchV1 | undefined;
             if (!patch) throw new Error("Missing 'patch' payload.");
-            const nextState = applyViewerStatePatch(patch);
+            const nextState = commandService.execute("viewer.patchState", patch);
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
@@ -8126,9 +8492,8 @@ export default function App({ startupSlices = [] }: AppProps) {
             return;
           }
           case "setLayoutCollapsed": {
-            const collapsed = Boolean(request.payload?.collapsed);
-            const nextState = applyViewerStatePatch({
-              layout: { layerPanelCollapsed: collapsed },
+            const nextState = commandService.execute("layout.setLayerPanelCollapsed", {
+              collapsed: Boolean(request.payload?.collapsed),
             });
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
@@ -8141,8 +8506,9 @@ export default function App({ startupSlices = [] }: AppProps) {
             return;
           }
           case "selectNode": {
-            const nodeId = (request.payload?.nodeId as string | null | undefined) ?? null;
-            const nextState = applyViewerStatePatch({ scene: { selectedNodeId: nodeId } });
+            const nextState = commandService.execute("scene.selectNode", {
+              nodeId: (request.payload?.nodeId as string | null | undefined) ?? null,
+            });
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
@@ -8154,7 +8520,7 @@ export default function App({ startupSlices = [] }: AppProps) {
             return;
           }
           case "openExport":
-            openExportStateModal();
+            void commandService.execute("workspace.openExport");
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
@@ -8164,7 +8530,7 @@ export default function App({ startupSlices = [] }: AppProps) {
             });
             return;
           case "openImport":
-            openImportStateModal();
+            void commandService.execute("workspace.openImport");
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
@@ -8174,7 +8540,7 @@ export default function App({ startupSlices = [] }: AppProps) {
             });
             return;
           case "closeDialogs":
-            closeDialogs();
+            void commandService.execute("workspace.closeDialogs");
             reply(event, {
               namespace: ALLEN_VIEWER_EMBED_NAMESPACE,
               type: "response",
@@ -8222,7 +8588,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     return () => {
       window.removeEventListener("message", handleMessage);
     };
-  }, [currentViewerState, historyRevision]);
+  }, [currentViewerState, historyRevision, isResourceManagerOpen, isCommandConsoleOpen]);
 
   function handleUpdateAxisSliceState(
     layerId: string,
@@ -9155,6 +9521,8 @@ export default function App({ startupSlices = [] }: AppProps) {
           pipelines={pipelineMenuItems}
           assistantOpen={activeTool === "assistant"}
           onToggleAssistant={handleAssistantToolbarSelectFromExtension}
+          commandConsoleOpen={isCommandConsoleOpen}
+          onToggleCommandConsole={handleCommandConsoleToolbarSelectFromExtension}
           onToggleResourceManager={handleResourceManagerToolbarSelectFromExtension}
           resourceSummary={resourceSummary}
           resourceSamples={resourceHistorySamples}
@@ -9164,6 +9532,17 @@ export default function App({ startupSlices = [] }: AppProps) {
 	      />
 
       </div>
+
+      <CommandConsolePanel
+        open={isCommandConsoleOpen}
+        height={commandSectionHeight}
+        commands={createAppViewerCommandService().listCommands()}
+        onHeightChange={setCommandSectionHeight}
+        onClose={closeCommandConsole}
+        onRunCommandLine={(line, options) =>
+          createAppViewerCommandService().runLine(line, options)
+        }
+      />
 
       <ResourceManagerPanel
         open={isResourceManagerOpen}

@@ -273,6 +273,35 @@ The **Resource manager** tool helps monitor browser and worker activity. It is u
       },
     ],
   },
+  commands: {
+    content: `
+## What it does
+
+The **Command console** tool opens a docked viewer CLI. It runs the same command service used by the external viewer API, so developers can test commands inside the app before sending them from another program.
+
+## How to use
+
+1. Activate **Command console** from the toolbar.
+2. Browse the command catalog or filter it to find a specific capability.
+3. Load an example into the console, then edit the payload as needed.
+4. Run the command to inspect the parsed payload and returned result.
+5. Reuse successful commands as building blocks for external integrations.
+
+## Notes
+
+- This tool is currently in **beta**.
+- Prefer semantic commands for common tasks, and keep raw state patching as a low-level escape hatch.
+`.trim(),
+    assets: [
+      {
+        id: "command-console-overview",
+        title: "Testing viewer commands",
+        description: "Show the user opening the command console, loading an example command, and inspecting the returned result.",
+        alt: "Running a viewer command from the docked command console.",
+        suggestedPath: "/tool-docs/commands/command-console-overview.gif",
+      },
+    ],
+  },
   assistant: {
     content: `
 ## What it does
