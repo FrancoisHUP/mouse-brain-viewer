@@ -80,6 +80,20 @@ type ExternalDraftInspection = {
   message: string | null;
 };
 
+function mergeLocalInputEntries(existing: LocalInputEntry[], next: LocalInputEntry[]): LocalInputEntry[] {
+  const merged: LocalInputEntry[] = [];
+  const seen = new Set<string>();
+  const addEntry = (entry: LocalInputEntry) => {
+    const key = `${entry.path.replace(/\\/g, "/")}::${entry.file.size}::${entry.file.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(entry);
+  };
+  for (const entry of existing) addEntry(entry);
+  for (const entry of next) addEntry(entry);
+  return merged;
+}
+
 function DataIcon() {
   return (
     <svg
@@ -877,6 +891,7 @@ export default function ImportDataPanel({
   const [openCustomSourceMenuId, setOpenCustomSourceMenuId] = useState<string | null>(null);
   const [localImportFeedback, setLocalImportFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [pendingLocalImports, setPendingLocalImports] = useState<LocalImportCandidate[]>([]);
+  const [pendingLocalInputEntries, setPendingLocalInputEntries] = useState<LocalInputEntry[]>([]);
   const [isInspectingLocalImport, setIsInspectingLocalImport] = useState(false);
   const [isSubmittingSelection, setIsSubmittingSelection] = useState(false);
   const [localInspectionProgress, setLocalInspectionProgress] = useState<LocalInspectionProgress | null>(null);
@@ -960,6 +975,7 @@ export default function ImportDataPanel({
       localInspectionAbortRef.current = null;
       setLocalImportFeedback(null);
       setPendingLocalImports([]);
+      setPendingLocalInputEntries([]);
       setIsInspectingLocalImport(false);
       setIsSubmittingSelection(false);
       setLocalInspectionProgress(null);
@@ -1065,6 +1081,7 @@ export default function ImportDataPanel({
       setOpenCustomSourceMenuId(null);
       setLocalImportFeedback(null);
       setPendingLocalImports([]);
+      setPendingLocalInputEntries([]);
       setIsInspectingLocalImport(false);
     }
 
@@ -1552,8 +1569,19 @@ export default function ImportDataPanel({
 
   async function collectDroppedEntries(items: DataTransferItemList | null, files: FileList | null, options?: { signal?: AbortSignal; onProgress?: (progress: LocalInspectionProgress) => void }): Promise<LocalInputEntry[]> {
     const output: LocalInputEntry[] = [];
+    const seen = new Set<string>();
     let discovered = 0;
     const report = (message: string) => options?.onProgress?.({ phase: "reading", message, completed: Math.max(0, discovered), total: Math.max(1, discovered + 1), percent: 0.05 });
+    const registerFile = (path: string, file: File) => {
+      const normalizedPath = (path || file.name).replace(/\\/g, "/").replace(/^\/+/, "");
+      const key = `${normalizedPath}::${file.size}::${file.lastModified}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      discovered += 1;
+      output.push({ path: normalizedPath, file });
+      report(`Reading ${file.name}`);
+      return true;
+    };
     async function walkEntry(entry: any, prefix: string) {
       if (options?.signal?.aborted) {
         const error = new Error("Local import cancelled.");
@@ -1563,9 +1591,7 @@ export default function ImportDataPanel({
       if (!entry) return;
       if (entry.isFile) {
         const file: File = await new Promise((resolve, reject) => entry.file(resolve, reject));
-        discovered += 1;
-        output.push({ path: prefix ? `${prefix}/${file.name}` : file.name, file });
-        report(`Reading ${file.name}`);
+        registerFile(prefix ? `${prefix}/${file.name}` : file.name, file);
         await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
         return;
       }
@@ -1584,33 +1610,27 @@ export default function ImportDataPanel({
       }
     }
 
-    let usedDirectoryApi = false;
     if (items) {
       for (const item of Array.from(items)) {
         const entry = (item as any).webkitGetAsEntry?.();
         if (entry) {
-          usedDirectoryApi = true;
           await walkEntry(entry, "");
         } else {
           const file = item.getAsFile?.();
           if (file) {
-            discovered += 1;
-            output.push({ path: file.webkitRelativePath || file.name, file });
-            report(`Reading ${file.name}`);
+            registerFile(file.webkitRelativePath || file.name, file);
           }
         }
       }
     }
-    if (!usedDirectoryApi && files) {
+    if (files) {
       for (const file of Array.from(files)) {
         if (options?.signal?.aborted) {
           const error = new Error("Local import cancelled.");
           (error as Error & { name?: string }).name = "AbortError";
           throw error;
         }
-        discovered += 1;
-        output.push({ path: file.webkitRelativePath || file.name, file });
-        report(`Reading ${file.name}`);
+        registerFile(file.webkitRelativePath || file.name, file);
         await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       }
     }
@@ -1649,11 +1669,13 @@ export default function ImportDataPanel({
       setLocalImportFeedback(null);
     }
     try {
-        const candidates = await inspectLocalInputEntries(entries, {
+        const mergedEntries = mergeLocalInputEntries(pendingLocalInputEntries, entries);
+        const candidates = await inspectLocalInputEntries(mergedEntries, {
           signal: controller.signal,
           onProgress: (progress) => setLocalInspectionProgress(progress),
         });
         if (controller.signal.aborted) return;
+        setPendingLocalInputEntries(mergedEntries);
         setPendingLocalImports(candidates.map((candidate) => {
           const preferredScale = candidate.inspection.info.availableScales?.find((scale) => scale.canLoad) ?? candidate.inspection.info.availableScales?.[0] ?? null;
           return {
@@ -1673,7 +1695,7 @@ export default function ImportDataPanel({
       }));
       setLocalImportFeedback({
         tone: "success",
-        message: `${entries.length} file${entries.length > 1 ? "s" : ""} inspected. Import it to browser storage, then choose how to display it from Add layer.`,
+        message: `${mergedEntries.length} file${mergedEntries.length > 1 ? "s" : ""} inspected. You can keep dropping companion files here to combine them before importing to browser storage.`,
       });
     } catch (error) {
       if (isAbortError(error)) {
@@ -1703,6 +1725,7 @@ export default function ImportDataPanel({
           : `${result.importedCount} dataset${result.importedCount > 1 ? "s" : ""} imported locally.`,
       });
       setPendingLocalImports([]);
+      setPendingLocalInputEntries([]);
       setPanelView("library");
       return;
     }
@@ -2499,10 +2522,16 @@ export default function ImportDataPanel({
                       const localScales = localInspection?.info.availableScales ?? [];
                       const selectedResolution = localUi?.selectedResolution ?? localInspection?.info.selectedResolution ?? null;
                       return (
-                        <button
+                        <div
                           key={record.id}
-                          type="button"
+                          role="button"
+                          tabIndex={0}
                           onClick={() => toggleLocalDatasetSelection(record.id)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            toggleLocalDatasetSelection(record.id);
+                          }}
                           style={{
                             minHeight: 196,
                             minWidth: 0,
@@ -2519,7 +2548,7 @@ export default function ImportDataPanel({
                             cursor: "pointer",
                             transition: "border-color 180ms ease, background 180ms ease, box-shadow 220ms ease",
                           }}
-                      >
+                        >
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", minWidth: 0 }}>
                           <SourceIconFrame>
                               <DataIcon />
@@ -2599,7 +2628,7 @@ export default function ImportDataPanel({
                               Updated {formatTimestamp(record.updatedAt)}
                             </span>
                           </div>
-                        </button>
+                        </div>
                       );
                     })
                   : null}
@@ -3156,7 +3185,7 @@ export default function ImportDataPanel({
                   Upload custom data
                 </div>
                 <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.72, lineHeight: 1.45 }}>
-                  Drop files, folders, or ZIP archives here. Supports NRRD, NIfTI (.nii/.nii.gz), TIFF, OBJ, OME-Zarr/Zarr, and gzip-compressed variants of supported single files. Local imports stay only in this browser and are not included when sharing the viewer.
+                  Drop files, folders, or ZIP archives here. Local imports stay only in this browser and are not included when sharing the viewer.
                 </div>
               </div>
             </div>
@@ -3211,13 +3240,20 @@ export default function ImportDataPanel({
                   <DataIcon />
                 </div>
                 <div style={{ fontSize: 15, fontWeight: 800 }}>
-                  {isInspectingLocalImport ? "Inspecting local data…" : "Drop local files or folders"}
+                  {isInspectingLocalImport ? "Inspecting local data…" : pendingLocalImports.length > 0 ? "Drop more files to add them" : "Drop local files or folders"}
                 </div>
                 <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.74, lineHeight: 1.5, maxWidth: 240 }}>
-                  The app inspects your dataset first, then you choose the preview, the import mode, and the best resolution before adding it to the scene.
+                  {pendingLocalImports.length > 0
+                    ? "Add companion files here before importing. For example, you can add a TCK file and its matching NIfTI reference in separate drops and the app will combine them."
+                    : "The app inspects your dataset first, then you choose the preview, the import mode, and the best resolution before adding it to the scene."}
                 </div>
+                {pendingLocalImports.length > 0 ? (
+                  <div style={{ maxWidth: 248, borderRadius: 12, border: "1px solid rgba(130,240,190,0.24)", background: "rgba(90,210,160,0.10)", color: "#d7ffe2", padding: "10px 12px", fontSize: 11, lineHeight: 1.45 }}>
+                    Pending imports stay editable until you click import. Keep dropping related files to sync them together.
+                  </div>
+                ) : null}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 2 }}>
-                  {["NRRD", "NIfTI", "TIFF", "OME-Zarr", "Zarr", "ZIP"].map((label) => (
+                  {["NRRD", "NIfTI", "TIFF", "OBJ", "TRK", "TCK", "VTK", "OME-Zarr", "Zarr", "ZIP"].map((label) => (
                     <span key={label} style={{ height: 26, padding: "0 9px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", display: "inline-flex", alignItems: "center", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", opacity: 0.78 }}>
                       {label}
                     </span>
@@ -3237,6 +3273,9 @@ export default function ImportDataPanel({
                     const voxelSize = candidate.inspection.info.voxelSizeUm;
                     const voxelText = voxelSize && (voxelSize.x || voxelSize.y || voxelSize.z)
                       ? `${formatVoxelSizeValue(voxelSize.x)} × ${formatVoxelSizeValue(voxelSize.y)} × ${formatVoxelSizeValue(voxelSize.z)} µm`
+                      : "Unknown";
+                    const streamlineText = candidate.inspection.info.streamlineStats
+                      ? candidate.inspection.info.streamlineStats.streamlineCount.toLocaleString()
                       : "Unknown";
                     return (
                       <div key={candidate.id} style={{ borderRadius: 16, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)", padding: 14, display: "grid", gap: 12 }}>
@@ -3265,15 +3304,17 @@ export default function ImportDataPanel({
                             <div style={{ width: 40, height: 40, borderRadius: 12, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                               <DataIcon />
                             </div>
-                            <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>Mesh preview is not shown here yet</div>
+                            <div data-theme-text="muted" style={{ fontSize: 11, opacity: 0.72 }}>
+                              {candidate.inspection.kind === "streamlines" ? "Streamline preview is not shown here yet" : "Mesh preview is not shown here yet"}
+                            </div>
                           </div>
                         )}
 
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8 }}>
                           <DatasetStat label="Format" value={candidate.inspection.format.toUpperCase()} />
                           <DatasetStat label="Size" value={formatBytes(candidate.inspection.info.fileSizeBytes)} />
-                          <DatasetStat label="Dimensions" value={dims ? `${dims.x} × ${dims.y} × ${dims.z}` : "Unknown"} />
-                          <DatasetStat label="Voxel size" value={voxelText} />
+                          <DatasetStat label={candidate.inspection.kind === "streamlines" ? "Streamlines" : "Dimensions"} value={candidate.inspection.kind === "streamlines" ? streamlineText : dims ? `${dims.x} × ${dims.y} × ${dims.z}` : "Unknown"} />
+                          <DatasetStat label={candidate.inspection.kind === "streamlines" ? "Header grid" : "Voxel size"} value={candidate.inspection.kind === "streamlines" ? dims ? `${dims.x} × ${dims.y} × ${dims.z}` : "Unknown" : voxelText} />
                         </div>
 
                         {candidate.inspection.kind === "volume" && scales.length > 0 ? (

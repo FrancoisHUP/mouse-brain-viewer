@@ -160,6 +160,7 @@ import type {
   LayerItemNode,
   LayerTreeNode,
   MeshStyle,
+  StreamlineStyle,
   NodeTransform,
   RemoteContentKind,
   RemoteDataFormat,
@@ -2555,6 +2556,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         onUpdateSelectedNodeOpacity={updateSelectedNodeOpacity}
         onUpdateSelectedNodeIntensityWindow={updateSelectedNodeIntensityWindow}
         onUpdateSelectedNodeMeshStyle={updateSelectedNodeMeshStyle}
+        onUpdateSelectedNodeStreamlineStyle={updateSelectedNodeStreamlineStyle}
         onUpdateSelectedNodeTransform={updateSelectedNodeTransform}
         onResetSelectedNodeTransform={resetSelectedNodeTransform}
         orientationPresetOptions={VOLUME_ORIENTATION_PRESET_OPTIONS}
@@ -6769,6 +6771,12 @@ export default function App({ startupSlices = [] }: AppProps) {
       localOnly: true,
       localDataFormat: candidate.inspection.format,
       localDataKind: candidate.inspection.kind,
+      streamlineStyle: candidate.inspection.kind === "streamlines"
+        ? {
+            colorMode: "direction",
+            color: "#f5f5f5",
+          }
+        : undefined,
       localDatasetInfo: {
         ...resolvedInfo,
         datasetId,
@@ -7335,6 +7343,30 @@ export default function App({ startupSlices = [] }: AppProps) {
                     )
                   )
                 : current.lineWidth,
+          },
+        };
+      })
+    );
+  }
+
+  function updateSelectedNodeStreamlineStyle(patch: Partial<StreamlineStyle>) {
+    if (!selectedNodeId) return;
+
+    setLayerTree((prev) =>
+      updateNodeById(prev, selectedNodeId, (node) => {
+        if (node.kind !== "layer") return node;
+        const current = node.streamlineStyle ?? {};
+        return {
+          ...node,
+          streamlineStyle: {
+            colorMode:
+              patch.colorMode !== undefined
+                ? patch.colorMode
+                : current.colorMode ?? "direction",
+            color:
+              patch.color !== undefined
+                ? normalizeHexColor(patch.color)
+                : current.color,
           },
         };
       })

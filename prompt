@@ -1,14 +1,12 @@
-[todo] add streamline in the app ; add volumetric for virus (allen)
+[TOOL] ajouter un system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
+
+[TOOL] add cli support (like the current ressource manager). The user should see every command, and should also be able to enter command to controle the state of the application. 
 
 [todo] add a version notes window. Only to show the current version and to display the changes of the latest versions. 
 [todo] move the orientation of one slice into the apperance section in the layers panel. 
-[TOOL] ajouter un system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
-[TOOL] add cli support (like the current ressource manager). The user should see every command, and should also be able to enter command to controle the state of the application. 
+
 
 [TOOL] add 2D/3D ai annotations (using segmentation browser model)
-
-
-
 
 
 [todo] saved viewer, the user could think by doucle clicking it will select the existing saved viewer to save on. but it's not the behavior. (ctrl+s, when there's no pointer to a saved state) 
@@ -34,6 +32,7 @@ Automations {
 [todo] fix the selection on skeleton (right now it select every verticies)
 
 import data {
+  [todo] add volumetric for virus (allen)
   [todo] fix the import so the brain has the right orientation of every slices. 
   [todo] import annotations and process the data inside the browser and the meta data / add an intelligent perser to import dataset ?
 }

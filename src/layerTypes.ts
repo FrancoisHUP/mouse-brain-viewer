@@ -114,9 +114,15 @@ export type RemoteContentKind =
   | "intensity"
   | "annotation";
 
-export type LocalDataFormat = "nrrd" | "nii" | "tiff" | "obj" | "ome-zarr" | "zarr" | "unknown";
+export type LocalDataFormat = "nrrd" | "nii" | "tiff" | "obj" | "trk" | "tck" | "vtk" | "ome-zarr" | "zarr" | "unknown";
 
-export type LocalDataKind = "volume" | "mesh" | "unknown";
+export type LocalDataKind = "volume" | "mesh" | "streamlines" | "unknown";
+
+export type StreamlineStats = {
+  streamlineCount: number;
+  pointCount: number;
+  segmentCount: number;
+};
 
 export type LocalDatasetScale = {
   datasetIndex: number;
@@ -149,6 +155,9 @@ export type LocalDatasetInfo = {
   selectedResolution?: string | null;
   selectedDatasetPath?: string | null;
   treeRootPath?: string | null;
+  streamlineStats?: StreamlineStats | null;
+  streamlineReferencePath?: string | null;
+  streamlineReferenceName?: string | null;
 };
 
 export type VolumeOrientationPresetId =
@@ -174,6 +183,13 @@ export type IntensityWindow = {
 export type MeshStyle = {
   color?: string;
   lineWidth?: number;
+};
+
+export type StreamlineColorMode = "direction" | "single";
+
+export type StreamlineStyle = {
+  colorMode?: StreamlineColorMode;
+  color?: string;
 };
 
 export const DEFAULT_NODE_OPACITY = 1;
@@ -228,6 +244,7 @@ export type LayerItemNode = BaseNode & {
   localDataFormat?: LocalDataFormat;
   localDataKind?: LocalDataKind;
   localDatasetInfo?: LocalDatasetInfo | null;
+  streamlineStyle?: StreamlineStyle;
 
   // For drawing annotations
   annotation?: AnnotationData;

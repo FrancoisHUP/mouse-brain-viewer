@@ -22,7 +22,7 @@ import { inspectStoredLocalDatasetById, type LocalImportCandidate } from "./loca
 import { disposeLocalDataLoadWorker, loadLocalBrowserVolumeInWorker } from "./localDataLoadWorkerClient";
 import { loadVolumeAtResolution, probeOmeZarrSource } from "./omeZarr";
 import type { SavedViewerEntry } from "./viewerLibrary";
-import { buildExportFileName, canExportVolumeAsNrrd, createChunkedLocalZarrVolumeExportBlob, createLocalVolumeZarrExportBlob, createNiftiExportBlob, createNrrdExportBlob, createRemoteOmeZarrZipBlob } from "./exportConverters";
+import { buildExportFileName, canExportVolumeAsNrrd, createChunkedLocalZarrVolumeExportBlob, createLocalStreamlineExportBlob, createLocalVolumeZarrExportBlob, createNiftiExportBlob, createNrrdExportBlob, createRemoteOmeZarrZipBlob } from "./exportConverters";
 import { buildExportSourceFromLoadedVolume, buildExportSourceFromLocalRecord } from "./exportModel";
 
 type SourceManagerItem =
@@ -940,7 +940,7 @@ export default function LocalDatasetManagerPanel({
     }
   }
 
-  async function handleExportLocalSource(item: Extract<SourceManagerItem, { sourceType: "local" }>, mode: "original" | "zip" | "nrrd" | "nii" | "zarr" | "ome-zarr") {
+  async function handleExportLocalSource(item: Extract<SourceManagerItem, { sourceType: "local" }>, mode: "original" | "zip" | "trk" | "tck" | "vtk" | "nrrd" | "nii" | "zarr" | "ome-zarr") {
     setError(null);
     setMessage(null);
     setOpenExportMenuId(null);
@@ -955,7 +955,7 @@ export default function LocalDatasetManagerPanel({
     setCurrentExportActivity({
       sourceId: item.id,
       sourceName: item.name,
-      label: mode === "original" ? "Preparing original download" : mode === "zip" ? "Preparing ZIP export" : `Preparing ${mode === "nii" ? "NIfTI" : mode === "nrrd" ? "NRRD" : mode === "ome-zarr" ? "OME-Zarr" : "Zarr"} export`,
+      label: mode === "original" ? "Preparing original download" : mode === "zip" ? "Preparing ZIP export" : `Preparing ${mode === "nii" ? "NIfTI" : mode === "nrrd" ? "NRRD" : mode === "ome-zarr" ? "OME-Zarr" : mode === "zarr" ? "Zarr" : mode.toUpperCase()} export`,
       status: "preparing",
       cancellable: true,
       progress: null,
@@ -973,7 +973,10 @@ export default function LocalDatasetManagerPanel({
           progress: 1,
           detail: null,
         });
-        downloadBlob(item.record.blob, item.record.fileName);
+        downloadBlob(
+          item.record.blob,
+          item.record.fileName
+        );
         setCurrentExportActivity({
           sourceId: item.id,
           sourceName: item.name,
@@ -981,7 +984,45 @@ export default function LocalDatasetManagerPanel({
           status: "success",
           cancellable: false,
           progress: 1,
-          detail: `Started download for ${item.name}.`,
+          detail: `Started original download for ${item.name}.`,
+        });
+        return;
+      }
+      if (mode === "trk" || mode === "tck" || mode === "vtk") {
+        const candidate = await ensureLocalInspection(item);
+        throwIfExportAborted(abortController.signal);
+        if (candidate.inspection.kind !== "streamlines") {
+          throw new Error(`${mode.toUpperCase()} export is currently available only for local streamline data sources.`);
+        }
+        setCurrentExportActivity({
+          sourceId: item.id,
+          sourceName: item.name,
+          label: `Converting source to ${mode.toUpperCase()}`,
+          status: "packaging",
+          cancellable: true,
+          progress: null,
+          detail: "Reading the saved streamline source.",
+        });
+        const blob = await createLocalStreamlineExportBlob(item.record, mode);
+        throwIfExportAborted(abortController.signal);
+        setCurrentExportActivity({
+          sourceId: item.id,
+          sourceName: item.name,
+          label: "Starting download",
+          status: "downloading",
+          cancellable: false,
+          progress: 1,
+          detail: null,
+        });
+        downloadBlob(blob, buildExportFileName(item.record.fileName, mode));
+        setCurrentExportActivity({
+          sourceId: item.id,
+          sourceName: item.name,
+          label: "Download started",
+          status: "success",
+          cancellable: false,
+          progress: 1,
+          detail: `Started ${mode.toUpperCase()} download for ${item.name}.`,
         });
         return;
       }
@@ -2027,10 +2068,10 @@ export default function LocalDatasetManagerPanel({
                                           {inspectionError ?? "Failed to inspect this source."}
                                         </div>
                                       ) : null}
-                                      {localInspectionCache[item.id]?.inspection.kind === "volume" ? (
-                                        <>
-                                          <button type="button" onClick={() => void handleExportLocalSource(item, "nrrd")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
-                                            NRRD
+                  {localInspectionCache[item.id]?.inspection.kind === "volume" ? (
+                    <>
+                      <button type="button" onClick={() => void handleExportLocalSource(item, "nrrd")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
+                        NRRD
                                           </button>
                                           <button type="button" onClick={() => void handleExportLocalSource(item, "nii")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
                                             NIfTI
@@ -2038,11 +2079,23 @@ export default function LocalDatasetManagerPanel({
                                           <button type="button" onClick={() => void handleExportLocalSource(item, "ome-zarr")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
                                             OME-Zarr
                                           </button>
-                                          <button type="button" onClick={() => void handleExportLocalSource(item, "zarr")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
-                                            Zarr
-                                          </button>
-                                        </>
-                                      ) : null}
+                      <button type="button" onClick={() => void handleExportLocalSource(item, "zarr")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
+                        Zarr
+                      </button>
+                    </>
+                  ) : localInspectionCache[item.id]?.inspection.kind === "streamlines" ? (
+                    <>
+                      <button type="button" onClick={() => void handleExportLocalSource(item, "trk")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
+                        TRK
+                      </button>
+                      <button type="button" onClick={() => void handleExportLocalSource(item, "tck")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
+                        TCK
+                      </button>
+                      <button type="button" onClick={() => void handleExportLocalSource(item, "vtk")} disabled={exportingSourceId === item.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === item.id ? 0.6 : 1 }}>
+                        VTK
+                      </button>
+                    </>
+                  ) : null}
                                         </>
                                       ) : null}
                                       {item.sourceType === "external" ? (
@@ -2211,11 +2264,11 @@ export default function LocalDatasetManagerPanel({
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
                               <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "10px 12px", display: "grid", gap: 4 }}>
                                 <div style={{ fontSize: 11, opacity: 0.62, textTransform: "uppercase", letterSpacing: "0.04em" }}>Format</div>
-                                <div style={{ fontSize: 12, fontWeight: 700 }}>{detailInspection.candidate.inspection.info.format.toUpperCase()}</div>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{detailInspection.candidate.inspection.format.toUpperCase()}</div>
                               </div>
                               <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "10px 12px", display: "grid", gap: 4 }}>
                                 <div style={{ fontSize: 11, opacity: 0.62, textTransform: "uppercase", letterSpacing: "0.04em" }}>Kind</div>
-                                <div style={{ fontSize: 12, fontWeight: 700 }}>{detailInspection.candidate.inspection.info.kind}</div>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{detailInspection.candidate.inspection.kind}</div>
                               </div>
                               <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "10px 12px", display: "grid", gap: 4 }}>
                                 <div style={{ fontSize: 11, opacity: 0.62, textTransform: "uppercase", letterSpacing: "0.04em" }}>Dimensions</div>
@@ -2225,15 +2278,21 @@ export default function LocalDatasetManagerPanel({
                                     : "Unknown"}
                                 </div>
                               </div>
-                              <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "10px 12px", display: "grid", gap: 4 }}>
-                                <div style={{ fontSize: 11, opacity: 0.62, textTransform: "uppercase", letterSpacing: "0.04em" }}>Voxel size</div>
-                                <div style={{ fontSize: 12, fontWeight: 700 }}>
-                                  {detailInspection.candidate.inspection.info.voxelSizeUm
-                                    ? `${formatVoxelSizeValue(detailInspection.candidate.inspection.info.voxelSizeUm.z)} × ${formatVoxelSizeValue(detailInspection.candidate.inspection.info.voxelSizeUm.y)} × ${formatVoxelSizeValue(detailInspection.candidate.inspection.info.voxelSizeUm.x)} µm`
-                                    : "Unknown"}
-                                </div>
-                              </div>
-                            </div>
+          <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "10px 12px", display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 11, opacity: 0.62, textTransform: "uppercase", letterSpacing: "0.04em" }}>Voxel size</div>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>
+              {detailInspection.candidate.inspection.info.voxelSizeUm
+                ? `${formatVoxelSizeValue(detailInspection.candidate.inspection.info.voxelSizeUm.z)} × ${formatVoxelSizeValue(detailInspection.candidate.inspection.info.voxelSizeUm.y)} × ${formatVoxelSizeValue(detailInspection.candidate.inspection.info.voxelSizeUm.x)} µm`
+                : "Unknown"}
+            </div>
+          </div>
+          {detailInspection.candidate.inspection.info.streamlineStats ? (
+            <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "10px 12px", display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 11, opacity: 0.62, textTransform: "uppercase", letterSpacing: "0.04em" }}>Streamlines</div>
+              <div style={{ fontSize: 12, fontWeight: 700 }}>{detailInspection.candidate.inspection.info.streamlineStats.streamlineCount.toLocaleString()}</div>
+            </div>
+          ) : null}
+        </div>
 
                             {detailInspection.candidate.inspection.info.availableScales?.length ? (
                               <div style={{ display: "grid", gap: 8 }}>
@@ -2350,10 +2409,10 @@ export default function LocalDatasetManagerPanel({
                                   {localInspectionStatus[detailItem.id]?.error ?? "Failed to inspect this source."}
                                 </div>
                               ) : null}
-                              {localInspectionCache[detailItem.id]?.inspection.kind === "volume" ? (
-                                <>
-                                  <button type="button" onClick={() => void handleExportLocalSource(detailItem, "nrrd")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
-                                    NRRD
+          {localInspectionCache[detailItem.id]?.inspection.kind === "volume" ? (
+            <>
+              <button type="button" onClick={() => void handleExportLocalSource(detailItem, "nrrd")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
+                NRRD
                                   </button>
                                   <button type="button" onClick={() => void handleExportLocalSource(detailItem, "nii")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
                                     NIfTI
@@ -2361,11 +2420,23 @@ export default function LocalDatasetManagerPanel({
                                   <button type="button" onClick={() => void handleExportLocalSource(detailItem, "ome-zarr")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
                                     OME-Zarr
                                   </button>
-                                  <button type="button" onClick={() => void handleExportLocalSource(detailItem, "zarr")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
-                                    Zarr
-                                  </button>
-                                </>
-                              ) : null}
+              <button type="button" onClick={() => void handleExportLocalSource(detailItem, "zarr")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
+                Zarr
+              </button>
+            </>
+          ) : localInspectionCache[detailItem.id]?.inspection.kind === "streamlines" ? (
+            <>
+              <button type="button" onClick={() => void handleExportLocalSource(detailItem, "trk")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
+                TRK
+              </button>
+              <button type="button" onClick={() => void handleExportLocalSource(detailItem, "tck")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
+                TCK
+              </button>
+              <button type="button" onClick={() => void handleExportLocalSource(detailItem, "vtk")} disabled={exportingSourceId === detailItem.id} style={{ height: 34, borderRadius: 8, border: "none", background: "transparent", color: "white", cursor: "pointer", textAlign: "left", padding: "0 10px", fontSize: 12, opacity: exportingSourceId === detailItem.id ? 0.6 : 1 }}>
+                VTK
+              </button>
+            </>
+          ) : null}
                                 </>
                               ) : null}
                               {detailExternalItem ? (

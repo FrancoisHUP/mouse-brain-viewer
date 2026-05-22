@@ -21,11 +21,14 @@ export type ExportTargetFormat =
   | "tiff"
   | "ome-zarr"
   | "zarr"
-  | "obj";
+  | "obj"
+  | "trk"
+  | "tck"
+  | "vtk";
 
 export type ExportOrigin = "local" | "external";
 
-export type ExportDataKind = "volume" | "mesh" | "annotation" | "unknown";
+export type ExportDataKind = "volume" | "mesh" | "streamlines" | "annotation" | "unknown";
 
 export type ExportTargetSupportState = "available" | "planned" | "unsupported";
 
@@ -109,6 +112,7 @@ export type ExportSourceModel = {
 function mapLocalKind(kind: LocalDataKind): ExportDataKind {
   if (kind === "volume") return "volume";
   if (kind === "mesh") return "mesh";
+  if (kind === "streamlines") return "streamlines";
   return "unknown";
 }
 
@@ -224,6 +228,24 @@ function buildCapabilities(params: {
       state: params.sourceFormat === "obj" && params.origin === "local" ? "planned" : "planned",
       reason: "Mesh writer/export plumbing will come after volume export is in place.",
     });
+  } else if (params.dataKind === "streamlines") {
+    capabilities.push(
+      {
+        format: "trk",
+        state: params.origin === "local" ? "available" : "planned",
+        reason: params.origin === "local" ? "Converts this streamline source to TrackVis TRK." : "Remote streamline export will be added after remote fetch and packaging support lands.",
+      },
+      {
+        format: "tck",
+        state: params.origin === "local" ? "available" : "planned",
+        reason: params.origin === "local" ? "Converts this streamline source to MRtrix TCK." : "Remote streamline export will be added after remote fetch and packaging support lands.",
+      },
+      {
+        format: "vtk",
+        state: params.origin === "local" ? "available" : "planned",
+        reason: params.origin === "local" ? "Converts this streamline source to legacy VTK PolyData." : "Remote streamline export will be added after remote fetch and packaging support lands.",
+      },
+    );
   }
 
   return uniqueCapabilities(capabilities);

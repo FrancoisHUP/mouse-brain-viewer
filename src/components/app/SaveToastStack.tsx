@@ -372,6 +372,7 @@ export default function SaveToastStack({
                 gap: 8,
                 fontFamily: "sans-serif",
                 overflow: "hidden",
+                maxHeight: 220,
                 transition:
                   "border-color 180ms ease, box-shadow 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1)",
                 transform: toast.isHovered ? "translate3d(0, -4px, 0)" : "translate3d(0, 0, 0)",
@@ -400,30 +401,41 @@ export default function SaveToastStack({
                   background: accent,
                 }}
               />
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-                <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, minHeight: 0 }}>
+                <div style={{ minWidth: 0, flex: 1, minHeight: 0, overflow: "hidden", display: "grid", gap: 0 }}>
                   <div data-theme-text="strong" style={{ fontSize: 13, fontWeight: 700, fontFamily: "sans-serif" }}>
                     {toast.title}
                   </div>
-                  <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.82, lineHeight: 1.45, marginTop: 4, fontFamily: "sans-serif" }}>
-                    {toast.message}
-                  </div>
-                  {toast.detail ? (
-                    <div
-                      data-theme-text="muted"
-                      style={{
-                        fontSize: 11,
-                        opacity: 0.62,
-                        lineHeight: 1.45,
-                        marginTop: 6,
-                        fontFamily: "monospace",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {toast.detail}
+                  <div
+                    className="history-menu-scroll"
+                    style={{
+                      minHeight: 0,
+                      overflowY: "auto",
+                      marginTop: 4,
+                      paddingRight: 4,
+                      maxHeight: 164,
+                    }}
+                  >
+                    <div data-theme-text="muted" style={{ fontSize: 12, opacity: 0.82, lineHeight: 1.45, fontFamily: "sans-serif" }}>
+                      {toast.message}
                     </div>
-                  ) : null}
+                    {toast.detail ? (
+                      <div
+                        data-theme-text="muted"
+                        style={{
+                          fontSize: 11,
+                          opacity: 0.62,
+                          lineHeight: 1.45,
+                          marginTop: 6,
+                          fontFamily: "monospace",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {toast.detail}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
                 <button
                   type="button"

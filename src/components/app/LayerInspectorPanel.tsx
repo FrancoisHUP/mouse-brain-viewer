@@ -6,6 +6,7 @@ import type {
   NodeTransform,
   IntensityWindow,
   MeshStyle,
+  StreamlineStyle,
   VolumeOrientationPresetId,
 } from '../../layerTypes';
 import type { SelectedLayerRuntimeInfo } from '../../WebGLCanvas';
@@ -803,6 +804,7 @@ export default function LayerInspectorPanel({
   onUpdateSelectedNodeOpacity,
   onUpdateSelectedNodeIntensityWindow,
   onUpdateSelectedNodeMeshStyle,
+  onUpdateSelectedNodeStreamlineStyle,
   onUpdateSelectedNodeTransform,
   onResetSelectedNodeTransform,
   orientationPresetOptions,
@@ -827,6 +829,7 @@ export default function LayerInspectorPanel({
   onUpdateSelectedNodeOpacity: (opacity: number) => void;
   onUpdateSelectedNodeIntensityWindow: (window: IntensityWindow) => void;
   onUpdateSelectedNodeMeshStyle: (patch: Partial<MeshStyle>) => void;
+  onUpdateSelectedNodeStreamlineStyle: (patch: Partial<StreamlineStyle>) => void;
   onUpdateSelectedNodeTransform: (patch: Partial<NodeTransform>) => void;
   onResetSelectedNodeTransform: () => void;
   orientationPresetOptions: Array<{ value: VolumeOrientationPresetId; label: string }>;
@@ -876,6 +879,12 @@ export default function LayerInspectorPanel({
     isAllenVolumeBoundsCubeSource(selectedMeshLayer.source);
   const selectedMeshColor = selectedMeshLayer?.meshStyle?.color ?? '#86d7ff';
   const selectedMeshLineWidth = Math.max(0.5, Math.min(6, selectedMeshLayer?.meshStyle?.lineWidth ?? 1.6));
+  const canAdjustStreamlineStyle =
+    selectedNode?.kind === 'layer' && selectedNode.localDataKind === 'streamlines';
+  const selectedStreamlineLayer = canAdjustStreamlineStyle ? selectedNode : null;
+  const selectedStreamlineColorMode =
+    selectedStreamlineLayer?.streamlineStyle?.colorMode === 'single' ? 'single' : 'direction';
+  const selectedStreamlineColor = selectedStreamlineLayer?.streamlineStyle?.color ?? '#f5f5f5';
   const canAdjustOrientationPreset =
     selectedNode?.kind === 'layer' && isVolumeOrientationAdjustableLayer(selectedNode);
   const selectedOrientationPreset =
@@ -978,6 +987,84 @@ export default function LayerInspectorPanel({
                               onChange={(value) => onUpdateSelectedNodeMeshStyle({ lineWidth: value })}
                               valueLabel={`${selectedMeshLineWidth.toFixed(1)} px`}
                             />
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {canAdjustStreamlineStyle ? (
+                      <>
+                        <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                          Streamline color
+                        </span>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button
+                            type="button"
+                            onClick={() => onUpdateSelectedNodeStreamlineStyle({ colorMode: 'direction' })}
+                            style={{
+                              flex: 1,
+                              height: 34,
+                              borderRadius: 10,
+                              border:
+                                selectedStreamlineColorMode === 'direction'
+                                  ? '1px solid rgba(160,220,255,0.58)'
+                                  : '1px solid rgba(255,255,255,0.10)',
+                              background:
+                                selectedStreamlineColorMode === 'direction'
+                                  ? 'rgba(120,190,255,0.18)'
+                                  : 'rgba(255,255,255,0.04)',
+                              color: 'inherit',
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              fontWeight: 600,
+                            }}
+                          >
+                            Direction RGB
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onUpdateSelectedNodeStreamlineStyle({ colorMode: 'single' })}
+                            style={{
+                              flex: 1,
+                              height: 34,
+                              borderRadius: 10,
+                              border:
+                                selectedStreamlineColorMode === 'single'
+                                  ? '1px solid rgba(160,220,255,0.58)'
+                                  : '1px solid rgba(255,255,255,0.10)',
+                              background:
+                                selectedStreamlineColorMode === 'single'
+                                  ? 'rgba(120,190,255,0.18)'
+                                  : 'rgba(255,255,255,0.04)',
+                              color: 'inherit',
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              fontWeight: 600,
+                            }}
+                          >
+                            Single color
+                          </button>
+                        </div>
+                        {selectedStreamlineColorMode === 'single' ? (
+                          <>
+                            <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                              Color
+                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <input
+                                type="color"
+                                value={selectedStreamlineColor}
+                                onChange={(event) => onUpdateSelectedNodeStreamlineStyle({ color: event.target.value })}
+                                style={{
+                                  width: 40,
+                                  height: 34,
+                                  padding: 0,
+                                  border: 'none',
+                                  background: 'transparent',
+                                  cursor: 'pointer',
+                                }}
+                              />
+                              <div style={{ fontSize: 11, opacity: 0.72 }}>{selectedStreamlineColor.toUpperCase()}</div>
+                            </div>
                           </>
                         ) : null}
                       </>

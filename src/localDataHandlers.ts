@@ -2,6 +2,7 @@ import { gunzipSync, unzipSync } from "fflate";
 import { fromArrayBuffer as geotiffFromArrayBuffer } from "geotiff";
 import type { LoadedVolume } from "./omeZarr";
 import type { LoadedMesh } from "./allenMesh";
+import type { LoadedStreamlines } from "./streamlines";
 import type {
     LocalDataFormat,
     LocalDataKind,
@@ -10,6 +11,7 @@ import type {
     RemoteRenderMode,
 } from "./layerTypes";
 import { getLocalDatasetRecord, type StoredLocalDatasetRecord } from "./localDataStore";
+import { inspectTckBuffer, inspectTrkBuffer, inspectVtkBuffer, loadTckBuffer, loadTrkBuffer, loadVtkBuffer, type StreamlineReference } from "./streamlines";
 
 const DEFAULT_BROWSER_VOLUME_BUDGET_BYTES = 1_500_000_000;
 
@@ -420,6 +422,42 @@ function detectRootGroups(entries: LocalInputEntry[]): Array<{ root: string; for
     return Array.from(roots, ([root, format]) => ({ root, format }));
 }
 
+function fileBaseName(path: string): string {
+    const trimmed = normalizePath(path).split("/").pop() ?? path;
+    return trimmed
+        .replace(/\.nii\.gz$/i, "")
+        .replace(/\.ome\.zarr$/i, "")
+        .replace(/\.[^.]+$/i, "")
+        .toLowerCase();
+}
+
+function sameParentDirectory(a: string, b: string): boolean {
+    const aParts = normalizePath(a).split("/");
+    const bParts = normalizePath(b).split("/");
+    aParts.pop();
+    bParts.pop();
+    return aParts.join("/") === bParts.join("/");
+}
+
+function isNiftiLikePath(path: string): boolean {
+    return /\.nii(\.gz)?$/i.test(normalizePath(path));
+}
+
+function isTckPath(path: string): boolean {
+    return /\.tck$/i.test(normalizePath(path));
+}
+
+function findBestTckReferenceEntry(tckEntry: LocalInputEntry, entries: LocalInputEntry[]): LocalInputEntry | null {
+    const niftiEntries = entries.filter((entry) => isNiftiLikePath(entry.path));
+    if (!niftiEntries.length) return null;
+    const sameBase = niftiEntries.filter((entry) => fileBaseName(entry.path) === fileBaseName(tckEntry.path));
+    if (sameBase.length === 1) return sameBase[0];
+    const sameParent = niftiEntries.filter((entry) => sameParentDirectory(entry.path, tckEntry.path));
+    if (sameParent.length === 1) return sameParent[0];
+    if (niftiEntries.length === 1) return niftiEntries[0];
+    return null;
+}
+
 async function inspectLocalZarrTree(entries: LocalInputEntry[], rootPath: string, formatHint: "ome-zarr" | "zarr", options?: LocalInspectionOptions): Promise<LocalDatasetInspection> {
     const map = mapByPath(entries);
     const cleanRoot = normalizePath(rootPath).replace(/\/+$/, "");
@@ -586,6 +624,20 @@ function parseNiftiHeader(buffer: ArrayBuffer) {
     return { littleEndian, datatype, bitpix, voxOffset: Math.max(0, Math.floor(voxOffset)), dims, voxelSizeUm, magic };
 }
 
+async function buildStreamlineReferenceFromNiftiFile(file: File): Promise<StreamlineReference> {
+    const buffer = await maybeGunzipBlob(file, file.name);
+    const header = parseNiftiHeader(buffer);
+    return {
+        dims: header.dims,
+        voxelSizeMm: {
+            x: header.voxelSizeUm.x,
+            y: header.voxelSizeUm.y,
+            z: header.voxelSizeUm.z,
+        },
+        fileName: file.name,
+    };
+}
+
 function niftiDatatypeInfo(datatype: number, bitpix: number): { bytes: number; read: (view: DataView, offset: number, littleEndian: boolean) => number } {
     switch (datatype) {
         case 2: return { bytes: 1, read: (view, offset) => view.getUint8(offset) };
@@ -722,6 +774,16 @@ export async function inspectLocalInputEntries(inputEntries: LocalInputEntry[], 
     const candidates: LocalImportCandidate[] = [];
     const totalGroups = treeGroups.length + expanded.length;
     let processed = 0;
+    const reservedTckReferencePaths = new Set<string>();
+
+    for (const entry of expanded) {
+        const normalizedPath = normalizePath(entry.path);
+        if (!isTckPath(normalizedPath)) continue;
+        const referenceEntry = findBestTckReferenceEntry(entry, expanded);
+        if (referenceEntry) {
+            reservedTckReferencePaths.add(normalizePath(referenceEntry.path));
+        }
+    }
 
     for (const group of treeGroups) {
         throwIfAborted(options?.signal);
@@ -743,6 +805,7 @@ export async function inspectLocalInputEntries(inputEntries: LocalInputEntry[], 
     for (const entry of expanded) {
         const normalizedPath = normalizePath(entry.path);
         if (consumed.has(normalizedPath)) continue;
+        if (reservedTckReferencePaths.has(normalizedPath) && !isTckPath(normalizedPath)) continue;
         throwIfAborted(options?.signal);
         reportProgress(options, {
             phase: "inspecting",
@@ -751,6 +814,22 @@ export async function inspectLocalInputEntries(inputEntries: LocalInputEntry[], 
             total: Math.max(totalGroups, 1),
             percent: totalGroups > 0 ? processed / totalGroups : 0,
         });
+        if (isTckPath(normalizedPath)) {
+            const referenceEntry = findBestTckReferenceEntry(entry, expanded);
+            if (referenceEntry) {
+                consumed.add(normalizePath(referenceEntry.path));
+            }
+            const inspection = await inspectTckFile(entry.file, entry.file.name, referenceEntry?.file ?? null, referenceEntry?.path ?? null);
+            candidates.push({
+                id: createId("local-import"),
+                name: entry.file.name,
+                entries: referenceEntry ? [entry, referenceEntry] : [entry],
+                inspection,
+            });
+            processed += 1;
+            await yieldToBrowser();
+            continue;
+        }
         const inspection = await inspectLocalBrowserFile(entry.file);
         candidates.push({ id: createId("local-import"), name: entry.file.name, entries: [entry], inspection });
         processed += 1;
@@ -769,7 +848,10 @@ export async function inspectLocalInputEntries(inputEntries: LocalInputEntry[], 
 
 export async function inspectStoredLocalDatasetRecord(record: StoredLocalDatasetRecord, options?: LocalInspectionOptions): Promise<LocalImportCandidate> {
     const entries = createStoredDatasetEntries(record);
-    const [candidate] = await inspectLocalInputEntries(entries, options);
+    const candidates = await inspectLocalInputEntries(entries, options);
+    const candidate = candidates.find((entry) => entry.inspection.kind === "streamlines")
+        ?? candidates.find((entry) => entry.name === record.fileName || entry.inspection.info.fileName === record.fileName)
+        ?? candidates[0];
     if (!candidate) {
         throw new Error(`Failed to inspect ${record.fileName}.`);
     }
@@ -796,7 +878,91 @@ export async function inspectLocalBrowserFile(file: File): Promise<LocalDatasetI
     if (ext === "nii") return await inspectNiftiFile(innerFile, file.name);
     if (ext === "tif" || ext === "tiff" || innerFile.type.toLowerCase().includes("tiff")) return await inspectTiffFile(innerFile, file.name);
     if (ext === "obj") return await inspectObjFile(innerFile, file.name);
-    throw new Error(`Unsupported local file format for ${file.name}. Current local import supports NRRD, NIfTI (.nii/.nii.gz), TIFF, OBJ, OME-Zarr/Zarr folders, and ZIP archives containing OME-Zarr/Zarr.`);
+    if (ext === "trk") return await inspectTrkFile(innerFile, file.name);
+    if (ext === "tck") return await inspectTckFile(innerFile, file.name, null, null);
+    if (ext === "vtk") return await inspectVtkFile(innerFile, file.name);
+    throw new Error(`Unsupported local file format for ${file.name}. Current local import supports NRRD, NIfTI (.nii/.nii.gz), TIFF, OBJ, TRK/TCK/VTK tractography, OME-Zarr/Zarr folders, and ZIP archives containing OME-Zarr/Zarr.`);
+}
+
+async function inspectTrkFile(file: File, originalFileName: string): Promise<LocalDatasetInspection> {
+    const buffer = await file.arrayBuffer();
+    const parsed = inspectTrkBuffer(buffer);
+    return {
+        format: "trk",
+        kind: "streamlines",
+        info: {
+            shareable: false,
+            format: "trk",
+            kind: "streamlines",
+            fileName: originalFileName,
+            mimeType: file.type || "application/octet-stream",
+            fileSizeBytes: file.size,
+            dims: {
+                z: parsed.header.dims.z,
+                y: parsed.header.dims.y,
+                x: parsed.header.dims.x,
+            },
+            rawShape: [parsed.header.dims.z, parsed.header.dims.y, parsed.header.dims.x],
+            voxelSizeUm: {
+                z: parsed.voxelSizeUm.z,
+                y: parsed.voxelSizeUm.y,
+                x: parsed.voxelSizeUm.x,
+            },
+            warning: parsed.warning,
+            streamlineStats: parsed.streamlineStats,
+        },
+    };
+}
+
+async function inspectTckFile(file: File, originalFileName: string, referenceFile?: File | null, referencePath?: string | null): Promise<LocalDatasetInspection> {
+    const buffer = await file.arrayBuffer();
+    const reference = referenceFile ? await buildStreamlineReferenceFromNiftiFile(referenceFile) : null;
+    const parsed = inspectTckBuffer(buffer, reference);
+    return {
+        format: "tck",
+        kind: "streamlines",
+        info: {
+            shareable: false,
+            format: "tck",
+            kind: "streamlines",
+            fileName: originalFileName,
+            mimeType: file.type || "application/octet-stream",
+            fileSizeBytes: file.size,
+            dims: reference?.dims ? { ...reference.dims } : null,
+            rawShape: reference?.dims ? [reference.dims.z, reference.dims.y, reference.dims.x] : null,
+            voxelSizeUm: reference?.voxelSizeMm ? {
+                z: reference.voxelSizeMm.z,
+                y: reference.voxelSizeMm.y,
+                x: reference.voxelSizeMm.x,
+            } : null,
+            warning: parsed.warning,
+            streamlineStats: parsed.streamlineStats,
+            streamlineReferencePath: referencePath ?? null,
+            streamlineReferenceName: reference?.fileName ?? null,
+        },
+    };
+}
+
+async function inspectVtkFile(file: File, originalFileName: string): Promise<LocalDatasetInspection> {
+    const buffer = await file.arrayBuffer();
+    const parsed = inspectVtkBuffer(buffer);
+    return {
+        format: "vtk",
+        kind: "streamlines",
+        info: {
+            shareable: false,
+            format: "vtk",
+            kind: "streamlines",
+            fileName: originalFileName,
+            mimeType: file.type || "application/octet-stream",
+            fileSizeBytes: file.size,
+            dims: null,
+            rawShape: null,
+            voxelSizeUm: null,
+            warning: parsed.warning,
+            streamlineStats: parsed.streamlineStats,
+        },
+    };
 }
 
 function collapseRasterToGrayscale(raster: any, width: number, height: number): Float32Array {
@@ -1049,6 +1215,34 @@ export async function loadLocalBrowserMesh(datasetId: string): Promise<LoadedMes
     if (!record || record.kind !== "blob" || !record.blob) throw new Error("This local mesh is missing from browser storage.");
     const text = new TextDecoder("utf-8").decode(await maybeGunzipBlob(record.blob, record.fileName));
     return parseObjText(text, datasetId);
+}
+
+export async function loadLocalBrowserStreamlines(datasetId: string): Promise<LoadedStreamlines> {
+    const record = await getLocalDatasetRecord(datasetId);
+    if (!record) {
+        throw new Error("This local streamline dataset is missing from browser storage.");
+    }
+    if (record.kind === "blob" && record.blob) {
+        const buffer = await maybeGunzipBlob(record.blob, record.fileName);
+        const ext = fileExt(stripGzipSuffix(record.fileName));
+        if (ext === "trk") return loadTrkBuffer(buffer, `browser-local-streamlines://${datasetId}`);
+        if (ext === "tck") return loadTckBuffer(buffer, `browser-local-streamlines://${datasetId}`);
+        if (ext === "vtk") return loadVtkBuffer(buffer, `browser-local-streamlines://${datasetId}`);
+        throw new Error(`Unsupported local streamline format: ${record.fileName}`);
+    }
+    if (record.kind === "tree" && record.entries?.length) {
+        const tckEntry = record.entries.find((entry) => isTckPath(entry.path));
+        if (!tckEntry) {
+            throw new Error("This local streamline dataset is missing its TCK file.");
+        }
+        const referenceEntry = record.entries.find((entry) => isNiftiLikePath(entry.path)) ?? null;
+        const buffer = await maybeGunzipBlob(tckEntry.blob, tckEntry.fileName);
+        const reference = referenceEntry
+            ? await buildStreamlineReferenceFromNiftiFile(createFileFromBlob(referenceEntry.blob, referenceEntry.fileName, referenceEntry.mimeType))
+            : null;
+        return loadTckBuffer(buffer, `browser-local-streamlines://${datasetId}`, reference);
+    }
+    throw new Error("This local streamline dataset is missing from browser storage.");
 }
 
 

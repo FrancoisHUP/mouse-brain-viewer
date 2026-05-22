@@ -2,7 +2,17 @@ import type { ExportSourceModel, ExportTargetFormat } from "./exportModel";
 import type { StoredLocalDatasetRecord } from "./localDataStore";
 import type { LocalDatasetInfo } from "./layerTypes";
 import type { LoadedVolume } from "./omeZarr";
-import { Zip, ZipPassThrough } from "fflate";
+import { Zip, ZipPassThrough, gunzipSync } from "fflate";
+import {
+  createTckBlob,
+  createTrkBlob,
+  createVtkBlob,
+  parseTckRawBuffer,
+  parseTrkRawBuffer,
+  parseVtkRawBuffer,
+  type RawTractogram,
+  type StreamlineReference,
+} from "./streamlines";
 
 export type RemoteArchiveProgress = {
   completed: number;
@@ -32,6 +42,9 @@ export function buildExportFileName(name: string, format: ExportTargetFormat): s
   if (format === "ome-zarr") return `${baseName}.ome.zarr.zip`;
   if (format === "zarr") return `${baseName}.zarr.zip`;
   if (format === "obj") return `${baseName}.obj`;
+  if (format === "trk") return `${baseName}.trk`;
+  if (format === "tck") return `${baseName}.tck`;
+  if (format === "vtk") return `${baseName}.vtk`;
   return `${baseName}.bin`;
 }
 
@@ -52,6 +65,24 @@ function typedArrayToPlainUint8Array(data: Float32Array | Uint32Array | Uint8Arr
   const copy = new Uint8Array(view.byteLength);
   copy.set(view);
   return copy;
+}
+
+function fileExt(name: string): string {
+  const trimmed = name.trim().toLowerCase();
+  const idx = trimmed.lastIndexOf(".");
+  return idx >= 0 ? trimmed.slice(idx + 1) : "";
+}
+
+function stripGzipSuffix(name: string): string {
+  return /\.gz$/i.test(name) ? name.replace(/\.gz$/i, "") : name;
+}
+
+function maybeGunzipBytes(buffer: ArrayBuffer, fileName: string): ArrayBuffer {
+  if (fileExt(fileName) !== "gz") return buffer;
+  const output = gunzipSync(new Uint8Array(buffer));
+  const copy = new Uint8Array(output.byteLength);
+  copy.set(output);
+  return copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength) as ArrayBuffer;
 }
 
 type VolumePyramidLevel = {
@@ -941,4 +972,65 @@ export function createNiftiExportBlob(source: ExportSourceModel, volume: LoadedV
   const magic = encodeText("n+1\0");
   bytes.set(magic, 344);
   return new Blob([headerBuffer, typedArrayToBlobPart(voxelBytes)], { type: "application/octet-stream" });
+}
+
+function parseNiftiReferenceHeader(buffer: ArrayBuffer): StreamlineReference {
+  if (buffer.byteLength < 352) {
+    throw new Error("Unsupported NIfTI file: header is too small.");
+  }
+  const view = new DataView(buffer);
+  const littleHeader = view.getInt32(0, true);
+  const littleEndian = littleHeader === 348 || littleHeader === 540;
+  const bigHeader = littleEndian ? littleHeader : view.getInt32(0, false);
+  if (littleHeader !== 348 && littleHeader !== 540 && bigHeader !== 348 && bigHeader !== 540) {
+    throw new Error("Unsupported NIfTI file: invalid header size.");
+  }
+  const readInt16 = (offset: number) => view.getInt16(offset, littleEndian);
+  const readFloat32 = (offset: number) => view.getFloat32(offset, littleEndian);
+  return {
+    dims: {
+      x: Math.max(1, readInt16(42) || 1),
+      y: Math.max(1, readInt16(44) || 1),
+      z: Math.max(1, readInt16(46) || 1),
+    },
+    voxelSizeMm: {
+      x: Number.isFinite(readFloat32(80)) && readFloat32(80) > 0 ? readFloat32(80) : 1,
+      y: Number.isFinite(readFloat32(84)) && readFloat32(84) > 0 ? readFloat32(84) : 1,
+      z: Number.isFinite(readFloat32(88)) && readFloat32(88) > 0 ? readFloat32(88) : 1,
+    },
+  };
+}
+
+async function buildRawTractogramFromLocalRecord(record: StoredLocalDatasetRecord): Promise<RawTractogram> {
+  if (record.kind === "blob" && record.blob) {
+    const buffer = maybeGunzipBytes(await record.blob.arrayBuffer(), record.fileName);
+    const ext = fileExt(stripGzipSuffix(record.fileName));
+    if (ext === "trk") return parseTrkRawBuffer(buffer);
+    if (ext === "tck") return parseTckRawBuffer(buffer);
+    if (ext === "vtk") return parseVtkRawBuffer(buffer);
+    throw new Error(`Unsupported local streamline format: ${record.fileName}`);
+  }
+  if (record.kind === "tree" && record.entries?.length) {
+    const tckEntry = record.entries.find((entry) => /\.tck$/i.test(entry.path) || /\.tck$/i.test(entry.fileName)) ?? null;
+    if (!tckEntry) {
+      throw new Error("This local streamline dataset is missing its TCK file.");
+    }
+    const niftiEntry = record.entries.find((entry) => /\.nii(\.gz)?$/i.test(entry.path) || /\.nii(\.gz)?$/i.test(entry.fileName)) ?? null;
+    const reference = niftiEntry
+      ? parseNiftiReferenceHeader(maybeGunzipBytes(await niftiEntry.blob.arrayBuffer(), niftiEntry.fileName))
+      : null;
+    const buffer = maybeGunzipBytes(await tckEntry.blob.arrayBuffer(), tckEntry.fileName);
+    return parseTckRawBuffer(buffer, reference);
+  }
+  throw new Error("This local streamline dataset is missing from browser storage.");
+}
+
+export async function createLocalStreamlineExportBlob(
+  record: StoredLocalDatasetRecord,
+  format: Extract<ExportTargetFormat, "trk" | "tck" | "vtk">
+): Promise<Blob> {
+  const tractogram = await buildRawTractogramFromLocalRecord(record);
+  if (format === "trk") return createTrkBlob(tractogram);
+  if (format === "tck") return createTckBlob(tractogram);
+  return createVtkBlob(tractogram);
 }

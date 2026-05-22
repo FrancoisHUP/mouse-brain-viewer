@@ -44,8 +44,9 @@ import {
   type RayHit,
   type SceneRay,
 } from "./scenePicking";
-import { disposeLocalDataLoadWorker, loadLocalBrowserMeshInWorker, loadLocalBrowserVolumeInWorker } from "./localDataLoadWorkerClient";
+import { disposeLocalDataLoadWorker, loadLocalBrowserMeshInWorker, loadLocalBrowserStreamlinesInWorker, loadLocalBrowserVolumeInWorker } from "./localDataLoadWorkerClient";
 import { updateTrackedCacheEstimate } from "./resourceTelemetry";
+import type { LoadedStreamlines } from "./streamlines";
 
 type CameraState = {
   mode: CameraControlMode;
@@ -257,6 +258,16 @@ function isLocalMeshLayer(layer: LayerItemNode): boolean {
   );
 }
 
+function isLocalStreamlineLayer(layer: LayerItemNode): boolean {
+  return (
+    layer.type === "file" &&
+    typeof layer.source === "string" &&
+    layer.sourceKind === "custom-upload" &&
+    layer.localDataKind === "streamlines" &&
+    !!layer.localOnly
+  );
+}
+
 function isCanonicalSliceBrowsableLayer(
   layer: LayerItemNode | null | undefined
 ): layer is LayerItemNode {
@@ -276,12 +287,20 @@ function getLocalMeshCacheKey(datasetId: string): string {
   return `local-mesh::${datasetId}`;
 }
 
+function getLocalStreamlineCacheKey(datasetId: string): string {
+  return `local-streamlines::${datasetId}`;
+}
+
 function estimateLoadedVolumeBytes(volume: LoadedVolume): number {
   return Math.max(0, volume.data?.byteLength ?? 0);
 }
 
 function estimateLoadedMeshBytes(mesh: LoadedMesh): number {
   return Math.max(0, mesh.linePositions?.byteLength ?? 0) + Math.max(0, mesh.trianglePositions?.byteLength ?? 0);
+}
+
+function estimateLoadedStreamlineBytes(streamlines: LoadedStreamlines): number {
+  return Math.max(0, streamlines.linePositions?.byteLength ?? 0) + Math.max(0, streamlines.lineColors?.byteLength ?? 0);
 }
 
 function normalizeMeshLikeUrl(url: string): string {
@@ -296,6 +315,22 @@ function getMeshStyleColor(layer: LayerItemNode): [number, number, number] {
   const raw = typeof layer.meshStyle?.color === "string" ? layer.meshStyle.color.trim() : "";
   const match = /^#?([0-9a-f]{6})$/i.exec(raw);
   if (!match) return [0.52, 0.72, 0.96];
+  const hex = match[1];
+  return [
+    parseInt(hex.slice(0, 2), 16) / 255,
+    parseInt(hex.slice(2, 4), 16) / 255,
+    parseInt(hex.slice(4, 6), 16) / 255,
+  ];
+}
+
+function getStreamlineColorMode(layer: LayerItemNode): "direction" | "single" {
+  return layer.streamlineStyle?.colorMode === "single" ? "single" : "direction";
+}
+
+function getStreamlineSingleColor(layer: LayerItemNode): [number, number, number] {
+  const raw = typeof layer.streamlineStyle?.color === "string" ? layer.streamlineStyle.color.trim() : "";
+  const match = /^#?([0-9a-f]{6})$/i.exec(raw);
+  if (!match) return [0.92, 0.92, 0.92];
   const hex = match[1];
   return [
     parseInt(hex.slice(0, 2), 16) / 255,
@@ -448,6 +483,25 @@ function collectReferencedMeshCacheKeys(nodes: LayerTreeNode[]): Set<string> {
         keys.add(getMeshCacheKey(node.source));
       } else if (isLocalMeshLayer(node) && typeof node.source === "string") {
         keys.add(getLocalMeshCacheKey(node.source));
+      }
+    }
+  }
+
+  visit(nodes);
+  return keys;
+}
+
+function collectReferencedStreamlineCacheKeys(nodes: LayerTreeNode[]): Set<string> {
+  const keys = new Set<string>();
+
+  function visit(list: LayerTreeNode[]) {
+    for (const node of list) {
+      if (node.kind === "group") {
+        visit(node.children);
+        continue;
+      }
+      if (isLocalStreamlineLayer(node) && typeof node.source === "string") {
+        keys.add(getLocalStreamlineCacheKey(node.source));
       }
     }
   }
@@ -847,12 +901,14 @@ export default function WebGLCanvas({
   const layerTreeRef = useRef<LayerTreeNode[]>(layerTree);
   const volumeCacheRef = useRef<Map<string, LoadedVolume>>(new Map());
   const meshCacheRef = useRef<Map<string, LoadedMesh>>(new Map());
+  const streamlineCacheRef = useRef<Map<string, LoadedStreamlines>>(new Map());
   const loadingUrlsRef = useRef<Set<string>>(new Set());
   const loadingMeshesRef = useRef<Set<string>>(new Set());
   const hoveredSceneHitRef = useRef<ScenePointerHit | null>(null);
   const lineStartHitRef = useRef<ScenePointerHit | null>(null);
   const lastVisibleVolumeCacheAtRef = useRef<Map<string, number>>(new Map());
   const lastVisibleMeshCacheAtRef = useRef<Map<string, number>>(new Map());
+  const lastVisibleStreamlineCacheAtRef = useRef<Map<string, number>>(new Map());
   const shapeDragStartHitRef = useRef<ScenePointerHit | null>(null);
   const shapeDragCurrentHitRef = useRef<ScenePointerHit | null>(null);
   const lastPublishedSceneHitRef = useRef<string>("null");
@@ -1247,6 +1303,8 @@ export default function WebGLCanvas({
         sourcePath: `browser-local://${selectedNode.source}`,
         sourceType: selectedNode.localDataKind === "mesh"
           ? `Local OBJ mesh`
+          : selectedNode.localDataKind === "streamlines"
+          ? `Local ${(selectedNode.localDataFormat ?? "trk").toUpperCase()} streamlines`
           : selectedNode.localDataFormat === "nrrd"
           ? `Local NRRD volume`
           : selectedNode.localDataFormat === "tiff"
@@ -1413,6 +1471,19 @@ export default function WebGLCanvas({
     return Array.from(entries.values());
   }, [visibleLayers]);
 
+  const streamlinesToLoad = useMemo(() => {
+    const entries = new Map<string, { cacheKey: string; datasetId: string }>();
+
+    for (const layer of visibleLayers) {
+      if (!isLocalStreamlineLayer(layer)) continue;
+      const datasetId = layer.source as string;
+      const cacheKey = getLocalStreamlineCacheKey(datasetId);
+      entries.set(cacheKey, { cacheKey, datasetId });
+    }
+
+    return Array.from(entries.values());
+  }, [visibleLayers]);
+
   useEffect(() => {
     for (const item of volumesToLoad) {
       if (volumeCacheRef.current.has(item.cacheKey)) continue;
@@ -1472,6 +1543,29 @@ export default function WebGLCanvas({
     }
   }, [meshesToLoad]);
 
+  useEffect(() => {
+    for (const item of streamlinesToLoad) {
+      if (streamlineCacheRef.current.has(item.cacheKey)) continue;
+      if (loadingMeshesRef.current.has(item.cacheKey)) continue;
+
+      loadingMeshesRef.current.add(item.cacheKey);
+      publishLocalLoadState();
+
+      loadLocalBrowserStreamlinesInWorker(item.datasetId)
+        .then((streamlines) => {
+          streamlineCacheRef.current.set(item.cacheKey, streamlines);
+          setLoadTick((v) => v + 1);
+        })
+        .catch((err) => {
+          console.error("Failed to load streamlines:", item.datasetId, err);
+        })
+        .finally(() => {
+          loadingMeshesRef.current.delete(item.cacheKey);
+          publishLocalLoadState();
+        });
+    }
+  }, [streamlinesToLoad]);
+
   const retainedVolumeCacheKeys = useMemo(
     () => collectReferencedVolumeCacheKeys(layerTree),
     [layerTree]
@@ -1479,6 +1573,11 @@ export default function WebGLCanvas({
 
   const retainedMeshCacheKeys = useMemo(
     () => collectReferencedMeshCacheKeys(layerTree),
+    [layerTree]
+  );
+
+  const retainedStreamlineCacheKeys = useMemo(
+    () => collectReferencedStreamlineCacheKeys(layerTree),
     [layerTree]
   );
 
@@ -1505,8 +1604,20 @@ export default function WebGLCanvas({
   }, [meshesToLoad, retainedMeshCacheKeys]);
 
   useEffect(() => {
+    const now = Date.now();
+    for (const item of streamlinesToLoad) {
+      lastVisibleStreamlineCacheAtRef.current.set(item.cacheKey, now);
+    }
+    for (const cacheKey of Array.from(lastVisibleStreamlineCacheAtRef.current.keys())) {
+      if (retainedStreamlineCacheKeys.has(cacheKey)) continue;
+      lastVisibleStreamlineCacheAtRef.current.delete(cacheKey);
+    }
+  }, [retainedStreamlineCacheKeys, streamlinesToLoad]);
+
+  useEffect(() => {
     const visibleVolumeKeys = new Set(volumesToLoad.map((item) => item.cacheKey));
     const visibleMeshKeys = new Set(meshesToLoad.map((item) => item.cacheKey));
+    const visibleStreamlineKeys = new Set(streamlinesToLoad.map((item) => item.cacheKey));
     let hiddenVolumeCount = 0;
     let hiddenMeshCount = 0;
     let hiddenCacheBytes = 0;
@@ -1523,12 +1634,18 @@ export default function WebGLCanvas({
       hiddenCacheBytes += estimateLoadedMeshBytes(mesh);
     }
 
+    for (const [cacheKey, streamlines] of streamlineCacheRef.current.entries()) {
+      if (visibleStreamlineKeys.has(cacheKey)) continue;
+      hiddenMeshCount += 1;
+      hiddenCacheBytes += estimateLoadedStreamlineBytes(streamlines);
+    }
+
     updateTrackedCacheEstimate({
       hiddenVolumeCount,
       hiddenMeshCount,
       hiddenCacheBytes,
     });
-  }, [loadTick, meshesToLoad, volumesToLoad]);
+  }, [loadTick, meshesToLoad, streamlinesToLoad, volumesToLoad]);
 
   useEffect(() => {
     return () => {
@@ -1573,12 +1690,29 @@ export default function WebGLCanvas({
   }, [retainedMeshCacheKeys]);
 
   useEffect(() => {
+    let didEvict = false;
+
+    for (const cacheKey of Array.from(streamlineCacheRef.current.keys())) {
+      if (!retainedStreamlineCacheKeys.has(cacheKey)) {
+        streamlineCacheRef.current.delete(cacheKey);
+        loadingMeshesRef.current.delete(cacheKey);
+        didEvict = true;
+      }
+    }
+
+    if (didEvict) {
+      setLoadTick((v) => v + 1);
+    }
+  }, [retainedStreamlineCacheKeys]);
+
+  useEffect(() => {
     if (cacheClearRequestKey <= 0) return;
     if (cacheClearRequestKey === handledCacheClearRequestRef.current) return;
     handledCacheClearRequestRef.current = cacheClearRequestKey;
 
     const visibleVolumeKeys = new Set(volumesToLoad.map((item) => item.cacheKey));
     const visibleMeshKeys = new Set(meshesToLoad.map((item) => item.cacheKey));
+    const visibleStreamlineKeys = new Set(streamlinesToLoad.map((item) => item.cacheKey));
     let clearedVolumes = 0;
     let clearedMeshes = 0;
 
@@ -1596,6 +1730,13 @@ export default function WebGLCanvas({
       clearedMeshes += 1;
     }
 
+    for (const cacheKey of Array.from(streamlineCacheRef.current.keys())) {
+      if (visibleStreamlineKeys.has(cacheKey)) continue;
+      streamlineCacheRef.current.delete(cacheKey);
+      loadingMeshesRef.current.delete(cacheKey);
+      clearedMeshes += 1;
+    }
+
     const workerReleased = !localSceneLoadingActive;
     if (workerReleased) {
       disposeLocalDataLoadWorker();
@@ -1606,7 +1747,7 @@ export default function WebGLCanvas({
     }
     publishLocalLoadState();
     onCacheClearComplete?.({ clearedVolumes, clearedMeshes, workerReleased });
-  }, [cacheClearRequestKey, localSceneLoadingActive, meshesToLoad, onCacheClearComplete, volumesToLoad]);
+  }, [cacheClearRequestKey, localSceneLoadingActive, meshesToLoad, onCacheClearComplete, streamlinesToLoad, volumesToLoad]);
 
   useEffect(() => {
     if (hiddenDataAutoUnloadMinutes == null) return;
@@ -1617,6 +1758,7 @@ export default function WebGLCanvas({
       const now = Date.now();
       const visibleVolumeKeys = new Set(volumesToLoad.map((item) => item.cacheKey));
       const visibleMeshKeys = new Set(meshesToLoad.map((item) => item.cacheKey));
+      const visibleStreamlineKeys = new Set(streamlinesToLoad.map((item) => item.cacheKey));
       let didEvict = false;
 
       for (const cacheKey of Array.from(volumeCacheRef.current.keys())) {
@@ -1639,6 +1781,16 @@ export default function WebGLCanvas({
         didEvict = true;
       }
 
+      for (const cacheKey of Array.from(streamlineCacheRef.current.keys())) {
+        if (visibleStreamlineKeys.has(cacheKey)) continue;
+        const lastSeenAt = lastVisibleStreamlineCacheAtRef.current.get(cacheKey) ?? now;
+        if (now - lastSeenAt < maxIdleMs) continue;
+        streamlineCacheRef.current.delete(cacheKey);
+        loadingMeshesRef.current.delete(cacheKey);
+        lastVisibleStreamlineCacheAtRef.current.delete(cacheKey);
+        didEvict = true;
+      }
+
       if (didEvict) {
         setLoadTick((value) => value + 1);
         publishLocalLoadState();
@@ -1650,7 +1802,7 @@ export default function WebGLCanvas({
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [hiddenDataAutoUnloadMinutes, meshesToLoad, volumesToLoad]);
+  }, [hiddenDataAutoUnloadMinutes, meshesToLoad, streamlinesToLoad, volumesToLoad]);
 
   useEffect(() => {
     const canvasElement = canvasRef.current;
@@ -1691,6 +1843,40 @@ export default function WebGLCanvas({
           }
         }
         gl_FragColor = uColor;
+      }
+    `;
+
+    const streamlineColorVertexShaderSource = `
+      attribute vec3 aPosition;
+      attribute vec3 aVertexColor;
+      uniform mat4 uMVP;
+      uniform mat4 uModel;
+      varying vec3 vWorldPosition;
+      varying vec3 vVertexColor;
+      void main() {
+        vec4 worldPosition = uModel * vec4(aPosition, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        vVertexColor = aVertexColor;
+        gl_Position = uMVP * vec4(aPosition, 1.0);
+      }
+    `;
+
+    const streamlineColorFragmentShaderSource = `
+      precision mediump float;
+      uniform float uAlpha;
+      uniform float uClipEnabled;
+      uniform vec4 uClipPlane;
+      uniform float uClipKeepSign;
+      varying vec3 vWorldPosition;
+      varying vec3 vVertexColor;
+      void main() {
+        if (uClipEnabled > 0.5) {
+          float signedDistance = dot(uClipPlane.xyz, vWorldPosition) + uClipPlane.w;
+          if (signedDistance * uClipKeepSign < -0.0005) {
+            discard;
+          }
+        }
+        gl_FragColor = vec4(vVertexColor, uAlpha);
       }
     `;
 
@@ -1745,6 +1931,7 @@ export default function WebGLCanvas({
     `;
 
     const colorProgram = createProgram(gl, colorVertexShaderSource, colorFragmentShaderSource);
+    const streamlineColorProgram = createProgram(gl, streamlineColorVertexShaderSource, streamlineColorFragmentShaderSource);
     const textureProgram = createProgram(gl, textureVertexShaderSource, textureFragmentShaderSource);
     const volumeTextureProgram = createProgram(gl, textureVertexShaderSource, volumeFragmentShaderSource);
 
@@ -1755,6 +1942,15 @@ export default function WebGLCanvas({
     const uColorClipEnabled = gl.getUniformLocation(colorProgram, "uClipEnabled");
     const uColorClipPlane = gl.getUniformLocation(colorProgram, "uClipPlane");
     const uColorClipKeepSign = gl.getUniformLocation(colorProgram, "uClipKeepSign");
+
+    const aStreamlinePosition = gl.getAttribLocation(streamlineColorProgram, "aPosition");
+    const aStreamlineVertexColor = gl.getAttribLocation(streamlineColorProgram, "aVertexColor");
+    const uStreamlineMVP = gl.getUniformLocation(streamlineColorProgram, "uMVP");
+    const uStreamlineModel = gl.getUniformLocation(streamlineColorProgram, "uModel");
+    const uStreamlineAlpha = gl.getUniformLocation(streamlineColorProgram, "uAlpha");
+    const uStreamlineClipEnabled = gl.getUniformLocation(streamlineColorProgram, "uClipEnabled");
+    const uStreamlineClipPlane = gl.getUniformLocation(streamlineColorProgram, "uClipPlane");
+    const uStreamlineClipKeepSign = gl.getUniformLocation(streamlineColorProgram, "uClipKeepSign");
 
     const aTexPosition = gl.getAttribLocation(textureProgram, "aPosition");
     const aTexCoord = gl.getAttribLocation(textureProgram, "aTexCoord");
@@ -1791,6 +1987,14 @@ export default function WebGLCanvas({
       !uColorClipEnabled ||
       !uColorClipPlane ||
       !uColorClipKeepSign ||
+      aStreamlinePosition < 0 ||
+      aStreamlineVertexColor < 0 ||
+      !uStreamlineMVP ||
+      !uStreamlineModel ||
+      !uStreamlineAlpha ||
+      !uStreamlineClipEnabled ||
+      !uStreamlineClipPlane ||
+      !uStreamlineClipKeepSign ||
       aTexPosition < 0 ||
       aTexCoord < 0 ||
       !uTexMVP ||
@@ -3326,6 +3530,10 @@ export default function WebGLCanvas({
         const point = transformPoint(layerEntry.worldMatrix, [0, 0, 0]);
         center = vec3.fromValues(point[0], point[1], point[2]);
         focusDistance = 2.8;
+      } else if (isLocalStreamlineLayer(selectedNode) && typeof selectedNode.source === "string") {
+        const point = transformPoint(layerEntry.worldMatrix, [0, 0, 0]);
+        center = vec3.fromValues(point[0], point[1], point[2]);
+        focusDistance = 2.8;
       } else {
         const point = transformPoint(layerEntry.worldMatrix, [0, 0, 0]);
         center = vec3.fromValues(point[0], point[1], point[2]);
@@ -3356,6 +3564,14 @@ export default function WebGLCanvas({
         triangleVertexCount: number;
       }
     >();
+    const streamlineBufferCache = new Map<
+      string,
+      {
+        lineBuffer: WebGLBuffer | null;
+        colorBuffer: WebGLBuffer | null;
+        lineVertexCount: number;
+      }
+    >();
 
 
     const identityModelMatrix = mat4.create();
@@ -3380,6 +3596,25 @@ export default function WebGLCanvas({
         gl.uniform1f(uColorClipEnabled, 0);
         gl.uniform4f(uColorClipPlane, 0, 0, 1, 0);
         gl.uniform1f(uColorClipKeepSign, 1);
+      }
+    }
+
+    function applyStreamlineClipState(model: mat4, clipState: ClipRenderState | null) {
+      gl.uniformMatrix4fv(uStreamlineModel, false, model);
+      if (clipState) {
+        gl.uniform1f(uStreamlineClipEnabled, 1);
+        gl.uniform4f(
+          uStreamlineClipPlane,
+          clipState.plane[0],
+          clipState.plane[1],
+          clipState.plane[2],
+          clipState.plane[3]
+        );
+        gl.uniform1f(uStreamlineClipKeepSign, clipState.keepSign);
+      } else {
+        gl.uniform1f(uStreamlineClipEnabled, 0);
+        gl.uniform4f(uStreamlineClipPlane, 0, 0, 1, 0);
+        gl.uniform1f(uStreamlineClipKeepSign, 1);
       }
     }
 
@@ -3740,6 +3975,40 @@ function drawColorCylinder(
       return entry;
     }
 
+    function getOrCreateStreamlineBuffer(streamlines: LoadedStreamlines) {
+      const key = streamlines.url;
+      const cached = streamlineBufferCache.get(key);
+      if (cached) return cached;
+
+      let lineBuffer: WebGLBuffer | null = null;
+      if (streamlines.linePositions.length > 0) {
+        lineBuffer = gl.createBuffer();
+        if (!lineBuffer) {
+          throw new Error("Failed to create streamline buffer");
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, streamlines.linePositions, gl.STATIC_DRAW);
+      }
+
+      let colorBuffer: WebGLBuffer | null = null;
+      if (streamlines.lineColors.length > 0) {
+        colorBuffer = gl.createBuffer();
+        if (!colorBuffer) {
+          throw new Error("Failed to create streamline color buffer");
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, streamlines.lineColors, gl.STATIC_DRAW);
+      }
+
+      const entry = {
+        lineBuffer,
+        colorBuffer,
+        lineVertexCount: streamlines.linePositions.length / 3,
+      };
+      streamlineBufferCache.set(key, entry);
+      return entry;
+    }
+
     function drawMeshSurface(mesh: LoadedMesh, mvp: mat4, color: [number, number, number, number]) {
       const entry = getOrCreateMeshBuffer(mesh);
       if (!entry.triangleBuffer || entry.triangleVertexCount <= 0) {
@@ -3812,6 +4081,63 @@ function drawColorCylinder(
       }
     }
 
+    function drawStreamlines(
+      streamlines: LoadedStreamlines,
+      mvp: mat4,
+      color: [number, number, number, number],
+      lineWidth: number = 1.4,
+      colorMode: "direction" | "single" = "direction",
+      singleColor: [number, number, number] | null = null
+    ) {
+      const entry = getOrCreateStreamlineBuffer(streamlines);
+      if (!entry.lineBuffer || entry.lineVertexCount <= 0) {
+        return;
+      }
+
+      resetVertexAttribArrays();
+      const isTransparentPass = color[3] < 0.999;
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      if (isTransparentPass) {
+        gl.depthMask(false);
+      }
+
+      if (colorMode === "single") {
+        const baseColor = singleColor ?? [color[0], color[1], color[2]];
+        gl.useProgram(colorProgram);
+        gl.uniformMatrix4fv(uColorMVP, false, mvp);
+        applyColorClipState(identityModelMatrix, null);
+        gl.uniform4f(uColor, baseColor[0], baseColor[1], baseColor[2], color[3]);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
+        gl.enableVertexAttribArray(aColorPosition);
+        gl.vertexAttribPointer(aColorPosition, 3, gl.FLOAT, false, 0, 0);
+      } else {
+        if (!entry.colorBuffer) {
+          return;
+        }
+        gl.useProgram(streamlineColorProgram);
+        gl.uniformMatrix4fv(uStreamlineMVP, false, mvp);
+        applyStreamlineClipState(identityModelMatrix, null);
+        gl.uniform1f(uStreamlineAlpha, color[3]);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
+        gl.enableVertexAttribArray(aStreamlinePosition);
+        gl.vertexAttribPointer(aStreamlinePosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, entry.colorBuffer);
+        gl.enableVertexAttribArray(aStreamlineVertexColor);
+        gl.vertexAttribPointer(aStreamlineVertexColor, 3, gl.FLOAT, false, 0, 0);
+      }
+
+      gl.lineWidth(lineWidth);
+      gl.drawArrays(gl.LINES, 0, entry.lineVertexCount);
+      if (isTransparentPass) {
+        gl.depthMask(true);
+      }
+    }
+
 
     function makeVolumeBoundsModelMatrix(volume: LoadedVolume): mat4 {
       const { sx, sy, sz } = getVolumeDisplayScale(volume);
@@ -3865,6 +4191,17 @@ function drawColorCylinder(
         } else {
           drawMeshOverlaySurface(mesh, mvp, color);
         }
+        return;
+      }
+
+      if (isLocalStreamlineLayer(layer) && typeof layer.source === "string") {
+        const streamlines = streamlineCacheRef.current.get(getLocalStreamlineCacheKey(layer.source));
+        if (!streamlines) return;
+        const mv = mat4.create();
+        const mvp = mat4.create();
+        mat4.multiply(mv, view, layerEntry.worldMatrix);
+        mat4.multiply(mvp, projection, mv);
+        drawStreamlines(streamlines, mvp, color, 1.8, getStreamlineColorMode(layer), getStreamlineSingleColor(layer));
         return;
       }
 
@@ -4491,6 +4828,41 @@ function drawColorCylinder(
               // batch can make the "behind the slice" half composite on top of
               // canonical slice planes once the slice alpha drops below 1.
               drawBoundsCubeEdges();
+            }
+          }
+
+          continue;
+        }
+
+        if (isLocalStreamlineLayer(layer) && typeof layer.source === "string") {
+          const streamlines = streamlineCacheRef.current.get(getLocalStreamlineCacheKey(layer.source));
+          if (streamlines) {
+            const mv = mat4.create();
+            const mvp = mat4.create();
+            mat4.multiply(mv, view, layerEntry.worldMatrix);
+            mat4.multiply(mvp, projection, mv);
+            const streamlineBaseOpacity = clamp(layerEntry.opacity, 0, 1);
+            // Dense tractograms quickly self-accumulate alpha across many
+            // overlapping line segments, so map the UI opacity nonlinearly to
+            // keep low-opacity settings visually translucent.
+            const streamlineAlpha = clamp(
+              isHoveredSelectionLayer
+                ? Math.max(Math.pow(streamlineBaseOpacity, 2), 0.12)
+                : Math.pow(streamlineBaseOpacity, 2),
+              0,
+              1
+            );
+            const lineColor: [number, number, number, number] = [
+              0.94,
+              0.96,
+              1,
+              streamlineAlpha,
+            ];
+            const drawLines = () => drawStreamlines(streamlines, mvp, lineColor, 1.8, getStreamlineColorMode(layer), getStreamlineSingleColor(layer));
+            if (lineColor[3] < 0.999) {
+              enqueueTransparentDraw(getModelDistanceToCamera(layerEntry.worldMatrix), 1, drawLines);
+            } else {
+              drawLines();
             }
           }
 
@@ -6022,6 +6394,10 @@ function drawColorCylinder(
         if (entry.lineBuffer) gl.deleteBuffer(entry.lineBuffer);
         if (entry.triangleBuffer) gl.deleteBuffer(entry.triangleBuffer);
       }
+      for (const entry of streamlineBufferCache.values()) {
+        if (entry.lineBuffer) gl.deleteBuffer(entry.lineBuffer);
+        if (entry.colorBuffer) gl.deleteBuffer(entry.colorBuffer);
+      }
 
       gl.deleteBuffer(planeVertexBuffer);
       gl.deleteBuffer(planeTexCoordBuffer);
@@ -6032,6 +6408,7 @@ function drawColorCylinder(
       gl.deleteBuffer(cylinderVertexBuffer);
       gl.deleteBuffer(cylinderIndexBuffer);
       gl.deleteProgram(colorProgram);
+      gl.deleteProgram(streamlineColorProgram);
       gl.deleteProgram(textureProgram);
       gl.deleteProgram(volumeTextureProgram);
     };

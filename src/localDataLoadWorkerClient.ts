@@ -1,6 +1,7 @@
 import type { LoadedVolume } from "./omeZarr";
 import type { LoadedMesh } from "./allenMesh";
 import type { LocalDatasetInfo } from "./layerTypes";
+import type { LoadedStreamlines } from "./streamlines";
 import {
   registerTrackedProcess,
   removeTrackedProcess,
@@ -20,11 +21,18 @@ type MeshRequest = {
   datasetId: string;
 };
 
-type WorkerRequest = VolumeRequest | MeshRequest;
+type StreamlineRequest = {
+  type: "load-streamlines";
+  requestId: string;
+  datasetId: string;
+};
+
+type WorkerRequest = VolumeRequest | MeshRequest | StreamlineRequest;
 
 type WorkerSuccessMessage =
   | { requestId: string; ok: true; type: "load-volume"; payload: LoadedVolume }
-  | { requestId: string; ok: true; type: "load-mesh"; payload: LoadedMesh };
+  | { requestId: string; ok: true; type: "load-mesh"; payload: LoadedMesh }
+  | { requestId: string; ok: true; type: "load-streamlines"; payload: LoadedStreamlines };
 
 type WorkerErrorMessage = {
   requestId: string;
@@ -121,6 +129,14 @@ export function loadLocalBrowserVolumeInWorker(datasetId: string, info: LocalDat
 export function loadLocalBrowserMeshInWorker(datasetId: string): Promise<LoadedMesh> {
   return postRequest<LoadedMesh>({
     type: "load-mesh",
+    requestId: createId(),
+    datasetId,
+  });
+}
+
+export function loadLocalBrowserStreamlinesInWorker(datasetId: string): Promise<LoadedStreamlines> {
+  return postRequest<LoadedStreamlines>({
+    type: "load-streamlines",
     requestId: createId(),
     datasetId,
   });
