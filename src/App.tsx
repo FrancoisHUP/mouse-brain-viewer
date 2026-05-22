@@ -15,7 +15,11 @@ import BottomToolbar, {
   type PipelineMenuItem,
 } from "./BottomToolbar";
 import type { ToolExtensionContext } from "./tools/extensionApi";
-import { getToolExtensionDefinition, getUtilityToolExtensionDefinition } from "./tools/registry";
+import {
+  TOOLBAR_TOOL_MANIFESTS_BY_ID,
+  getToolExtensionDefinition,
+  getUtilityToolExtensionDefinition,
+} from "./tools/registry";
 import {
   getHiddenToolbarToolIds,
   getVisibleToolbarToolIds,
@@ -1513,6 +1517,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     () => getHiddenToolbarToolIds(toolbarLayout),
     [toolbarLayout]
   );
+  const visibleToolbarToolIdSet = useMemo(
+    () => new Set<ToolbarToolId>(visibleToolbarToolIds),
+    [visibleToolbarToolIds]
+  );
 
   const extensionContext = useMemo<ToolExtensionContext>(
     () => ({
@@ -1589,6 +1597,45 @@ export default function App({ startupSlices = [] }: AppProps) {
   useEffect(() => {
     saveToolbarLayout(toolbarLayout);
   }, [toolbarLayout]);
+
+  useEffect(() => {
+    if (
+      activeTool in TOOLBAR_TOOL_MANIFESTS_BY_ID &&
+      !visibleToolbarToolIdSet.has(activeTool as ToolbarToolId)
+    ) {
+      setActiveTool("mouse");
+    }
+
+    if (!visibleToolbarToolIdSet.has("resources")) {
+      setIsResourceManagerOpen(false);
+      setResourceSectionHeight(DEFAULT_RESOURCE_SECTION_HEIGHT);
+    }
+
+    if (!visibleToolbarToolIdSet.has("assistant")) {
+      setAppAssistantQuickPrompt(null);
+    }
+
+    if (!visibleToolbarToolIdSet.has("pipeline")) {
+      setActiveAutomationPipelineId(null);
+      stopAutomationDebug();
+      setAutomationPipelines((prev) => {
+        let changed = false;
+        const next = prev.map((pipeline) => {
+          if (!pipeline.active && !pipeline.autoRun) {
+            return pipeline;
+          }
+          changed = true;
+          return {
+            ...pipeline,
+            active: false,
+            autoRun: false,
+            updatedAt: Date.now(),
+          };
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [activeTool, visibleToolbarToolIdSet]);
 
   function handleToolbarMove(draggedToolId: ToolbarToolId, targetToolId: ToolbarToolId) {
     setToolbarLayout((current) => moveToolbarTool(current, draggedToolId, targetToolId));
@@ -5448,6 +5495,13 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function applyToolbarToolChange(tool: ToolId) {
+    if (
+      tool in TOOLBAR_TOOL_MANIFESTS_BY_ID &&
+      !visibleToolbarToolIdSet.has(tool as ToolbarToolId)
+    ) {
+      return;
+    }
+
     if (tool === "resources") {
       setIsResourceManagerOpen((current) => {
         const next = !current;

@@ -14,7 +14,7 @@ export const resourceManagerExtension = defineUtilityToolExtension({
     developerName: "Core viewer",
     toolbar: {
       defaultOrder: 41,
-      defaultVisible: true,
+      defaultVisible: false,
       removable: true,
     },
   },

@@ -150,7 +150,7 @@ type ImageCaptureResult = {
 
 
 function createShader(
-  gl: WebGLRenderingContext,
+  gl: WebGLRenderingContext | WebGL2RenderingContext,
   type: number,
   source: string
 ): WebGLShader {
@@ -172,7 +172,7 @@ function createShader(
 }
 
 function createProgram(
-  gl: WebGLRenderingContext,
+  gl: WebGLRenderingContext | WebGL2RenderingContext,
   vertexSource: string,
   fragmentSource: string
 ): WebGLProgram {
@@ -1808,13 +1808,14 @@ export default function WebGLCanvas({
     const canvasElement = canvasRef.current;
     if (!canvasElement) return;
 
-    const glContext = canvasElement.getContext("webgl", { preserveDrawingBuffer: true });
+    const glContext = canvasElement.getContext("webgl2", { preserveDrawingBuffer: true });
     if (!glContext) {
-      throw new Error("WebGL not supported");
+      throw new Error("WebGL2 not supported");
     }
 
     const canvas: HTMLCanvasElement = canvasElement;
-    const gl: WebGLRenderingContext = glContext;
+    const gl: WebGL2RenderingContext = glContext;
+    const extColorBufferFloat = gl.getExtension("EXT_color_buffer_float");
 
     const colorVertexShaderSource = `
       attribute vec3 aPosition;
@@ -1930,10 +1931,203 @@ export default function WebGLCanvas({
       }
     `;
 
+    const oitCompositeVertexShaderSource = `#version 300 es
+      in vec3 aPosition;
+      in vec2 aTexCoord;
+      out vec2 vTexCoord;
+      void main() {
+        vTexCoord = aTexCoord;
+        gl_Position = vec4(aPosition.xy, 0.0, 1.0);
+      }
+    `;
+
+    const oitCompositeFragmentShaderSource = `#version 300 es
+      precision mediump float;
+      in vec2 vTexCoord;
+      uniform sampler2D uSceneTexture;
+      uniform sampler2D uAccumTexture;
+      uniform sampler2D uRevealTexture;
+      out vec4 outColor;
+      void main() {
+        vec2 sampleCoord = vec2(vTexCoord.x, 1.0 - vTexCoord.y);
+        vec4 scene = texture(uSceneTexture, sampleCoord);
+        vec4 accum = texture(uAccumTexture, sampleCoord);
+        float reveal = clamp(texture(uRevealTexture, sampleCoord).r, 0.0, 1.0);
+        float transparentAlpha = clamp(1.0 - reveal, 0.0, 1.0);
+        vec3 transparentColor = accum.a > 1e-5 ? accum.rgb / accum.a : vec3(0.0);
+        vec3 finalColor = transparentColor * transparentAlpha + scene.rgb * reveal;
+        outColor = vec4(finalColor, 1.0);
+      }
+    `;
+
+    const oitColorVertexShaderSource = `#version 300 es
+      in vec3 aPosition;
+      uniform mat4 uMVP;
+      uniform mat4 uModel;
+      out vec3 vWorldPosition;
+      void main() {
+        vec4 worldPosition = uModel * vec4(aPosition, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = uMVP * vec4(aPosition, 1.0);
+      }
+    `;
+
+    const oitColorFragmentShaderSource = `#version 300 es
+      precision mediump float;
+      uniform vec4 uColor;
+      uniform float uClipEnabled;
+      uniform vec4 uClipPlane;
+      uniform float uClipKeepSign;
+      uniform int uOitPassMode;
+      in vec3 vWorldPosition;
+      out vec4 outColor;
+      float computeWeight(float alpha) {
+        return max(alpha, 1e-2);
+      }
+      void main() {
+        if (uClipEnabled > 0.5) {
+          float signedDistance = dot(uClipPlane.xyz, vWorldPosition) + uClipPlane.w;
+          if (signedDistance * uClipKeepSign < -0.0005) {
+            discard;
+          }
+        }
+        float alpha = clamp(uColor.a, 0.0, 1.0);
+        if (uOitPassMode == 1) {
+          float weight = computeWeight(alpha);
+          outColor = vec4(uColor.rgb * alpha, alpha) * weight;
+        } else {
+          outColor = vec4(alpha, alpha, alpha, alpha);
+        }
+      }
+    `;
+
+    const oitStreamlineColorVertexShaderSource = `#version 300 es
+      in vec3 aPosition;
+      in vec3 aVertexColor;
+      uniform mat4 uMVP;
+      uniform mat4 uModel;
+      out vec3 vWorldPosition;
+      out vec3 vVertexColor;
+      void main() {
+        vec4 worldPosition = uModel * vec4(aPosition, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        vVertexColor = aVertexColor;
+        gl_Position = uMVP * vec4(aPosition, 1.0);
+      }
+    `;
+
+    const oitStreamlineColorFragmentShaderSource = `#version 300 es
+      precision mediump float;
+      uniform float uAlpha;
+      uniform float uClipEnabled;
+      uniform vec4 uClipPlane;
+      uniform float uClipKeepSign;
+      uniform int uOitPassMode;
+      in vec3 vWorldPosition;
+      in vec3 vVertexColor;
+      out vec4 outColor;
+      float computeWeight(float alpha) {
+        return max(alpha, 1e-2);
+      }
+      void main() {
+        if (uClipEnabled > 0.5) {
+          float signedDistance = dot(uClipPlane.xyz, vWorldPosition) + uClipPlane.w;
+          if (signedDistance * uClipKeepSign < -0.0005) {
+            discard;
+          }
+        }
+        float alpha = clamp(uAlpha, 0.0, 1.0);
+        if (uOitPassMode == 1) {
+          float weight = computeWeight(alpha);
+          outColor = vec4(vVertexColor * alpha, alpha) * weight;
+        } else {
+          outColor = vec4(alpha, alpha, alpha, alpha);
+        }
+      }
+    `;
+
+    const oitTextureVertexShaderSource = `#version 300 es
+      in vec3 aPosition;
+      in vec2 aTexCoord;
+      uniform mat4 uMVP;
+      out vec2 vTexCoord;
+      void main() {
+        gl_Position = uMVP * vec4(aPosition, 1.0);
+        vTexCoord = aTexCoord;
+      }
+    `;
+
+    const oitTextureFragmentShaderSource = `#version 300 es
+      precision mediump float;
+      in vec2 vTexCoord;
+      uniform sampler2D uTexture;
+      uniform float uAlpha;
+      uniform float uBrightness;
+      uniform float uWindowMin;
+      uniform float uWindowMax;
+      uniform float uUseWindowing;
+      uniform int uOitPassMode;
+      out vec4 outColor;
+      float computeWeight(float alpha) {
+        return max(alpha, 1e-2);
+      }
+      void main() {
+        vec4 tex = texture(uTexture, vTexCoord);
+        vec4 shaded;
+        if (uUseWindowing > 0.5) {
+          float safeRange = max(uWindowMax - uWindowMin, 0.0001);
+          float windowed = clamp((tex.r - uWindowMin) / safeRange, 0.0, 1.0);
+          shaded = vec4(vec3(windowed * uBrightness), tex.a * uAlpha);
+        } else {
+          shaded = vec4(tex.rgb * uBrightness, tex.a * uAlpha);
+        }
+        float alpha = clamp(shaded.a, 0.0, 1.0);
+        if (uOitPassMode == 1) {
+          float weight = computeWeight(alpha);
+          outColor = vec4(shaded.rgb * alpha, alpha) * weight;
+        } else {
+          outColor = vec4(alpha, alpha, alpha, alpha);
+        }
+      }
+    `;
+
+    const oitVolumeFragmentShaderSource = `#version 300 es
+      precision mediump float;
+      in vec2 vTexCoord;
+      uniform sampler2D uTexture;
+      uniform float uAlpha;
+      uniform float uBrightness;
+      uniform float uWindowMin;
+      uniform float uWindowMax;
+      uniform int uOitPassMode;
+      out vec4 outColor;
+      float computeWeight(float alpha) {
+        return max(alpha, 1e-2);
+      }
+      void main() {
+        vec4 tex = texture(uTexture, vTexCoord);
+        float safeRange = max(uWindowMax - uWindowMin, 0.0001);
+        float v = clamp((tex.r - uWindowMin) / safeRange, 0.0, 1.0);
+        float alpha = clamp(v * uAlpha, 0.0, 1.0);
+        vec3 color = vec3(v * uBrightness);
+        if (uOitPassMode == 1) {
+          float weight = computeWeight(alpha);
+          outColor = vec4(color * alpha, alpha) * weight;
+        } else {
+          outColor = vec4(alpha, alpha, alpha, alpha);
+        }
+      }
+    `;
+
     const colorProgram = createProgram(gl, colorVertexShaderSource, colorFragmentShaderSource);
     const streamlineColorProgram = createProgram(gl, streamlineColorVertexShaderSource, streamlineColorFragmentShaderSource);
     const textureProgram = createProgram(gl, textureVertexShaderSource, textureFragmentShaderSource);
     const volumeTextureProgram = createProgram(gl, textureVertexShaderSource, volumeFragmentShaderSource);
+    const oitCompositeProgram = createProgram(gl, oitCompositeVertexShaderSource, oitCompositeFragmentShaderSource);
+    const oitColorProgram = createProgram(gl, oitColorVertexShaderSource, oitColorFragmentShaderSource);
+    const oitStreamlineColorProgram = createProgram(gl, oitStreamlineColorVertexShaderSource, oitStreamlineColorFragmentShaderSource);
+    const oitTextureProgram = createProgram(gl, oitTextureVertexShaderSource, oitTextureFragmentShaderSource);
+    const oitVolumeTextureProgram = createProgram(gl, oitTextureVertexShaderSource, oitVolumeFragmentShaderSource);
 
     const aColorPosition = gl.getAttribLocation(colorProgram, "aPosition");
     const uColorMVP = gl.getUniformLocation(colorProgram, "uMVP");
@@ -1970,6 +2164,52 @@ export default function WebGLCanvas({
     const uVolBrightness = gl.getUniformLocation(volumeTextureProgram, "uBrightness");
     const uVolWindowMin = gl.getUniformLocation(volumeTextureProgram, "uWindowMin");
     const uVolWindowMax = gl.getUniformLocation(volumeTextureProgram, "uWindowMax");
+
+    const aOitCompositePosition = gl.getAttribLocation(oitCompositeProgram, "aPosition");
+    const aOitCompositeTexCoord = gl.getAttribLocation(oitCompositeProgram, "aTexCoord");
+    const uOitSceneTexture = gl.getUniformLocation(oitCompositeProgram, "uSceneTexture");
+    const uOitAccumTexture = gl.getUniformLocation(oitCompositeProgram, "uAccumTexture");
+    const uOitRevealTexture = gl.getUniformLocation(oitCompositeProgram, "uRevealTexture");
+
+    const aOitColorPosition = gl.getAttribLocation(oitColorProgram, "aPosition");
+    const uOitColorMVP = gl.getUniformLocation(oitColorProgram, "uMVP");
+    const uOitColorModel = gl.getUniformLocation(oitColorProgram, "uModel");
+    const uOitColor = gl.getUniformLocation(oitColorProgram, "uColor");
+    const uOitColorClipEnabled = gl.getUniformLocation(oitColorProgram, "uClipEnabled");
+    const uOitColorClipPlane = gl.getUniformLocation(oitColorProgram, "uClipPlane");
+    const uOitColorClipKeepSign = gl.getUniformLocation(oitColorProgram, "uClipKeepSign");
+    const uOitColorPassMode = gl.getUniformLocation(oitColorProgram, "uOitPassMode");
+
+    const aOitStreamlinePosition = gl.getAttribLocation(oitStreamlineColorProgram, "aPosition");
+    const aOitStreamlineVertexColor = gl.getAttribLocation(oitStreamlineColorProgram, "aVertexColor");
+    const uOitStreamlineMVP = gl.getUniformLocation(oitStreamlineColorProgram, "uMVP");
+    const uOitStreamlineModel = gl.getUniformLocation(oitStreamlineColorProgram, "uModel");
+    const uOitStreamlineAlpha = gl.getUniformLocation(oitStreamlineColorProgram, "uAlpha");
+    const uOitStreamlineClipEnabled = gl.getUniformLocation(oitStreamlineColorProgram, "uClipEnabled");
+    const uOitStreamlineClipPlane = gl.getUniformLocation(oitStreamlineColorProgram, "uClipPlane");
+    const uOitStreamlineClipKeepSign = gl.getUniformLocation(oitStreamlineColorProgram, "uClipKeepSign");
+    const uOitStreamlinePassMode = gl.getUniformLocation(oitStreamlineColorProgram, "uOitPassMode");
+
+    const aOitTexPosition = gl.getAttribLocation(oitTextureProgram, "aPosition");
+    const aOitTexCoord = gl.getAttribLocation(oitTextureProgram, "aTexCoord");
+    const uOitTexMVP = gl.getUniformLocation(oitTextureProgram, "uMVP");
+    const uOitTexture = gl.getUniformLocation(oitTextureProgram, "uTexture");
+    const uOitAlpha = gl.getUniformLocation(oitTextureProgram, "uAlpha");
+    const uOitTexBrightness = gl.getUniformLocation(oitTextureProgram, "uBrightness");
+    const uOitTexWindowMin = gl.getUniformLocation(oitTextureProgram, "uWindowMin");
+    const uOitTexWindowMax = gl.getUniformLocation(oitTextureProgram, "uWindowMax");
+    const uOitTexUseWindowing = gl.getUniformLocation(oitTextureProgram, "uUseWindowing");
+    const uOitTexPassMode = gl.getUniformLocation(oitTextureProgram, "uOitPassMode");
+
+    const aOitVolTexPosition = gl.getAttribLocation(oitVolumeTextureProgram, "aPosition");
+    const aOitVolTexCoord = gl.getAttribLocation(oitVolumeTextureProgram, "aTexCoord");
+    const uOitVolTexMVP = gl.getUniformLocation(oitVolumeTextureProgram, "uMVP");
+    const uOitVolTexture = gl.getUniformLocation(oitVolumeTextureProgram, "uTexture");
+    const uOitVolAlpha = gl.getUniformLocation(oitVolumeTextureProgram, "uAlpha");
+    const uOitVolBrightness = gl.getUniformLocation(oitVolumeTextureProgram, "uBrightness");
+    const uOitVolWindowMin = gl.getUniformLocation(oitVolumeTextureProgram, "uWindowMin");
+    const uOitVolWindowMax = gl.getUniformLocation(oitVolumeTextureProgram, "uWindowMax");
+    const uOitVolPassMode = gl.getUniformLocation(oitVolumeTextureProgram, "uOitPassMode");
 
     const maxVertexAttribs = gl.getParameter(gl.MAX_VERTEX_ATTRIBS) as number;
 
@@ -2011,7 +2251,48 @@ export default function WebGLCanvas({
       !uVolAlpha ||
       !uVolBrightness ||
       !uVolWindowMin ||
-      !uVolWindowMax
+      !uVolWindowMax ||
+      aOitCompositePosition < 0 ||
+      aOitCompositeTexCoord < 0 ||
+      !uOitSceneTexture ||
+      !uOitAccumTexture ||
+      !uOitRevealTexture ||
+      aOitColorPosition < 0 ||
+      !uOitColorMVP ||
+      !uOitColorModel ||
+      !uOitColor ||
+      !uOitColorClipEnabled ||
+      !uOitColorClipPlane ||
+      !uOitColorClipKeepSign ||
+      !uOitColorPassMode ||
+      aOitStreamlinePosition < 0 ||
+      aOitStreamlineVertexColor < 0 ||
+      !uOitStreamlineMVP ||
+      !uOitStreamlineModel ||
+      !uOitStreamlineAlpha ||
+      !uOitStreamlineClipEnabled ||
+      !uOitStreamlineClipPlane ||
+      !uOitStreamlineClipKeepSign ||
+      !uOitStreamlinePassMode ||
+      aOitTexPosition < 0 ||
+      aOitTexCoord < 0 ||
+      !uOitTexMVP ||
+      !uOitTexture ||
+      !uOitAlpha ||
+      !uOitTexBrightness ||
+      !uOitTexWindowMin ||
+      !uOitTexWindowMax ||
+      !uOitTexUseWindowing ||
+      !uOitTexPassMode ||
+      aOitVolTexPosition < 0 ||
+      aOitVolTexCoord < 0 ||
+      !uOitVolTexMVP ||
+      !uOitVolTexture ||
+      !uOitVolAlpha ||
+      !uOitVolBrightness ||
+      !uOitVolWindowMin ||
+      !uOitVolWindowMax ||
+      !uOitVolPassMode
     ) {
       throw new Error("Failed to get shader locations");
     }
@@ -2051,6 +2332,148 @@ export default function WebGLCanvas({
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, planeIndices, gl.STATIC_DRAW);
+
+    type OitPassMode = "direct" | "accum" | "reveal";
+    let oitPassMode: OitPassMode = "direct";
+    let oitEnabled = true;
+    let oitWarningLogged = false;
+    let sceneFramebuffer: WebGLFramebuffer | null = null;
+    let sceneColorTexture: WebGLTexture | null = null;
+    let sceneDepthRenderbuffer: WebGLRenderbuffer | null = null;
+    let oitAccumFramebuffer: WebGLFramebuffer | null = null;
+    let oitAccumTexture: WebGLTexture | null = null;
+    let oitRevealFramebuffer: WebGLFramebuffer | null = null;
+    let oitRevealTexture: WebGLTexture | null = null;
+    let oitFramebufferWidth = 0;
+    let oitFramebufferHeight = 0;
+
+    function disableOit(reason: string) {
+      deleteOitTargets();
+      oitEnabled = false;
+      oitPassMode = "direct";
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+      if (!oitWarningLogged) {
+        console.warn(`Transparency fallback: ${reason}`);
+        oitWarningLogged = true;
+      }
+    }
+
+    function deleteOitTargets() {
+      if (sceneFramebuffer) gl.deleteFramebuffer(sceneFramebuffer);
+      if (sceneColorTexture) gl.deleteTexture(sceneColorTexture);
+      if (sceneDepthRenderbuffer) gl.deleteRenderbuffer(sceneDepthRenderbuffer);
+      if (oitAccumFramebuffer) gl.deleteFramebuffer(oitAccumFramebuffer);
+      if (oitAccumTexture) gl.deleteTexture(oitAccumTexture);
+      if (oitRevealFramebuffer) gl.deleteFramebuffer(oitRevealFramebuffer);
+      if (oitRevealTexture) gl.deleteTexture(oitRevealTexture);
+      sceneFramebuffer = null;
+      sceneColorTexture = null;
+      sceneDepthRenderbuffer = null;
+      oitAccumFramebuffer = null;
+      oitAccumTexture = null;
+      oitRevealFramebuffer = null;
+      oitRevealTexture = null;
+      oitFramebufferWidth = 0;
+      oitFramebufferHeight = 0;
+    }
+
+    function createFramebufferTexture(
+      width: number,
+      height: number,
+      internalFormat: number,
+      format: number,
+      type: number
+    ) {
+      const texture = gl.createTexture();
+      if (!texture) {
+        throw new Error("Failed to create framebuffer texture");
+      }
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, null);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return texture;
+    }
+
+    function checkFramebufferComplete(framebuffer: WebGLFramebuffer, label: string) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error(`${label} framebuffer is incomplete (${status}).`);
+      }
+    }
+
+    function ensureOitTargets(width: number, height: number) {
+      if (!oitEnabled) return;
+      if (width <= 0 || height <= 0) return;
+      if (
+        sceneFramebuffer &&
+        sceneColorTexture &&
+        sceneDepthRenderbuffer &&
+        oitAccumFramebuffer &&
+        oitAccumTexture &&
+        oitRevealFramebuffer &&
+        oitRevealTexture &&
+        oitFramebufferWidth === width &&
+        oitFramebufferHeight === height
+      ) {
+        return;
+      }
+
+      deleteOitTargets();
+      try {
+        sceneColorTexture = createFramebufferTexture(width, height, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+        const accumInternalFormat = extColorBufferFloat ? gl.RGBA16F : gl.RGBA8;
+        const accumType = extColorBufferFloat ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+        if (!extColorBufferFloat && !oitWarningLogged) {
+          console.warn("Transparency fallback: EXT_color_buffer_float unavailable, using lower-precision OIT accumulation.");
+          oitWarningLogged = true;
+        }
+        oitAccumTexture = createFramebufferTexture(width, height, accumInternalFormat, gl.RGBA, accumType);
+        oitRevealTexture = createFramebufferTexture(width, height, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+
+        sceneDepthRenderbuffer = gl.createRenderbuffer();
+        if (!sceneDepthRenderbuffer) {
+          throw new Error("Failed to create OIT depth renderbuffer");
+        }
+        gl.bindRenderbuffer(gl.RENDERBUFFER, sceneDepthRenderbuffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+
+        sceneFramebuffer = gl.createFramebuffer();
+        oitAccumFramebuffer = gl.createFramebuffer();
+        oitRevealFramebuffer = gl.createFramebuffer();
+        if (!sceneFramebuffer || !oitAccumFramebuffer || !oitRevealFramebuffer) {
+          throw new Error("Failed to create OIT framebuffers");
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFramebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneColorTexture, 0);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepthRenderbuffer);
+        checkFramebufferComplete(sceneFramebuffer, "Opaque scene");
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, oitAccumFramebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, oitAccumTexture, 0);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepthRenderbuffer);
+        checkFramebufferComplete(oitAccumFramebuffer, "OIT accumulation");
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, oitRevealFramebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, oitRevealTexture, 0);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepthRenderbuffer);
+        checkFramebufferComplete(oitRevealFramebuffer, "OIT revealage");
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+
+        oitFramebufferWidth = width;
+        oitFramebufferHeight = height;
+      } catch (error) {
+        disableOit(error instanceof Error ? error.message : "Failed to initialize the OIT framebuffer targets.");
+      }
+    }
 
     function buildRingVertices(segments: number) {
       const positions: number[] = [];
@@ -3370,6 +3793,7 @@ export default function WebGLCanvas({
         }
       }
 
+      ensureOitTargets(canvas.width, canvas.height);
       gl.viewport(0, 0, canvas.width, canvas.height);
     }
 
@@ -3627,6 +4051,45 @@ export default function WebGLCanvas({
     ) {
       resetVertexAttribArrays();
 
+      if (oitPassMode !== "direct") {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+
+        gl.useProgram(oitColorProgram);
+        gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
+        gl.uniformMatrix4fv(uOitColorModel, false, model);
+        gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        if (clipState) {
+          gl.uniform1f(uOitColorClipEnabled, 1);
+          gl.uniform4f(
+            uOitColorClipPlane,
+            clipState.plane[0],
+            clipState.plane[1],
+            clipState.plane[2],
+            clipState.plane[3]
+          );
+          gl.uniform1f(uOitColorClipKeepSign, clipState.keepSign);
+        } else {
+          gl.uniform1f(uOitColorClipEnabled, 0);
+          gl.uniform4f(uOitColorClipPlane, 0, 0, 1, 0);
+          gl.uniform1f(uOitColorClipKeepSign, 1);
+        }
+        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, sphereVertexBuffer);
+        gl.enableVertexAttribArray(aOitColorPosition);
+        gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, sphereIndexBuffer);
+        gl.drawElements(gl.TRIANGLES, sphereGeometry.indices.length, gl.UNSIGNED_SHORT, 0);
+        gl.depthMask(true);
+        return;
+      }
+
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       if (!depthWrite) {
@@ -3712,6 +4175,45 @@ function drawColorCylinder(
       clipState: ClipRenderState | null = null
     ) {
       resetVertexAttribArrays();
+
+      if (oitPassMode !== "direct") {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+
+        gl.useProgram(oitColorProgram);
+        gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
+        gl.uniformMatrix4fv(uOitColorModel, false, model);
+        gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        if (clipState) {
+          gl.uniform1f(uOitColorClipEnabled, 1);
+          gl.uniform4f(
+            uOitColorClipPlane,
+            clipState.plane[0],
+            clipState.plane[1],
+            clipState.plane[2],
+            clipState.plane[3]
+          );
+          gl.uniform1f(uOitColorClipKeepSign, clipState.keepSign);
+        } else {
+          gl.uniform1f(uOitColorClipEnabled, 0);
+          gl.uniform4f(uOitColorClipPlane, 0, 0, 1, 0);
+          gl.uniform1f(uOitColorClipKeepSign, 1);
+        }
+        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cylinderVertexBuffer);
+        gl.enableVertexAttribArray(aOitColorPosition);
+        gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cylinderIndexBuffer);
+        gl.drawElements(gl.TRIANGLES, cylinderGeometry.indices.length, gl.UNSIGNED_SHORT, 0);
+        gl.depthMask(true);
+        return;
+      }
 
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -4017,6 +4519,32 @@ function drawColorCylinder(
 
       resetVertexAttribArrays();
 
+      if (oitPassMode !== "direct") {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+
+        gl.useProgram(oitColorProgram);
+        gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
+        gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
+        gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        gl.uniform1f(uOitColorClipEnabled, 0);
+        gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
+        gl.uniform1f(uOitColorClipKeepSign, 1);
+        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, entry.triangleBuffer);
+        gl.enableVertexAttribArray(aOitColorPosition);
+        gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.drawArrays(gl.TRIANGLES, 0, entry.triangleVertexCount);
+        gl.depthMask(true);
+        return;
+      }
+
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
@@ -4059,6 +4587,33 @@ function drawColorCylinder(
       resetVertexAttribArrays();
       const isTransparentPass = color[3] < 0.999;
 
+      if (oitPassMode !== "direct") {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+
+        gl.useProgram(oitColorProgram);
+        gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
+        gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
+        gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        gl.uniform1f(uOitColorClipEnabled, 0);
+        gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
+        gl.uniform1f(uOitColorClipKeepSign, 1);
+        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
+        gl.enableVertexAttribArray(aOitColorPosition);
+        gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.lineWidth(lineWidth);
+        gl.drawArrays(gl.LINES, 0, entry.lineVertexCount);
+        gl.depthMask(true);
+        return;
+      }
+
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       if (isTransparentPass) {
@@ -4096,6 +4651,56 @@ function drawColorCylinder(
 
       resetVertexAttribArrays();
       const isTransparentPass = color[3] < 0.999;
+
+      if (oitPassMode !== "direct") {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+
+        if (colorMode === "single") {
+          const baseColor = singleColor ?? [color[0], color[1], color[2]];
+          gl.useProgram(oitColorProgram);
+          gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
+          gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
+          gl.uniform4f(uOitColor, baseColor[0], baseColor[1], baseColor[2], color[3]);
+          gl.uniform1f(uOitColorClipEnabled, 0);
+          gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
+          gl.uniform1f(uOitColorClipKeepSign, 1);
+          gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
+          gl.enableVertexAttribArray(aOitColorPosition);
+          gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
+        } else {
+          if (!entry.colorBuffer) {
+            return;
+          }
+          gl.useProgram(oitStreamlineColorProgram);
+          gl.uniformMatrix4fv(uOitStreamlineMVP, false, mvp);
+          gl.uniformMatrix4fv(uOitStreamlineModel, false, identityModelMatrix);
+          gl.uniform1f(uOitStreamlineAlpha, color[3]);
+          gl.uniform1f(uOitStreamlineClipEnabled, 0);
+          gl.uniform4f(uOitStreamlineClipPlane, 0, 0, 0, 0);
+          gl.uniform1f(uOitStreamlineClipKeepSign, 1);
+          gl.uniform1i(uOitStreamlinePassMode, oitPassMode === "accum" ? 1 : 2);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
+          gl.enableVertexAttribArray(aOitStreamlinePosition);
+          gl.vertexAttribPointer(aOitStreamlinePosition, 3, gl.FLOAT, false, 0, 0);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, entry.colorBuffer);
+          gl.enableVertexAttribArray(aOitStreamlineVertexColor);
+          gl.vertexAttribPointer(aOitStreamlineVertexColor, 3, gl.FLOAT, false, 0, 0);
+        }
+
+        gl.lineWidth(lineWidth);
+        gl.drawArrays(gl.LINES, 0, entry.lineVertexCount);
+        gl.depthMask(true);
+        return;
+      }
 
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -4348,6 +4953,42 @@ function drawColorCylinder(
       resetVertexAttribArrays();
       const isTransparentPass = alpha < 0.999;
 
+      if (oitPassMode !== "direct") {
+        gl.useProgram(oitTextureProgram);
+        gl.uniformMatrix4fv(uOitTexMVP, false, mvp);
+        gl.uniform1f(uOitAlpha, alpha);
+        gl.uniform1f(uOitTexBrightness, brightness);
+        gl.uniform1f(uOitTexWindowMin, intensityWindow?.min ?? 0);
+        gl.uniform1f(uOitTexWindowMax, intensityWindow?.max ?? 1);
+        gl.uniform1f(uOitTexUseWindowing, intensityWindow ? 1 : 0);
+        gl.uniform1i(uOitTexPassMode, oitPassMode === "accum" ? 1 : 2);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(uOitTexture, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
+        gl.enableVertexAttribArray(aOitTexPosition);
+        gl.vertexAttribPointer(aOitTexPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, planeTexCoordBuffer);
+        gl.enableVertexAttribArray(aOitTexCoord);
+        gl.vertexAttribPointer(aOitTexCoord, 2, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+        gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
+        gl.depthMask(true);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        return;
+      }
+
       gl.useProgram(textureProgram);
       gl.uniformMatrix4fv(uTexMVP, false, mvp);
       gl.uniform1f(uAlpha, alpha);
@@ -4392,6 +5033,41 @@ function drawColorCylinder(
     ) {
       resetVertexAttribArrays();
 
+      if (oitPassMode !== "direct") {
+        gl.useProgram(oitVolumeTextureProgram);
+        gl.uniformMatrix4fv(uOitVolTexMVP, false, mvp);
+        gl.uniform1f(uOitVolAlpha, alpha);
+        gl.uniform1f(uOitVolBrightness, 1.12);
+        gl.uniform1f(uOitVolWindowMin, intensityWindow.min);
+        gl.uniform1f(uOitVolWindowMax, intensityWindow.max);
+        gl.uniform1i(uOitVolPassMode, oitPassMode === "accum" ? 1 : 2);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(uOitVolTexture, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
+        gl.enableVertexAttribArray(aOitVolTexPosition);
+        gl.vertexAttribPointer(aOitVolTexPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, planeTexCoordBuffer);
+        gl.enableVertexAttribArray(aOitVolTexCoord);
+        gl.vertexAttribPointer(aOitVolTexCoord, 2, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+        gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
+        gl.depthMask(true);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        return;
+      }
+
       gl.useProgram(volumeTextureProgram);
       gl.uniformMatrix4fv(uVolTexMVP, false, mvp);
       gl.uniform1f(uVolAlpha, alpha);
@@ -4421,9 +5097,84 @@ function drawColorCylinder(
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
 
+    function compositeOitToScreen() {
+      if (!sceneColorTexture || !oitAccumTexture || !oitRevealTexture) {
+        return;
+      }
+
+      resetVertexAttribArrays();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.disable(gl.BLEND);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      gl.useProgram(oitCompositeProgram);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, sceneColorTexture);
+      gl.uniform1i(uOitSceneTexture, 0);
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, oitAccumTexture);
+      gl.uniform1i(uOitAccumTexture, 1);
+
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, oitRevealTexture);
+      gl.uniform1i(uOitRevealTexture, 2);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
+      gl.enableVertexAttribArray(aOitCompositePosition);
+      gl.vertexAttribPointer(aOitCompositePosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, planeTexCoordBuffer);
+      gl.enableVertexAttribArray(aOitCompositeTexCoord);
+      gl.vertexAttribPointer(aOitCompositeTexCoord, 2, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
+      gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
+
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(true);
+    }
+
     function drawPlaneOutline(mvp: mat4, color: [number, number, number, number], lineWidth: number = 1.5) {
       resetVertexAttribArrays();
       const isTransparentPass = color[3] < 0.999;
+
+      if (oitPassMode !== "direct") {
+        gl.useProgram(oitColorProgram);
+        gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
+        gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
+        gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        gl.uniform1f(uOitColorClipEnabled, 0);
+        gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
+        gl.uniform1f(uOitColorClipKeepSign, 1);
+        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
+        gl.enableVertexAttribArray(aOitColorPosition);
+        gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(
+          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
+          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
+        );
+        gl.depthMask(false);
+        gl.lineWidth(lineWidth);
+        gl.drawArrays(gl.LINE_LOOP, 0, 4);
+        gl.depthMask(true);
+        return;
+      }
 
       gl.useProgram(colorProgram);
       gl.uniformMatrix4fv(uColorMVP, false, mvp);
@@ -4567,7 +5318,20 @@ function drawColorCylinder(
           : null;
       const capturePassActive = !!captureLayerIdSet;
 
+      const useOitThisFrame =
+        oitEnabled &&
+        !!sceneFramebuffer &&
+        !!sceneColorTexture &&
+        !!oitAccumFramebuffer &&
+        !!oitAccumTexture &&
+        !!oitRevealFramebuffer &&
+        !!oitRevealTexture;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, useOitThisFrame ? sceneFramebuffer : null);
+      gl.viewport(0, 0, canvas.width, canvas.height);
       gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(true);
+      oitPassMode = "direct";
       const [bgR, bgG, bgB] = hexToRgb01(backgroundColor);
       gl.clearColor(bgR, bgG, bgB, capturePassActive ? 0.0 : 1.0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -4579,6 +5343,7 @@ function drawColorCylinder(
       );
       const transparentDrawCalls: Array<{ distanceToCamera: number; priority: number; draw: () => void }> = [];
       const foregroundAnnotationDrawCalls: Array<() => void> = [];
+      const sceneSelectionIndicatorLayerIds = new Set<string>();
       const enqueueTransparentDraw = (distanceToCamera: number, priority: number, draw: () => void) => {
         transparentDrawCalls.push({ distanceToCamera, priority, draw });
       };
@@ -4593,9 +5358,48 @@ function drawColorCylinder(
           }
           return a.priority - b.priority;
         });
+
+        if (useOitThisFrame) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, oitAccumFramebuffer);
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, oitRevealFramebuffer);
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          gl.clearColor(1, 1, 1, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+
+        if (transparentDrawCalls.length === 0) {
+          oitPassMode = "direct";
+          gl.depthMask(true);
+          return;
+        }
+
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthMask(false);
+        if (useOitThisFrame) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, oitAccumFramebuffer);
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          oitPassMode = "accum";
+          for (const call of transparentDrawCalls) {
+            call.draw();
+          }
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, oitRevealFramebuffer);
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          oitPassMode = "reveal";
+        } else {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          oitPassMode = "direct";
+        }
         for (const call of transparentDrawCalls) {
           call.draw();
         }
+
+        oitPassMode = "direct";
+        gl.depthMask(true);
         transparentDrawCalls.length = 0;
       };
       const flushForegroundAnnotationDrawCalls = () => {
@@ -4687,6 +5491,9 @@ function drawColorCylinder(
         return best;
       };
       const translucentSlicePlanes: TranslucentSlicePlane[] = [];
+      const hoverSelectionColor: [number, number, number, number] = [1.0, 1.0, 1.0, 0.7];
+      const selectedSelectionColor: [number, number, number, number] = [0.62, 0.88, 1.0, 0.9];
+      const selectedHoverSelectionColor: [number, number, number, number] = [0.84, 0.96, 1.0, 0.95];
 
       for (const layerEntry of layers) {
         const layer = layerEntry.layer;
@@ -4863,6 +5670,10 @@ function drawColorCylinder(
               enqueueTransparentDraw(getModelDistanceToCamera(layerEntry.worldMatrix), 1, drawLines);
             } else {
               drawLines();
+            }
+
+            if (isHoveredSelectionLayer || (!capturePassActive && highlightedLayerIdsRef.current.has(layer.id))) {
+              sceneSelectionIndicatorLayerIds.add(layer.id);
             }
           }
 
@@ -5097,20 +5908,12 @@ function drawColorCylinder(
             mat4.multiply(model, layerEntry.worldMatrix, localModel);
             mat4.multiply(mv, view, model);
             mat4.multiply(mvp, projection, mv);
-            const nearestPlane = getNearestTranslucentSlicePlane([model[12], model[13], model[14]], translucentSlicePlanes);
-            if (nearestPlane) {
-              drawColorSphere(mvp, [r, g, b, opacity], true, model, {
-                plane: nearestPlane.plane,
-                keepSign: (nearestPlane.cameraSideSign === 1 ? -1 : 1),
-              });
-              enqueueForegroundAnnotationDraw(() => {
-                drawColorSphere(mvp, [r, g, b, opacity], true, model, {
-                  plane: nearestPlane.plane,
-                  keepSign: nearestPlane.cameraSideSign,
-                });
-              });
+            const color: [number, number, number, number] = [r, g, b, opacity];
+            const drawPoint = () => drawColorSphere(mvp, color, opacity >= 0.999, model);
+            if (opacity < 0.999) {
+              enqueueTransparentDraw(getModelDistanceToCamera(model), 3, drawPoint);
             } else {
-              drawColorSphere(mvp, [r, g, b, opacity], true, model);
+              drawPoint();
             }
           }
 
@@ -5122,25 +5925,17 @@ function drawColorCylinder(
             const opacity = clamp((annotation.opacity ?? 0.9) * layerEntry.opacity, 0.05, 1);
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
             const lineModel = makeLineModelMatrix(start, end, radius);
-            const nearestPlane = getNearestTranslucentSlicePlane(getAveragePoint([start, end]), translucentSlicePlanes);
             if (lineModel) {
               const mv = mat4.create();
               const mvp = mat4.create();
               mat4.multiply(mv, view, lineModel);
               mat4.multiply(mvp, projection, mv);
-              if (nearestPlane) {
-                drawColorCylinder(mvp, [r, g, b, opacity], true, lineModel, {
-                  plane: nearestPlane.plane,
-                  keepSign: (nearestPlane.cameraSideSign === 1 ? -1 : 1),
-                });
-                enqueueForegroundAnnotationDraw(() => {
-                  drawColorCylinder(mvp, [r, g, b, opacity], true, lineModel, {
-                    plane: nearestPlane.plane,
-                    keepSign: nearestPlane.cameraSideSign,
-                  });
-                });
+              const color: [number, number, number, number] = [r, g, b, opacity];
+              const drawLine = () => drawColorCylinder(mvp, color, opacity >= 0.999, lineModel);
+              if (opacity < 0.999) {
+                enqueueTransparentDraw(getDistanceToCamera(getAveragePoint([start, end])), 3, drawLine);
               } else {
-                drawColorCylinder(mvp, [r, g, b, opacity], true, lineModel);
+                drawLine();
               }
             }
 
@@ -5153,19 +5948,12 @@ function drawColorCylinder(
               mat4.scale(model, model, [endpointSize, endpointSize, endpointSize]);
               mat4.multiply(mv, view, model);
               mat4.multiply(mvp, projection, mv);
-              if (nearestPlane) {
-                drawColorSphere(mvp, [r, g, b, opacity], true, model, {
-                  plane: nearestPlane.plane,
-                  keepSign: (nearestPlane.cameraSideSign === 1 ? -1 : 1),
-                });
-                enqueueForegroundAnnotationDraw(() => {
-                  drawColorSphere(mvp, [r, g, b, opacity], true, model, {
-                    plane: nearestPlane.plane,
-                    keepSign: nearestPlane.cameraSideSign,
-                  });
-                });
+              const color: [number, number, number, number] = [r, g, b, opacity];
+              const drawEndpoint = () => drawColorSphere(mvp, color, opacity >= 0.999, model);
+              if (opacity < 0.999) {
+                enqueueTransparentDraw(getModelDistanceToCamera(model), 3, drawEndpoint);
               } else {
-                drawColorSphere(mvp, [r, g, b, opacity], true, model);
+                drawEndpoint();
               }
             }
           }
@@ -5176,8 +5964,7 @@ function drawColorCylinder(
             const [r, g, b] = hexToRgb01(annotation.color ?? "#ff5c5c");
             const color: [number, number, number, number] = [r, g, b, opacity];
             const transformedPoints = transformPointsByMatrix(layerEntry.worldMatrix, annotation.points as [number, number, number][]);
-            const nearestPlane = getNearestTranslucentSlicePlane(getAveragePoint(transformedPoints), translucentSlicePlanes);
-            if (nearestPlane) {
+            const drawShape = () =>
               drawPolylineCylinders(
                 transformedPoints,
                 true,
@@ -5185,23 +5972,12 @@ function drawColorCylinder(
                 color,
                 view,
                 projection,
-                true,
-                { plane: nearestPlane.plane, keepSign: (nearestPlane.cameraSideSign === 1 ? -1 : 1) }
+                opacity >= 0.999
               );
-              enqueueForegroundAnnotationDraw(() => {
-                drawPolylineCylinders(
-                  transformedPoints,
-                  true,
-                  radius,
-                  color,
-                  view,
-                  projection,
-                  true,
-                  { plane: nearestPlane.plane, keepSign: nearestPlane.cameraSideSign }
-                );
-              });
+            if (opacity < 0.999) {
+              enqueueTransparentDraw(getDistanceToCamera(getAveragePoint(transformedPoints)), 3, drawShape);
             } else {
-              drawPolylineCylinders(transformedPoints, true, radius, color, view, projection);
+              drawShape();
             }
           }
 
@@ -5217,15 +5993,21 @@ function drawColorCylinder(
                 layerEntry.worldMatrix,
                 stroke.normals ?? stroke.points.map(() => [0, 0, 1] as [number, number, number])
               );
-              drawFreehandStroke(
-                transformedPoints,
-                transformedNormals,
-                size,
-                brushDepth,
-                color,
-                view,
-                projection
-              );
+              const drawStroke = () =>
+                drawFreehandStroke(
+                  transformedPoints,
+                  transformedNormals,
+                  size,
+                  brushDepth,
+                  color,
+                  view,
+                  projection
+                );
+              if (opacity < 0.999) {
+                enqueueTransparentDraw(getDistanceToCamera(getAveragePoint(transformedPoints)), 3, drawStroke);
+              } else {
+                drawStroke();
+              }
             }
           }
 
@@ -5244,13 +6026,117 @@ function drawColorCylinder(
           continue;
         }
       }
+      const getSelectionSliceOutlineAlpha = (opacity: number) => clamp(opacity, 0, 0.98);
+      for (let i = 0; i < layers.length; i += 1) {
+        const layerEntry = layers[i];
+        const layer = layerEntry.layer;
+        const isHoveredSelectionLayer =
+          !capturePassActive &&
+          activeToolRef.current === "select" &&
+          hoveredSceneHitRef.current?.layerId === layer.id;
+        const isSelectedLayer = !capturePassActive && highlightedLayerIdsRef.current.has(layer.id);
+
+        if (!isHoveredSelectionLayer && !isSelectedLayer) {
+          continue;
+        }
+
+        const color = isHoveredSelectionLayer && isSelectedLayer
+          ? selectedHoverSelectionColor
+          : isHoveredSelectionLayer
+            ? hoverSelectionColor
+            : selectedSelectionColor;
+
+        const loadedVolumeEntry = getLoadedVolumeForLayer(layer);
+        if (loadedVolumeEntry && layer.renderMode === "slices") {
+          const { volume, profile } = loadedVolumeEntry;
+          const outlineAlpha = getSelectionSliceOutlineAlpha(layerEntry.opacity);
+          if (outlineAlpha <= 0.001) {
+            sceneSelectionIndicatorLayerIds.add(layer.id);
+            continue;
+          }
+          const outlineColor: [number, number, number, number] = [color[0], color[1], color[2], outlineAlpha];
+          for (const plane of ["xy", "xz", "yz"] as SlicePlane[]) {
+            const viewState = getLayerAxisSliceViewTransform(layer, plane);
+            if (!viewState.visible) continue;
+            const displayIndex = getLayerAxisSliceDisplayIndex(layer, volume, plane);
+            const model = multiplyModelMatrices(
+              layerEntry.worldMatrix,
+              makeInteractiveSliceModelMatrix(layer, volume, plane, displayIndex, profile)
+            );
+            const mv = mat4.create();
+            const mvp = mat4.create();
+            mat4.multiply(mv, view, model);
+            mat4.multiply(mvp, projection, mv);
+            const drawOutline = () => drawPlaneOutline(mvp, outlineColor, 2.0);
+            if (outlineAlpha < 0.999) {
+              enqueueTransparentDraw(getModelDistanceToCamera(model), 5, drawOutline);
+            } else {
+              drawOutline();
+            }
+          }
+          sceneSelectionIndicatorLayerIds.add(layer.id);
+          continue;
+        }
+
+        if (layer.type === "custom-slice") {
+          const volumeLayerId = hasVolumeLayerId(layer.source) ? layer.source.volumeLayerId : null;
+          const sliceParams = layer.sliceParams;
+          if (!volumeLayerId || !sliceParams) continue;
+          const volumeNode = findNodeById(layerTreeRef.current, volumeLayerId);
+          if (!volumeNode || volumeNode.kind !== "layer") continue;
+          const customLoadedVolumeEntry = getLoadedVolumeForLayer(volumeNode);
+          if (!customLoadedVolumeEntry) continue;
+          const { volume, profile } = customLoadedVolumeEntry;
+          const baseOpacity = resolveRenderedCustomSliceOpacity(sliceParams.opacity) * layerEntry.opacity;
+          const outlineAlpha = getSelectionSliceOutlineAlpha(baseOpacity);
+          let model: mat4 | null = null;
+          if (
+            sliceParams.mode === "oblique" &&
+            sliceParams.normal &&
+            typeof sliceParams.normal.x === "number" &&
+            typeof sliceParams.normal.y === "number" &&
+            typeof sliceParams.normal.z === "number"
+          ) {
+            model = makeInteractiveObliqueSliceModelMatrix(volume, sliceParams, profile);
+          } else if (isAxisAlignedSliceParams(sliceParams)) {
+            model = makeSliceModelMatrix(
+              volume,
+              sliceParams.plane,
+              clampSliceIndex(volume, sliceParams.plane, sliceParams.index),
+              profile
+            );
+          }
+          if (!model) continue;
+          const finalModel = multiplyModelMatrices(
+            getCustomSliceSourceWorldMatrix(layerEntry.worldMatrix, volumeNode),
+            model
+          );
+          if (outlineAlpha > 0.001) {
+            const outlineColor: [number, number, number, number] = [color[0], color[1], color[2], outlineAlpha];
+            const mv = mat4.create();
+            const mvp = mat4.create();
+            mat4.multiply(mv, view, finalModel);
+            mat4.multiply(mvp, projection, mv);
+            const drawOutline = () => drawPlaneOutline(mvp, outlineColor, 2.2);
+            if (outlineAlpha < 0.999) {
+              enqueueTransparentDraw(getModelDistanceToCamera(finalModel), 5, drawOutline);
+            } else {
+              drawOutline();
+            }
+          }
+          sceneSelectionIndicatorLayerIds.add(layer.id);
+        }
+      }
       flushTransparentDrawCalls();
+      if (useOitThisFrame) {
+        compositeOitToScreen();
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, sceneFramebuffer);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        gl.blitFramebuffer(0, 0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+      }
       flushForegroundAnnotationDrawCalls();
-
-
-      const hoverSelectionColor: [number, number, number, number] = [1.0, 1.0, 1.0, 0.7];
-      const selectedSelectionColor: [number, number, number, number] = [0.62, 0.88, 1.0, 0.9];
-      const selectedHoverSelectionColor: [number, number, number, number] = [0.84, 0.96, 1.0, 0.95];
 
       if (!capturePassActive) {
         for (let i = 0; i < layers.length; i += 1) {
@@ -5262,6 +6148,10 @@ function drawColorCylinder(
           const isSelectedLayer = highlightedLayerIdsRef.current.has(layer.id);
 
           if (!isHoveredSelectionLayer && !isSelectedLayer) {
+            continue;
+          }
+
+          if (sceneSelectionIndicatorLayerIds.has(layer.id)) {
             continue;
           }
 
@@ -5281,16 +6171,23 @@ function drawColorCylinder(
         const previewColor = annotationColorRef.current;
         const previewOpacity = annotationOpacityRef.current;
         const [r, g, b] = hexToRgb01(previewColor);
+        const previewNormal = hoveredHit.normal ?? [0, 0, 1];
+        const previewLift = Math.max(previewSize * 0.18, 0.0015);
+        const liftedHoveredPosition: [number, number, number] = [
+          hoveredHit.position[0] + previewNormal[0] * previewLift,
+          hoveredHit.position[1] + previewNormal[1] * previewLift,
+          hoveredHit.position[2] + previewNormal[2] * previewLift,
+        ];
 
         if (annotationShapeRef.current === "point") {
           const model = mat4.create();
-          mat4.translate(model, model, hoveredHit.position);
+          mat4.translate(model, model, liftedHoveredPosition);
           mat4.scale(model, model, [previewSize, previewSize, previewSize]);
           const mv = mat4.create();
           const mvp = mat4.create();
           mat4.multiply(mv, view, model);
           mat4.multiply(mvp, projection, mv);
-          drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.05, 1)]);
+          drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.05, 1)], false);
         }
 
         if (annotationShapeRef.current === "freehand") {
@@ -5316,24 +6213,26 @@ function drawColorCylinder(
             }
 
             for (const point of [startHit.position, hoveredHit.position]) {
+              const isHoveredPoint = point === hoveredHit.position;
+              const renderPoint = isHoveredPoint ? liftedHoveredPosition : point;
               const model = mat4.create();
               const mv = mat4.create();
               const mvp = mat4.create();
-              mat4.translate(model, model, point);
+              mat4.translate(model, model, renderPoint);
               mat4.scale(model, model, [Math.max(previewSize * 1.2, 0.008), Math.max(previewSize * 1.2, 0.008), Math.max(previewSize * 1.2, 0.008)]);
               mat4.multiply(mv, view, model);
               mat4.multiply(mvp, projection, mv);
-              drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)]);
+              drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)], false);
             }
           } else {
             const model = mat4.create();
-            mat4.translate(model, model, hoveredHit.position);
+            mat4.translate(model, model, liftedHoveredPosition);
             mat4.scale(model, model, [Math.max(previewSize * 1.2, 0.008), Math.max(previewSize * 1.2, 0.008), Math.max(previewSize * 1.2, 0.008)]);
             const mv = mat4.create();
             const mvp = mat4.create();
             mat4.multiply(mv, view, model);
             mat4.multiply(mvp, projection, mv);
-            drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)]);
+            drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)], false);
           }
         }
 
@@ -5348,24 +6247,26 @@ function drawColorCylinder(
               ? [preview.points[0], preview.points[2]]
               : [preview.start.position, preview.current.position];
             for (const point of anchorPoints) {
+              const isCurrentPoint = point === preview.current.position;
+              const renderPoint = isCurrentPoint ? liftedHoveredPosition : point;
               const model = mat4.create();
               const mv = mat4.create();
               const mvp = mat4.create();
-              mat4.translate(model, model, point);
+              mat4.translate(model, model, renderPoint);
               mat4.scale(model, model, [endpointScale, endpointScale, endpointScale]);
               mat4.multiply(mv, view, model);
               mat4.multiply(mvp, projection, mv);
-              drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)]);
+              drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)], false);
             }
           } else if (hoveredHit) {
             const model = mat4.create();
-            mat4.translate(model, model, hoveredHit.position);
+            mat4.translate(model, model, liftedHoveredPosition);
             mat4.scale(model, model, [Math.max(previewSize, 0.008), Math.max(previewSize, 0.008), Math.max(previewSize, 0.008)]);
             const mv = mat4.create();
             const mvp = mat4.create();
             mat4.multiply(mv, view, model);
             mat4.multiply(mvp, projection, mv);
-            drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)]);
+            drawColorSphere(mvp, [r, g, b, clamp(previewOpacity, 0.08, 1)], false);
           }
         }
       }
@@ -6399,6 +7300,7 @@ function drawColorCylinder(
         if (entry.colorBuffer) gl.deleteBuffer(entry.colorBuffer);
       }
 
+      deleteOitTargets();
       gl.deleteBuffer(planeVertexBuffer);
       gl.deleteBuffer(planeTexCoordBuffer);
       gl.deleteBuffer(planeIndexBuffer);
@@ -6411,6 +7313,11 @@ function drawColorCylinder(
       gl.deleteProgram(streamlineColorProgram);
       gl.deleteProgram(textureProgram);
       gl.deleteProgram(volumeTextureProgram);
+      gl.deleteProgram(oitCompositeProgram);
+      gl.deleteProgram(oitColorProgram);
+      gl.deleteProgram(oitStreamlineColorProgram);
+      gl.deleteProgram(oitTextureProgram);
+      gl.deleteProgram(oitVolumeTextureProgram);
     };
   }, [loadTick, backgroundColor]);
 

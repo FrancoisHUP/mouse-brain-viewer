@@ -47,7 +47,7 @@ export const CORE_TOOL_MANIFESTS: ToolbarToolManifest[] = [
     keywords: ["windows", "workspace", "floating", "layout", "panels"],
     developerName: "Core viewer",
     toolbar: {
-      defaultOrder: 2,
+      defaultOrder: 99,
       defaultVisible: true,
       removable: false,
     },

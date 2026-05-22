@@ -14,7 +14,7 @@ export const assistantExtension = defineUtilityToolExtension({
     developerName: "Core viewer",
     toolbar: {
       defaultOrder: 40,
-      defaultVisible: true,
+      defaultVisible: false,
       removable: true,
     },
   },

@@ -14,7 +14,7 @@ export const pipelineExtension = defineToolExtension({
     developerName: "Core viewer",
     toolbar: {
       defaultOrder: 5,
-      defaultVisible: true,
+      defaultVisible: false,
       removable: true,
     },
   },

@@ -1,10 +1,14 @@
 import {
-  DEFAULT_TOOLBAR_TOOL_IDS,
   TOOLBAR_TOOL_MANIFESTS_BY_ID,
   TOOLBAR_TOOL_IDS,
   getToolbarToolManifest,
 } from "./tools/registry";
 import type { ToolbarToolId } from "./tools/types";
+
+const DEFAULT_HIDDEN_TOOL_IDS: ToolbarToolId[] = TOOLBAR_TOOL_IDS.filter((toolId) => {
+  const manifest = getToolbarToolManifest(toolId);
+  return manifest.toolbar.removable && !manifest.toolbar.defaultVisible;
+});
 
 export type ToolbarLayout = {
   schemaVersion: 1;
@@ -16,8 +20,8 @@ export const TOOLBAR_LAYOUT_STORAGE_KEY = "mouse_brain_viewer.toolbar_layout";
 
 const DEFAULT_TOOLBAR_LAYOUT: ToolbarLayout = {
   schemaVersion: 1,
-  orderedToolIds: DEFAULT_TOOLBAR_TOOL_IDS,
-  hiddenToolIds: [],
+  orderedToolIds: TOOLBAR_TOOL_IDS,
+  hiddenToolIds: DEFAULT_HIDDEN_TOOL_IDS,
 };
 
 function isToolbarToolId(value: unknown): value is ToolbarToolId {
@@ -46,7 +50,11 @@ export function normalizeToolbarLayout(value: unknown): ToolbarLayout {
 
   const raw = value as Partial<ToolbarLayout>;
   const orderedToolIds = normalizeToolbarToolIds(raw.orderedToolIds);
-  const hiddenRequested = new Set(normalizeToolbarToolIds(raw.hiddenToolIds));
+  const hiddenRequested = new Set(
+    raw.hiddenToolIds === undefined
+      ? DEFAULT_HIDDEN_TOOL_IDS
+      : normalizeToolbarToolIds(raw.hiddenToolIds)
+  );
 
   TOOLBAR_TOOL_IDS.forEach((toolId) => {
     if (!orderedToolIds.includes(toolId)) {
