@@ -60,6 +60,7 @@ function stripCameraPoseFromHistoryState(state: ViewerStateV1): ViewerStateV1 {
       yaw: -90,
       pitch: 0,
       fovDeg: 60,
+      orthoSize: 2.5,
     },
   };
 }

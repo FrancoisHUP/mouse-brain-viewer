@@ -7,7 +7,7 @@ import {
 import type { ToolId } from "./tools/types";
 import type { LayerTreeNode, SliceLayerParams } from "./layerTypes";
 
-export type CameraControlMode = "fly" | "orbit";
+export type CameraControlMode = "fly" | "orbit" | "ortho";
 
 export type SerializableCameraState = {
   mode: CameraControlMode;
@@ -15,6 +15,7 @@ export type SerializableCameraState = {
   yaw: number;
   pitch: number;
   fovDeg: number;
+  orthoSize: number;
 };
 
 export type SerializableFloatingWindowState = {
@@ -73,6 +74,7 @@ export const DEFAULT_CAMERA_STATE: SerializableCameraState = {
   yaw: -90,
   pitch: 0,
   fovDeg: 60,
+  orthoSize: 2.5,
 };
 
 function readFiniteNumber(value: unknown, fallback: number) {
@@ -273,6 +275,7 @@ export function parseViewerState(raw: string): ViewerStateV1 {
       yaw: parsed.camera.yaw ?? DEFAULT_CAMERA_STATE.yaw,
       pitch: parsed.camera.pitch ?? DEFAULT_CAMERA_STATE.pitch,
       fovDeg: parsed.camera.fovDeg ?? DEFAULT_CAMERA_STATE.fovDeg,
+      orthoSize: parsed.camera.orthoSize ?? DEFAULT_CAMERA_STATE.orthoSize,
     },
     automation: {
       pipelines: sanitizeAutomationPipelines(parsed.automation?.pipelines ?? []),

@@ -503,6 +503,7 @@ function interpolateCameraState(
     yaw: interpolateNumber(start.yaw, end.yaw, DEFAULT_CAMERA_STATE.yaw, progress),
     pitch: interpolateNumber(start.pitch, end.pitch, DEFAULT_CAMERA_STATE.pitch, progress),
     fovDeg: interpolateNumber(start.fovDeg, end.fovDeg, DEFAULT_CAMERA_STATE.fovDeg, progress),
+    orthoSize: interpolateNumber(start.orthoSize, end.orthoSize, DEFAULT_CAMERA_STATE.orthoSize, progress),
   };
 }
 
@@ -1517,6 +1518,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const [captureTimelineHoverMs, setCaptureTimelineHoverMs] = useState<number | null>(null);
   const [isCaptureTimelinePlaying, setIsCaptureTimelinePlaying] = useState(false);
   const [isCaptureTimelinePaused, setIsCaptureTimelinePaused] = useState(false);
+  const [capturePlaybackSequenceId, setCapturePlaybackSequenceId] = useState<string | null>(null);
   const [floatingWindows, setFloatingWindows] = useState<FloatingWindowState[]>([]);
   const nextFloatingWindowZRef = useRef(1);
   const captureTimelineFrameRef = useRef<number | null>(null);
@@ -1847,8 +1849,10 @@ export default function App({ startupSlices = [] }: AppProps) {
         sceneCount: sequence.scenes.length,
         updatedAt: sequence.updatedAt,
         active: sequence.id === activeCaptureSequenceId,
+        playing: sequence.id === capturePlaybackSequenceId && isCaptureTimelinePlaying,
+        paused: sequence.id === capturePlaybackSequenceId && isCaptureTimelinePaused,
       })),
-    [activeCaptureSequenceId, orderedCaptureSequences]
+    [activeCaptureSceneId, activeCaptureSequenceId, capturePlaybackSequenceId, isCaptureTimelinePaused, isCaptureTimelinePlaying, orderedCaptureSequences]
   );
   const captureStillMenuItems = useMemo<CaptureStillMenuItem[]>(
     () =>
@@ -2155,6 +2159,7 @@ export default function App({ startupSlices = [] }: AppProps) {
           prev.yaw === pending.yaw &&
           prev.pitch === pending.pitch &&
           prev.fovDeg === pending.fovDeg &&
+          prev.orthoSize === pending.orthoSize &&
           prev.position[0] === pending.position[0] &&
           prev.position[1] === pending.position[1] &&
           prev.position[2] === pending.position[2]
@@ -3479,11 +3484,11 @@ export default function App({ startupSlices = [] }: AppProps) {
   function applyAutomationCameraPreset(preset: "default" | "xy" | "xz" | "yz") {
     const next =
       preset === "xy"
-        ? { mode: cameraState.mode, position: [0, 0, 5] as [number, number, number], yaw: -90, pitch: -89, fovDeg: 60 }
+        ? { mode: cameraState.mode, position: [0, 0, 5] as [number, number, number], yaw: -90, pitch: -89, fovDeg: 60, orthoSize: DEFAULT_CAMERA_STATE.orthoSize }
         : preset === "xz"
-        ? { mode: cameraState.mode, position: [0, 5, 0] as [number, number, number], yaw: -90, pitch: 0, fovDeg: 60 }
+        ? { mode: cameraState.mode, position: [0, 5, 0] as [number, number, number], yaw: -90, pitch: 0, fovDeg: 60, orthoSize: DEFAULT_CAMERA_STATE.orthoSize }
         : preset === "yz"
-        ? { mode: cameraState.mode, position: [5, 0, 0] as [number, number, number], yaw: 180, pitch: 0, fovDeg: 60 }
+        ? { mode: cameraState.mode, position: [5, 0, 0] as [number, number, number], yaw: 180, pitch: 0, fovDeg: 60, orthoSize: DEFAULT_CAMERA_STATE.orthoSize }
         : { ...DEFAULT_CAMERA_STATE, mode: cameraState.mode };
     setCameraState(next);
     setCameraSyncKey((value) => value + 1);
@@ -3494,7 +3499,10 @@ export default function App({ startupSlices = [] }: AppProps) {
     const candidate = pose as Partial<SerializableCameraState>;
     setCameraState((prev) => ({
       ...prev,
-      mode: candidate.mode === "orbit" || candidate.mode === "fly" ? candidate.mode : prev.mode,
+      mode:
+        candidate.mode === "orbit" || candidate.mode === "fly" || candidate.mode === "ortho"
+          ? candidate.mode
+          : prev.mode,
       position:
         Array.isArray(candidate.position) &&
         candidate.position.length === 3 &&
@@ -3504,6 +3512,10 @@ export default function App({ startupSlices = [] }: AppProps) {
       yaw: typeof candidate.yaw === "number" && Number.isFinite(candidate.yaw) ? candidate.yaw : prev.yaw,
       pitch: typeof candidate.pitch === "number" && Number.isFinite(candidate.pitch) ? candidate.pitch : prev.pitch,
       fovDeg: typeof candidate.fovDeg === "number" && Number.isFinite(candidate.fovDeg) ? candidate.fovDeg : prev.fovDeg,
+      orthoSize:
+        typeof candidate.orthoSize === "number" && Number.isFinite(candidate.orthoSize)
+          ? candidate.orthoSize
+          : prev.orthoSize,
     }));
     setCameraSyncKey((value) => value + 1);
   }
@@ -5143,10 +5155,16 @@ export default function App({ startupSlices = [] }: AppProps) {
   }
 
   function handleCameraModeChange(mode: SerializableCameraState["mode"]) {
+    pendingCameraStateRef.current = null;
+    if (cameraCommitTimeoutRef.current !== null) {
+      window.clearTimeout(cameraCommitTimeoutRef.current);
+      cameraCommitTimeoutRef.current = null;
+    }
     setCameraState((prev) => ({
       ...prev,
       mode,
     }));
+    setCameraSyncKey((prev) => prev + 1);
   }
 
   function buildShareUrlForCurrentViewer() {
@@ -6109,6 +6127,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         yaw: cameraState.yaw,
         pitch: cameraState.pitch,
         fovDeg: cameraState.fovDeg,
+        orthoSize: cameraState.orthoSize,
       },
       selectedLayerIds: selectedCaptureLayerIds,
       viewerState: cloneViewerStateSnapshot(currentViewerState),
@@ -6205,6 +6224,7 @@ export default function App({ startupSlices = [] }: AppProps) {
         yaw: cameraState.yaw,
         pitch: cameraState.pitch,
         fovDeg: cameraState.fovDeg,
+        orthoSize: cameraState.orthoSize,
       },
       selectedLayerIds: selectedCaptureLayerIds,
       viewerState: cloneViewerStateSnapshot(currentViewerState),
@@ -6225,6 +6245,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       yaw: scene.camera.yaw,
       pitch: scene.camera.pitch,
       fovDeg: scene.camera.fovDeg,
+      orthoSize: scene.camera.orthoSize,
     };
     return nextState;
   }
@@ -6236,6 +6257,7 @@ export default function App({ startupSlices = [] }: AppProps) {
       yaw: nextCamera.yaw,
       pitch: nextCamera.pitch,
       fovDeg: nextCamera.fovDeg,
+      orthoSize: nextCamera.orthoSize,
     });
     setCameraSyncKey((prev) => prev + 1);
   }
@@ -6280,13 +6302,113 @@ export default function App({ startupSlices = [] }: AppProps) {
     return preferredNodeId;
   }
 
-  function stopCaptureTimelinePlayback(options?: { resetSceneId?: string | null }) {
+  function applyCaptureTimelineStateAtMs(
+    timelineMs: number,
+    scenes: PersistedCaptureScene[],
+    options?: {
+      preserveActiveTool?: boolean;
+      suppressAutoCommit?: boolean;
+      syncCamera?: boolean;
+      runAutomation?: boolean;
+    }
+  ) {
+    if (!scenes.length) {
+      setActiveCaptureSceneId(null);
+      return null;
+    }
+    const firstScene = scenes[0];
+    const firstSceneTime = firstScene.timestampMs ?? 0;
+    const boundedTimelineMs = Math.max(0, Math.round(timelineMs));
+    if (scenes.length === 1 || boundedTimelineMs <= firstSceneTime) {
+      const { preferredNodeId } = applyCaptureScene(firstScene, options);
+      setActiveCaptureSceneId(firstScene.id);
+      if (options?.runAutomation) {
+        runAutomationForSelection(preferredNodeId);
+      }
+      return preferredNodeId;
+    }
+
+    const lastScene = scenes[scenes.length - 1];
+    const lastSceneTime = lastScene.timestampMs ?? firstSceneTime;
+    if (boundedTimelineMs >= lastSceneTime) {
+      const finalSelection = lastScene.selectedLayerIds.filter((layerId) => {
+        const node = findNodeById(layerTree, layerId);
+        return !!node && node.kind === "layer";
+      });
+      const finalState = resolveCaptureSceneViewerState(lastScene);
+      const preferredNodeId = finalState
+        ? applyCaptureSceneState(finalState, finalSelection, options)
+        : applyCaptureScene(lastScene, options).preferredNodeId;
+      setActiveCaptureSceneId(lastScene.id);
+      if (options?.runAutomation) {
+        runAutomationForSelection(preferredNodeId);
+      }
+      return preferredNodeId;
+    }
+
+    for (let index = 1; index < scenes.length; index += 1) {
+      const startScene = scenes[index - 1];
+      const endScene = scenes[index];
+      const segmentStartMs = startScene.timestampMs ?? 0;
+      const segmentEndMs = endScene.timestampMs ?? segmentStartMs;
+      if (boundedTimelineMs > segmentEndMs) continue;
+      const segmentDuration = Math.max(1, segmentEndMs - segmentStartMs);
+      const segmentProgress = Math.min(1, Math.max(0, (boundedTimelineMs - segmentStartMs) / segmentDuration));
+      const easedProgress = easeCaptureSceneProgress(segmentProgress, endScene.transitionEasing ?? "ease-in-out");
+      const startState = resolveCaptureSceneViewerState(startScene);
+      const endState = resolveCaptureSceneViewerState(endScene);
+      const interpolatedCamera = interpolateCameraState(startScene.camera, endScene.camera, easedProgress);
+      let preferredNodeId: string | null = null;
+      if (startState && endState) {
+        const interpolatedState = interpolateViewerState(startState, endState, easedProgress);
+        interpolatedState.camera = interpolatedCamera;
+        const interpolatedSelectionSource = easedProgress < 0.5 ? startScene.selectedLayerIds : endScene.selectedLayerIds;
+        const interpolatedSelection = interpolatedSelectionSource.filter((layerId) => {
+          const node = findNodeById(interpolatedState.scene.layerTree, layerId);
+          return !!node && node.kind === "layer";
+        });
+        preferredNodeId = applyCaptureSceneState(interpolatedState, interpolatedSelection, options);
+      } else if (startState || endState) {
+        const steppedState = cloneViewerStateSnapshot((easedProgress < 0.5 ? startState : endState) ?? startState ?? endState!);
+        steppedState.camera = interpolatedCamera;
+        const steppedSelectionSource = easedProgress < 0.5 ? startScene.selectedLayerIds : endScene.selectedLayerIds;
+        const steppedSelection = steppedSelectionSource.filter((layerId) => {
+          const node = findNodeById(steppedState.scene.layerTree, layerId);
+          return !!node && node.kind === "layer";
+        });
+        preferredNodeId = applyCaptureSceneState(steppedState, steppedSelection, options);
+      } else {
+        const steppedSelectionSource = easedProgress < 0.5 ? startScene.selectedLayerIds : endScene.selectedLayerIds;
+        preferredNodeId = steppedSelectionSource[steppedSelectionSource.length - 1] ?? null;
+        setSelectedNodeIdsExternal(steppedSelectionSource.length ? steppedSelectionSource : null);
+        setSelectedNodeId(preferredNodeId);
+        applyCaptureSceneCamera(interpolatedCamera);
+      }
+      setActiveCaptureSceneId(easedProgress < 0.5 ? startScene.id : endScene.id);
+      if (options?.runAutomation) {
+        runAutomationForSelection(preferredNodeId);
+      }
+      return preferredNodeId;
+    }
+
+    const { preferredNodeId } = applyCaptureScene(lastScene, options);
+    setActiveCaptureSceneId(lastScene.id);
+    if (options?.runAutomation) {
+      runAutomationForSelection(preferredNodeId);
+    }
+    return preferredNodeId;
+  }
+
+  function stopCaptureTimelinePlayback(options?: { resetSceneId?: string | null; preservePlaybackSequence?: boolean }) {
     captureTimelineTokenRef.current += 1;
     if (captureTimelineFrameRef.current !== null) {
       window.cancelAnimationFrame(captureTimelineFrameRef.current);
       captureTimelineFrameRef.current = null;
     }
     captureTimelinePlaybackModeRef.current = "once";
+    if (!options?.preservePlaybackSequence) {
+      setCapturePlaybackSequenceId(null);
+    }
     setIsCaptureTimelinePlaying(false);
     setIsCaptureTimelinePaused(false);
     if (typeof options?.resetSceneId !== "undefined") {
@@ -6320,28 +6442,23 @@ export default function App({ startupSlices = [] }: AppProps) {
       if (captureTimelineTokenRef.current !== playbackToken) return;
       const elapsed = frameTime - playbackStart;
       const absoluteTimelineMs = startCursorMs + elapsed;
-      setCaptureTimelineCursorMs(Math.min(endSceneTime, Math.max(startCursorMs, absoluteTimelineMs)));
+      const nextTimelineMs = Math.min(endSceneTime, Math.max(startCursorMs, absoluteTimelineMs));
+      setCaptureTimelineCursorMs(nextTimelineMs);
+      if (captureTimelineTokenRef.current !== playbackToken) return;
       if (absoluteTimelineMs >= endSceneTime) {
-        const finalSelection = lastScene.selectedLayerIds.filter((layerId) => {
-          const node = findNodeById(layerTree, layerId);
-          return !!node && node.kind === "layer";
+        applyCaptureTimelineStateAtMs(endSceneTime, scenes, {
+          preserveActiveTool: true,
+          suppressAutoCommit: true,
+          syncCamera: true,
         });
-        const finalState = resolveCaptureSceneViewerState(lastScene);
-        if (finalState) {
-          applyCaptureSceneState(finalState, finalSelection, {
-            preserveActiveTool: true,
-            suppressAutoCommit: true,
-            syncCamera: true,
-          });
-        } else {
-          handleApplyCaptureScene(lastScene.id);
-        }
+        if (captureTimelineTokenRef.current !== playbackToken) return;
         if (playbackMode === "loop" && scenes.length > 1) {
           applyCaptureScene(firstScene, {
             preserveActiveTool: true,
             suppressAutoCommit: true,
             syncCamera: true,
           });
+          if (captureTimelineTokenRef.current !== playbackToken) return;
           setActiveCaptureSceneId(firstScene.id);
           setCaptureTimelineCursorMs(startSceneTime);
           captureTimelineFrameRef.current = window.requestAnimationFrame(() => {
@@ -6356,61 +6473,14 @@ export default function App({ startupSlices = [] }: AppProps) {
         return;
       }
 
-      for (let index = 1; index < scenes.length; index += 1) {
-        const startScene = scenes[index - 1];
-        const endScene = scenes[index];
-        const segmentStartMs = startScene.timestampMs ?? 0;
-        const segmentEndMs = endScene.timestampMs ?? segmentStartMs;
-        const segmentDuration = Math.max(1, segmentEndMs - segmentStartMs);
-        if (absoluteTimelineMs < segmentEndMs) {
-          const segmentProgress = Math.min(1, Math.max(0, (absoluteTimelineMs - segmentStartMs) / segmentDuration));
-          const easedProgress = easeCaptureSceneProgress(segmentProgress, endScene.transitionEasing ?? "ease-in-out");
-          const startState = resolveCaptureSceneViewerState(startScene);
-          const endState = resolveCaptureSceneViewerState(endScene);
-          const interpolatedCamera = interpolateCameraState(startScene.camera, endScene.camera, easedProgress);
-          if (startState && endState) {
-            const interpolatedState = interpolateViewerState(startState, endState, easedProgress);
-            interpolatedState.camera = interpolatedCamera;
-            const interpolatedSelectionSource = easedProgress < 0.5 ? startScene.selectedLayerIds : endScene.selectedLayerIds;
-            const interpolatedSelection = interpolatedSelectionSource.filter((layerId) => {
-              const node = findNodeById(interpolatedState.scene.layerTree, layerId);
-              return !!node && node.kind === "layer";
-            });
-            applyCaptureSceneState(interpolatedState, interpolatedSelection, {
-              preserveActiveTool: true,
-              suppressAutoCommit: true,
-              syncCamera: true,
-            });
-          } else {
-            if (startState || endState) {
-              const steppedState = cloneViewerStateSnapshot((easedProgress < 0.5 ? startState : endState) ?? startState ?? endState!);
-              steppedState.camera = interpolatedCamera;
-              const steppedSelectionSource = easedProgress < 0.5 ? startScene.selectedLayerIds : endScene.selectedLayerIds;
-              const steppedSelection = steppedSelectionSource.filter((layerId) => {
-                const node = findNodeById(steppedState.scene.layerTree, layerId);
-                return !!node && node.kind === "layer";
-              });
-              applyCaptureSceneState(steppedState, steppedSelection, {
-                preserveActiveTool: true,
-                suppressAutoCommit: true,
-                syncCamera: true,
-              });
-            } else {
-              if (segmentProgress < 0.5) {
-                setSelectedNodeIdsExternal(startScene.selectedLayerIds.length ? startScene.selectedLayerIds : null);
-                setSelectedNodeId(startScene.selectedLayerIds[startScene.selectedLayerIds.length - 1] ?? null);
-              } else {
-                setSelectedNodeIdsExternal(endScene.selectedLayerIds.length ? endScene.selectedLayerIds : null);
-                setSelectedNodeId(endScene.selectedLayerIds[endScene.selectedLayerIds.length - 1] ?? null);
-              }
-              applyCaptureSceneCamera(interpolatedCamera);
-            }
-          }
-          setActiveCaptureSceneId(easedProgress < 0.5 ? startScene.id : endScene.id);
-          captureTimelineFrameRef.current = window.requestAnimationFrame(renderPlaybackFrame);
-          return;
-        }
-      }
+      applyCaptureTimelineStateAtMs(nextTimelineMs, scenes, {
+        preserveActiveTool: true,
+        suppressAutoCommit: true,
+        syncCamera: true,
+      });
+      if (captureTimelineTokenRef.current !== playbackToken) return;
+      captureTimelineFrameRef.current = window.requestAnimationFrame(renderPlaybackFrame);
+      return;
 
       stopCaptureTimelinePlayback({
         resetSceneId: lastScene.id,
@@ -6490,6 +6560,7 @@ export default function App({ startupSlices = [] }: AppProps) {
                 yaw: cameraState.yaw,
                 pitch: cameraState.pitch,
                 fovDeg: cameraState.fovDeg,
+                orthoSize: cameraState.orthoSize,
               },
               selectedLayerIds: selectedCaptureLayerIds,
               viewerState: cloneViewerStateSnapshot(currentViewerState),
@@ -6505,16 +6576,19 @@ export default function App({ startupSlices = [] }: AppProps) {
   function handleApplyCaptureScene(sceneId: string) {
     const scene = captureScenes.find((entry) => entry.id === sceneId);
     if (!scene) return;
+    const sceneTime = scene.timestampMs ?? 0;
     stopCaptureTimelinePlayback({ resetSceneId: scene.id });
-    const { preferredNodeId } = applyCaptureScene(scene, { syncCamera: true });
-    setActiveCaptureSceneId(scene.id);
-    setCaptureTimelineCursorMs(scene.timestampMs ?? 0);
-    runAutomationForSelection(preferredNodeId);
+    setCaptureTimelineCursorMs(sceneTime);
+    applyCaptureTimelineStateAtMs(sceneTime, orderedCaptureScenes, {
+      syncCamera: true,
+      runAutomation: true,
+    });
   }
 
   function handleApplyCaptureStill(stillId: string) {
     const still = captureStills.find((entry) => entry.id === stillId);
     if (!still) return;
+    stopCaptureTimelinePlayback();
     const { preferredNodeId } = applyCaptureScene(still, { syncCamera: true });
     setActiveCaptureStillId(still.id);
     runAutomationForSelection(preferredNodeId);
@@ -6563,11 +6637,17 @@ export default function App({ startupSlices = [] }: AppProps) {
     const nextScenes = cloneCaptureScenes(sequence.scenes);
     const nextActiveSceneId =
       nextScenes.some((scene) => scene.id === activeCaptureSceneId) ? activeCaptureSceneId : nextScenes[0]?.id ?? null;
+    const nextCursorMs = sequence.cursorMs ?? nextScenes[0]?.timestampMs ?? 0;
     setCaptureScenes(nextScenes);
     setActiveCaptureSceneId(nextActiveSceneId);
-    setCaptureTimelineCursorMs(sequence.cursorMs ?? 0);
+    setCaptureTimelineCursorMs(nextCursorMs);
     setCaptureTimelineZoom(clampCaptureTimelineZoom(sequence.zoom ?? DEFAULT_CAPTURE_TIMELINE_ZOOM));
     setActiveCaptureSequenceId(sequence.id);
+    applyCaptureTimelineStateAtMs(nextCursorMs, nextScenes, {
+      preserveActiveTool: true,
+      suppressAutoCommit: true,
+      syncCamera: true,
+    });
     if (typeof options?.openPanel === "boolean") {
       setIsCapturePanelOpen(options.openPanel);
     }
@@ -6635,11 +6715,12 @@ export default function App({ startupSlices = [] }: AppProps) {
     playbackMode?: CaptureTimelinePlaybackMode;
     scenes?: PersistedCaptureScene[];
     startCursorMs?: number;
+    sequenceId?: string | null;
   }) {
     const sourceScenes = options?.scenes ? cloneCaptureScenes(options.scenes) : cloneCaptureScenes(orderedCaptureScenes);
     if (!sourceScenes.length) return;
-    stopCaptureTimelinePlayback();
-    setIsCapturePanelOpen(false);
+    const playbackSequenceId = options?.sequenceId ?? activeCaptureSequenceId ?? capturePlaybackSequenceId ?? null;
+    stopCaptureTimelinePlayback({ preservePlaybackSequence: true });
     const playbackMode = options?.playbackMode ?? "once";
     const firstSceneTime = sourceScenes[0]?.timestampMs ?? 0;
     const startCursorMs = Math.max(
@@ -6661,12 +6742,13 @@ export default function App({ startupSlices = [] }: AppProps) {
       transitionEasing: scene.transitionEasing ?? "ease-in-out",
     }));
     if (playbackScenes.length === 1) {
-      setIsCapturePanelOpen(false);
+      setCapturePlaybackSequenceId(playbackSequenceId);
       handleApplyCaptureScene(playbackScenes[0].id);
       return;
     }
     const firstScene = playbackScenes[0];
     captureTimelinePlaybackModeRef.current = playbackMode;
+    setCapturePlaybackSequenceId(playbackSequenceId);
     applyCaptureScene(firstScene, {
       preserveActiveTool: true,
       suppressAutoCommit: true,
@@ -6716,13 +6798,13 @@ export default function App({ startupSlices = [] }: AppProps) {
     setCaptureTimelineCursorMs(sequence.cursorMs ?? 0);
     setCaptureTimelineZoom(clampCaptureTimelineZoom(sequence.zoom ?? DEFAULT_CAPTURE_TIMELINE_ZOOM));
     setActiveCaptureSequenceId(sequence.id);
-    setIsCapturePanelOpen(false);
     setActiveTool((current) => (current === "capture" ? "mouse" : current));
     handlePlayCaptureTimeline({
       fromStart: true,
       playbackMode,
       scenes: nextScenes,
       startCursorMs: nextScenes[0]?.timestampMs ?? 0,
+      sequenceId: sequence.id,
     });
   }
 
@@ -6769,10 +6851,15 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function handleCaptureTimelineBackgroundPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
+    stopCaptureTimelinePlayback();
     const nextMs = getCaptureTimelineMsFromClientX(event.clientX);
     setCaptureTimelineCursorMs(nextMs);
     setCaptureTimelineHoverMs(nextMs);
-    setActiveCaptureSceneId(null);
+    applyCaptureTimelineStateAtMs(nextMs, orderedCaptureScenes, {
+      preserveActiveTool: true,
+      suppressAutoCommit: true,
+      syncCamera: true,
+    });
   }
 
   function handleCaptureTimelineScenePointerDown(event: ReactPointerEvent<HTMLElement>, sceneId: string) {
@@ -6787,8 +6874,13 @@ export default function App({ startupSlices = [] }: AppProps) {
       originClientX: event.clientX,
       hasMoved: false,
     };
-    setActiveCaptureSceneId(sceneId);
-    setCaptureTimelineCursorMs(scene.timestampMs ?? 0);
+    const sceneTime = scene.timestampMs ?? 0;
+    setCaptureTimelineCursorMs(sceneTime);
+    applyCaptureTimelineStateAtMs(sceneTime, orderedCaptureScenes, {
+      preserveActiveTool: true,
+      suppressAutoCommit: true,
+      syncCamera: true,
+    });
   }
 
   function handleCaptureTimelineWheel(event: ReactWheelEvent<HTMLDivElement>) {

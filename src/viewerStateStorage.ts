@@ -60,21 +60,30 @@ function normalizeViewerState(value: unknown): ViewerStateV1 | null {
 function normalizeCameraState(value: unknown): SerializableCameraState | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<SerializableCameraState>;
-  if (candidate.mode !== "fly" && candidate.mode !== "orbit") return null;
+  if (candidate.mode !== "fly" && candidate.mode !== "orbit" && candidate.mode !== "ortho") return null;
   if (!Array.isArray(candidate.position) || candidate.position.length < 3) return null;
   const [x, y, z] = candidate.position;
-  if (![x, y, z, candidate.yaw, candidate.pitch, candidate.fovDeg].every((item) => typeof item === "number" && Number.isFinite(item))) {
+  if (
+    ![x, y, z, candidate.yaw, candidate.pitch, candidate.fovDeg].every(
+      (item) => typeof item === "number" && Number.isFinite(item)
+    )
+  ) {
     return null;
   }
   const yaw = candidate.yaw as number;
   const pitch = candidate.pitch as number;
   const fovDeg = candidate.fovDeg as number;
+  const orthoSize =
+    typeof candidate.orthoSize === "number" && Number.isFinite(candidate.orthoSize)
+      ? candidate.orthoSize
+      : 2.5;
   return {
     mode: candidate.mode,
     position: [x, y, z],
     yaw,
     pitch,
     fovDeg,
+    orthoSize,
   };
 }
 

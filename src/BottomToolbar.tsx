@@ -54,6 +54,8 @@ export type CaptureSequenceMenuItem = {
   sceneCount: number;
   updatedAt: number;
   active?: boolean;
+  playing?: boolean;
+  paused?: boolean;
 };
 
 export type CaptureStillMenuItem = {
@@ -103,6 +105,7 @@ const CAMERA_MODE_OPTIONS: Array<{
 }> = [
   { id: "fly", label: "Fly camera", description: "Free look + WASD movement" },
   { id: "orbit", label: "Orbit controls", description: "Rotate around the scene center" },
+  { id: "ortho", label: "Orthographic view", description: "Parallel projection for figures and diagrams" },
 ];
 
 const ANNOTATION_COLORS = [
@@ -1403,55 +1406,35 @@ function CaptureToolButton({
         icon={buttonIcon}
       />
       <div
-        data-theme-surface="panel"
         style={{
           position: "absolute",
           left: "50%",
-          bottom: "calc(100% - 2px)",
+          bottom: "100%",
+          paddingBottom: 12,
           transform: keepCaptureMenuOpen ? "translate(-50%, 0)" : "translate(-50%, 8px)",
-          width: 320,
-          borderRadius: 14,
-          border: "1px solid rgba(255,255,255,0.10)",
-          background: "rgba(12,14,18,0.96)",
-          boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
-          backdropFilter: "blur(14px)",
-          padding: 12,
-          color: "white",
           opacity: keepCaptureMenuOpen ? 1 : 0,
           visibility: keepCaptureMenuOpen ? "visible" : "hidden",
           pointerEvents: keepCaptureMenuOpen ? "auto" : "none",
           transition: "opacity 170ms ease, transform 190ms ease, visibility 170ms ease",
           zIndex: 70,
-          display: "grid",
-          gap: 8,
-          fontFamily: UI_FONT_FAMILY,
         }}
       >
-        {(isPlaybackActive || isPlaybackPaused) ? (
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onStopPlayback();
-              }}
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,0.10)",
-                background: "rgba(255,255,255,0.08)",
-                color: "white",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-              }}
-            >
-              <CapturePlaybackIcon kind="stop" />
-            </button>
-          </div>
-        ) : null}
+        <div
+          data-theme-surface="panel"
+          style={{
+            width: 320,
+            borderRadius: 14,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(12,14,18,0.96)",
+            boxShadow: "0 16px 40px rgba(0,0,0,0.40)",
+            backdropFilter: "blur(14px)",
+            padding: 12,
+            color: "white",
+            display: "grid",
+            gap: 8,
+            fontFamily: UI_FONT_FAMILY,
+          }}
+        >
         <button
           type="button"
           onClick={(event) => {
@@ -1644,16 +1627,20 @@ function CaptureToolButton({
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation();
+                  if (sequence.playing || sequence.paused) {
+                    onTogglePlayback();
+                    return;
+                  }
                   onPlaySequence(sequence.id);
                 }}
-                title="Play animation"
-                aria-label="Play animation"
+                title={sequence.playing ? "Pause animation" : sequence.paused ? "Resume animation" : "Play animation"}
+                aria-label={sequence.playing ? "Pause animation" : sequence.paused ? "Resume animation" : "Play animation"}
                 style={{
                   width: 30,
                   height: 30,
                   borderRadius: 8,
                   border: "1px solid rgba(255,255,255,0.10)",
-                  background: "rgba(255,255,255,0.08)",
+                  background: sequence.playing ? "rgba(255,160,120,0.16)" : "rgba(255,255,255,0.08)",
                   color: "white",
                   display: "inline-flex",
                   alignItems: "center",
@@ -1661,22 +1648,26 @@ function CaptureToolButton({
                   cursor: "pointer",
                 }}
               >
-                <CapturePlaybackIcon kind="play" />
+                <CapturePlaybackIcon kind={sequence.playing ? "pause" : "play"} />
               </button>
               <button
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation();
+                  if (sequence.playing || sequence.paused) {
+                    onStopPlayback();
+                    return;
+                  }
                   onLoopSequence(sequence.id);
                 }}
-                title="Loop animation"
-                aria-label="Loop animation"
+                title={sequence.playing || sequence.paused ? "Stop animation" : "Loop animation"}
+                aria-label={sequence.playing || sequence.paused ? "Stop animation" : "Loop animation"}
                 style={{
                   width: 30,
                   height: 30,
                   borderRadius: 8,
-                  border: "1px solid rgba(255,255,255,0.10)",
-                  background: "rgba(255,255,255,0.08)",
+                  border: sequence.playing || sequence.paused ? "1px solid rgba(255,160,160,0.22)" : "1px solid rgba(255,255,255,0.10)",
+                  background: sequence.playing || sequence.paused ? "rgba(255,120,120,0.16)" : "rgba(255,255,255,0.08)",
                   color: "white",
                   display: "inline-flex",
                   alignItems: "center",
@@ -1684,7 +1675,7 @@ function CaptureToolButton({
                   cursor: "pointer",
                 }}
               >
-                <CapturePlaybackIcon kind="loop" />
+                <CapturePlaybackIcon kind={sequence.playing || sequence.paused ? "stop" : "loop"} />
               </button>
               {renameSequenceId === sequence.id ? (
                 <div
@@ -1786,6 +1777,7 @@ function CaptureToolButton({
           ))}
           </div>
         ) : null}
+        </div>
       </div>
         {openMenuSequenceId && menuPosition && typeof document !== "undefined"
           ? createPortal(

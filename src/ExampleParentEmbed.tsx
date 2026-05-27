@@ -20,6 +20,7 @@ const DEMO_STATE: ViewerStateV1 = {
     yaw: -90,
     pitch: 0,
     fovDeg: 60,
+    orthoSize: 2.5,
   },
   scene: {
     activeTool: "mouse",

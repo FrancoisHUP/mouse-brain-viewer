@@ -54,6 +54,7 @@ type CameraState = {
   yaw: number;
   pitch: number;
   fovDeg: number;
+  orthoSize: number;
 };
 
 type SliceTextureSet = {
@@ -582,7 +583,20 @@ function getObliqueSliceViewTransform(
   };
 }
 
-function chooseStableVolumeRenderPlane(_volume: LoadedVolume): SlicePlane {
+function chooseStableVolumeRenderPlane(
+  _volume: LoadedVolume,
+  forward?: vec3
+): SlicePlane {
+  const fx = Math.abs(forward?.[0] ?? 0);
+  const fy = Math.abs(forward?.[1] ?? 0);
+  const fz = Math.abs(forward?.[2] ?? 1);
+
+  if (fx >= fy && fx >= fz) {
+    return "yz";
+  }
+  if (fy >= fz) {
+    return "xz";
+  }
   return "xy";
 }
 
@@ -856,6 +870,7 @@ export default function WebGLCanvas({
     yaw: cameraState.yaw,
     pitch: cameraState.pitch,
     fovDeg: cameraState.fovDeg,
+    orthoSize: cameraState.orthoSize,
   });
   const lastPublishedCameraRef = useRef("");
   const targetOrbitDistanceRef = useRef(Math.max(0.25, vec3.length(vec3.fromValues(
@@ -863,6 +878,8 @@ export default function WebGLCanvas({
     cameraState.position[1],
     cameraState.position[2]
   ))));
+  const targetFovDegRef = useRef(cameraState.fovDeg);
+  const targetOrthoSizeRef = useRef(cameraState.orthoSize);
   const orbitTargetRef = useRef(vec3.fromValues(0, 0, 0));
   const orbitTargetGoalRef = useRef(vec3.fromValues(0, 0, 0));
   const flyFocusTargetPositionRef = useRef(vec3.clone(cameraRef.current.position));
@@ -905,6 +922,7 @@ export default function WebGLCanvas({
   const loadingUrlsRef = useRef<Set<string>>(new Set());
   const loadingMeshesRef = useRef<Set<string>>(new Set());
   const hoveredSceneHitRef = useRef<ScenePointerHit | null>(null);
+  const previewSceneHitRef = useRef<ScenePointerHit | null>(null);
   const lineStartHitRef = useRef<ScenePointerHit | null>(null);
   const lastVisibleVolumeCacheAtRef = useRef<Map<string, number>>(new Map());
   const lastVisibleMeshCacheAtRef = useRef<Map<string, number>>(new Map());
@@ -932,6 +950,7 @@ export default function WebGLCanvas({
     suppressScenePointerTargetRef.current = suppressScenePointerTarget;
     if (suppressScenePointerTarget) {
       hoveredSceneHitRef.current = null;
+      previewSceneHitRef.current = null;
       lastPublishedSceneHitRef.current = "null";
       onScenePointerTargetChange?.(null);
     }
@@ -1074,6 +1093,9 @@ export default function WebGLCanvas({
 
   useEffect(() => {
     activeToolRef.current = activeTool;
+    if (activeTool !== "pencil" && activeTool !== "capture") {
+      previewSceneHitRef.current = null;
+    }
   }, [activeTool]);
 
   useEffect(() => {
@@ -1176,7 +1198,7 @@ export default function WebGLCanvas({
 
   useEffect(() => {
     cameraRef.current.mode = cameraState.mode ?? "fly";
-    if ((cameraState.mode ?? "fly") === "orbit") {
+    if (cameraState.mode === "orbit" || cameraState.mode === "ortho") {
       targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(cameraRef.current.position, orbitTargetRef.current));
     }
   }, [cameraState.mode]);
@@ -1190,6 +1212,9 @@ export default function WebGLCanvas({
     camera.yaw = cameraState.yaw;
     camera.pitch = cameraState.pitch;
     camera.fovDeg = cameraState.fovDeg;
+    camera.orthoSize = cameraState.orthoSize;
+    targetFovDegRef.current = cameraState.fovDeg;
+    targetOrthoSizeRef.current = cameraState.orthoSize;
     vec3.copy(flyFocusTargetPositionRef.current, camera.position);
     flyFocusActiveRef.current = false;
     targetOrbitDistanceRef.current = Math.max(0.25, vec3.distance(camera.position, orbitTargetRef.current));
@@ -1206,6 +1231,7 @@ export default function WebGLCanvas({
       yaw: camera.yaw,
       pitch: camera.pitch,
       fovDeg: camera.fovDeg,
+      orthoSize: camera.orthoSize,
     };
 
     const key = JSON.stringify(next);
@@ -1982,7 +2008,8 @@ export default function WebGLCanvas({
       in vec3 vWorldPosition;
       out vec4 outColor;
       float computeWeight(float alpha) {
-        return max(alpha, 1e-2);
+        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
+        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
       }
       void main() {
         if (uClipEnabled > 0.5) {
@@ -2027,7 +2054,8 @@ export default function WebGLCanvas({
       in vec3 vVertexColor;
       out vec4 outColor;
       float computeWeight(float alpha) {
-        return max(alpha, 1e-2);
+        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
+        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
       }
       void main() {
         if (uClipEnabled > 0.5) {
@@ -2069,7 +2097,8 @@ export default function WebGLCanvas({
       uniform int uOitPassMode;
       out vec4 outColor;
       float computeWeight(float alpha) {
-        return max(alpha, 1e-2);
+        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
+        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
       }
       void main() {
         vec4 tex = texture(uTexture, vTexCoord);
@@ -2102,7 +2131,8 @@ export default function WebGLCanvas({
       uniform int uOitPassMode;
       out vec4 outColor;
       float computeWeight(float alpha) {
-        return max(alpha, 1e-2);
+        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
+        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
       }
       void main() {
         vec4 tex = texture(uTexture, vTexCoord);
@@ -2905,13 +2935,19 @@ export default function WebGLCanvas({
     function getViewProjectionMatrices() {
       const aspect = canvas.width / Math.max(canvas.height, 1);
       const projection = mat4.create();
-      mat4.perspective(
-        projection,
-        (camera.fovDeg * Math.PI) / 180,
-        aspect,
-        0.1,
-        100.0
-      );
+      if (camera.mode === "ortho") {
+        const orthoHeight = Math.max(0.05, camera.orthoSize);
+        const orthoWidth = orthoHeight * aspect;
+        mat4.ortho(projection, -orthoWidth, orthoWidth, -orthoHeight, orthoHeight, 0.1, 100.0);
+      } else {
+        mat4.perspective(
+          projection,
+          (camera.fovDeg * Math.PI) / 180,
+          aspect,
+          0.1,
+          100.0
+        );
+      }
 
       const forward = getForward();
       const view = mat4.create();
@@ -3000,9 +3036,17 @@ export default function WebGLCanvas({
       return intersectRayQuad(ray, a, b, c, d);
     }
 
-    function publishHoveredSceneHit(hit: ScenePointerHit | null) {
+    function publishHoveredSceneHit(
+      hit: ScenePointerHit | null,
+      options?: { clearPreview?: boolean }
+    ) {
       const publishedHit = suppressScenePointerTargetRef.current ? null : hit;
       hoveredSceneHitRef.current = publishedHit;
+      if (hit) {
+        previewSceneHitRef.current = hit;
+      } else if (options?.clearPreview) {
+        previewSceneHitRef.current = null;
+      }
       const key = publishedHit
         ? `${publishedHit.layerId}|${publishedHit.plane ?? "none"}|${publishedHit.position.map((value) => value.toFixed(5)).join(",")}|${publishedHit.distance.toFixed(5)}`
         : "null";
@@ -3439,7 +3483,7 @@ export default function WebGLCanvas({
       const ex = (endClientX - rectBounds.left) * (canvas.width / Math.max(rectBounds.width, 1));
       const ey = (endClientY - rectBounds.top) * (canvas.height / Math.max(rectBounds.height, 1));
       const rect = normalizeScreenRect({ x: sx, y: sy }, { x: ex, y: ey });
-      const { projection, view } = getViewProjectionMatrices();
+      const { projection, view, forward } = getViewProjectionMatrices();
       const layers = collectResolvedVisibleLayers(layerTreeRef.current, true);
       const result: string[] = [];
       const pushLayerId = (layerId: string) => {
@@ -3480,7 +3524,7 @@ export default function WebGLCanvas({
           const { volume, profile } = loadedVolumeEntry;
           const models: mat4[] = [];
           if (layer.renderMode === "volume") {
-            const plane = chooseStableVolumeRenderPlane(volume);
+            const plane = chooseStableVolumeRenderPlane(volume, forward);
             const totalSlices = getPlaneSliceCount(volume, plane);
             const displayIndices = buildVolumeDisplayIndices(totalSlices);
             for (const displayIndex of displayIndices) {
@@ -3570,7 +3614,7 @@ export default function WebGLCanvas({
     }
 
     function pickSceneAtClientPosition(clientX: number, clientY: number): ScenePointerHit | null {
-      const { projection, view } = getViewProjectionMatrices();
+      const { projection, view, forward } = getViewProjectionMatrices();
       const ray = createRayFromScreen({
         canvas,
         clientX,
@@ -3656,7 +3700,7 @@ export default function WebGLCanvas({
           const { volume, profile } = loadedVolumeEntry;
 
           if (layer.renderMode === "volume") {
-            const plane = chooseStableVolumeRenderPlane(volume);
+            const plane = chooseStableVolumeRenderPlane(volume, forward);
             const totalSlices = getPlaneSliceCount(volume, plane);
             const displayIndices = buildVolumeDisplayIndices(totalSlices);
             for (const displayIndex of displayIndices) {
@@ -3754,8 +3798,6 @@ export default function WebGLCanvas({
     }
 
     const camera = cameraRef.current;
-
-    let targetFovDeg = camera.fovDeg;
     const keys = new Set<string>();
     let dragging = false;
     let dragMode: "rotate" | "pan" | null = null;
@@ -3815,6 +3857,10 @@ export default function WebGLCanvas({
       return vec3.distance(camera.position, orbitTargetRef.current);
     }
 
+    function isOrbitLikeMode(mode: CameraControlMode): boolean {
+      return mode === "orbit" || mode === "ortho";
+    }
+
     function setCameraFromOrbitAngles(
       distance: number,
       yawDeg: number,
@@ -3836,7 +3882,10 @@ export default function WebGLCanvas({
 
     function panOrbitTarget(dxPixels: number, dyPixels: number) {
       const distance = Math.max(0.25, getCameraDistanceToTarget());
-      const worldUnitsPerPixel = (2 * distance * Math.tan((camera.fovDeg * Math.PI) / 360)) / Math.max(canvas.clientHeight, 1);
+      const worldUnitsPerPixel =
+        camera.mode === "ortho"
+          ? (2 * Math.max(0.05, camera.orthoSize)) / Math.max(canvas.clientHeight, 1)
+          : (2 * distance * Math.tan((camera.fovDeg * Math.PI) / 360)) / Math.max(canvas.clientHeight, 1);
       const forward = getForward();
       const worldUp = vec3.fromValues(0, 1, 0);
       const right = vec3.create();
@@ -3968,8 +4017,11 @@ export default function WebGLCanvas({
       vec3.copy(orbitTargetGoalRef.current, center);
       targetOrbitDistanceRef.current = focusDistance;
 
-      if (camera.mode === "orbit") {
+      if (isOrbitLikeMode(camera.mode)) {
         // Leave the current orbit target in place and let the render loop ease toward the new target and distance.
+        if (camera.mode === "ortho") {
+          targetOrthoSizeRef.current = Math.max(0.2, focusDistance);
+        }
       } else {
         const forward = getForward();
         flyFocusTargetPositionRef.current[0] = center[0] - forward[0] * focusDistance;
@@ -4112,7 +4164,16 @@ export default function WebGLCanvas({
       }
     }
 
-    function drawBrushStamp(position: [number, number, number], normal: [number, number, number] | null | undefined, radius: number, depth: number, color: [number, number, number, number], view: mat4, projection: mat4) {
+    function drawBrushStamp(
+      position: [number, number, number],
+      normal: [number, number, number] | null | undefined,
+      radius: number,
+      depth: number,
+      color: [number, number, number, number],
+      view: mat4,
+      projection: mat4,
+      depthWrite = true
+    ) {
       const model = mat4.create();
       const mv = mat4.create();
       const mvp = mat4.create();
@@ -4134,14 +4195,23 @@ export default function WebGLCanvas({
       );
       mat4.multiply(mv, view, model);
       mat4.multiply(mvp, projection, mv);
-      drawColorSphere(mvp, color);
+      drawColorSphere(mvp, color, depthWrite);
     }
 
-    function drawFreehandStroke(points: [number, number, number][], normals: [number, number, number][], radius: number, depth: number, color: [number, number, number, number], view: mat4, projection: mat4) {
+    function drawFreehandStroke(
+      points: [number, number, number][],
+      normals: [number, number, number][],
+      radius: number,
+      depth: number,
+      color: [number, number, number, number],
+      view: mat4,
+      projection: mat4,
+      depthWrite = true
+    ) {
       if (points.length === 0) return;
       const spacing = Math.max(radius * 0.45, 0.0035);
       for (let i = 0; i < points.length; i += 1) {
-        drawBrushStamp(points[i], normals[i], radius, depth, color, view, projection);
+        drawBrushStamp(points[i], normals[i], radius, depth, color, view, projection, depthWrite);
         if (i === 0) continue;
         const a = points[i - 1];
         const b = points[i];
@@ -4161,10 +4231,26 @@ export default function WebGLCanvas({
             depth,
             color,
             view,
-            projection
+            projection,
+            depthWrite
           );
         }
       }
+    }
+
+    function offsetPointsAlongNormal(
+      points: [number, number, number][],
+      normal: [number, number, number] | null | undefined,
+      amount: number
+    ): [number, number, number][] {
+      const nx = normal?.[0] ?? 0;
+      const ny = normal?.[1] ?? 0;
+      const nz = normal?.[2] ?? 1;
+      return points.map((point) => [
+        point[0] + nx * amount,
+        point[1] + ny * amount,
+        point[2] + nz * amount,
+      ]);
     }
 
 function drawColorCylinder(
@@ -4434,7 +4520,7 @@ function drawColorCylinder(
     }
 
     function getLinePreviewEndHit() {
-      const hovered = hoveredSceneHitRef.current;
+      const hovered = previewSceneHitRef.current;
       const start = lineStartHitRef.current;
       if (!hovered || !start) return null;
       const same = hovered.position[0] === start.position[0] && hovered.position[1] === start.position[1] && hovered.position[2] === start.position[2];
@@ -5206,9 +5292,10 @@ function drawColorCylinder(
       worldMatrix: mat4,
       view: mat4,
       projection: mat4,
+      forward: vec3,
       profile: ViewerOrientationProfile = getViewerOrientationProfileForPreset("allen")
     ) {
-      const plane = chooseStableVolumeRenderPlane(volume);
+      const plane = chooseStableVolumeRenderPlane(volume, forward);
       const totalSlices = getPlaneSliceCount(volume, plane);
       const displayIndices = buildVolumeDisplayIndices(totalSlices);
       const baseAlpha = volume.contentKind === "annotation" ? (highlighted ? 0.92 : 0.78) : getVolumeStackAlpha(displayIndices.length, highlighted);
@@ -5265,9 +5352,10 @@ function drawColorCylinder(
 
       const zoomSharpness = 10;
       const zoomAlpha = 1 - Math.exp(-zoomSharpness * dt);
-      camera.fovDeg += (targetFovDeg - camera.fovDeg) * zoomAlpha;
+      camera.fovDeg += (targetFovDegRef.current - camera.fovDeg) * zoomAlpha;
+      camera.orthoSize += (targetOrthoSizeRef.current - camera.orthoSize) * zoomAlpha;
 
-      if (camera.mode === "orbit") {
+      if (isOrbitLikeMode(camera.mode)) {
         const orbitAlpha = 1 - Math.exp(-zoomSharpness * dt);
         const currentDistance = getCameraDistanceToTarget();
         const nextDistance = currentDistance + (targetOrbitDistanceRef.current - currentDistance) * orbitAlpha;
@@ -5336,7 +5424,7 @@ function drawColorCylinder(
       gl.clearColor(bgR, bgG, bgB, capturePassActive ? 0.0 : 1.0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-      const { projection, view } = getViewProjectionMatrices();
+      const { projection, view, forward } = getViewProjectionMatrices();
 
       const layers = collectResolvedVisibleLayers(layerTreeRef.current, true).filter(
         (layerEntry) => !captureLayerIdSet || captureLayerIdSet.has(layerEntry.layer.id)
@@ -5489,6 +5577,20 @@ function drawColorCylinder(
           }
         }
         return best;
+      };
+      const getTranslucentSliceClipStates = (point: [number, number, number]) => {
+        const nearestPlane = getNearestTranslucentSlicePlane(point, translucentSlicePlanes);
+        if (!nearestPlane) return null;
+        return {
+          back: {
+            plane: nearestPlane.plane,
+            keepSign: (nearestPlane.cameraSideSign === 1 ? -1 : 1) as 1 | -1,
+          },
+          front: {
+            plane: nearestPlane.plane,
+            keepSign: nearestPlane.cameraSideSign,
+          },
+        };
       };
       const translucentSlicePlanes: TranslucentSlicePlane[] = [];
       const hoverSelectionColor: [number, number, number, number] = [1.0, 1.0, 1.0, 0.7];
@@ -5697,6 +5799,7 @@ function drawColorCylinder(
                     layerEntry.worldMatrix,
                     view,
                     projection,
+                    forward,
                     loadedVolumeEntry.profile
                 );
               enqueueTransparentDraw(getModelDistanceToCamera(layerEntry.worldMatrix), 1, drawVolume);
@@ -5911,7 +6014,14 @@ function drawColorCylinder(
             const color: [number, number, number, number] = [r, g, b, opacity];
             const drawPoint = () => drawColorSphere(mvp, color, opacity >= 0.999, model);
             if (opacity < 0.999) {
-              enqueueTransparentDraw(getModelDistanceToCamera(model), 3, drawPoint);
+              const worldPoint = transformPointsByMatrix(layerEntry.worldMatrix, [point])[0];
+              const clipStates = getTranslucentSliceClipStates(worldPoint);
+              if (clipStates) {
+                drawColorSphere(mvp, color, false, model, clipStates.back);
+                enqueueForegroundAnnotationDraw(() => drawColorSphere(mvp, color, false, model, clipStates.front));
+              } else {
+                enqueueTransparentDraw(getModelDistanceToCamera(model), 3, drawPoint);
+              }
             } else {
               drawPoint();
             }
@@ -5933,7 +6043,13 @@ function drawColorCylinder(
               const color: [number, number, number, number] = [r, g, b, opacity];
               const drawLine = () => drawColorCylinder(mvp, color, opacity >= 0.999, lineModel);
               if (opacity < 0.999) {
-                enqueueTransparentDraw(getDistanceToCamera(getAveragePoint([start, end])), 3, drawLine);
+                const clipStates = getTranslucentSliceClipStates(getAveragePoint([start, end]));
+                if (clipStates) {
+                  drawColorCylinder(mvp, color, false, lineModel, clipStates.back);
+                  enqueueForegroundAnnotationDraw(() => drawColorCylinder(mvp, color, false, lineModel, clipStates.front));
+                } else {
+                  enqueueTransparentDraw(getDistanceToCamera(getAveragePoint([start, end])), 3, drawLine);
+                }
               } else {
                 drawLine();
               }
@@ -5951,7 +6067,13 @@ function drawColorCylinder(
               const color: [number, number, number, number] = [r, g, b, opacity];
               const drawEndpoint = () => drawColorSphere(mvp, color, opacity >= 0.999, model);
               if (opacity < 0.999) {
-                enqueueTransparentDraw(getModelDistanceToCamera(model), 3, drawEndpoint);
+                const clipStates = getTranslucentSliceClipStates(point);
+                if (clipStates) {
+                  drawColorSphere(mvp, color, false, model, clipStates.back);
+                  enqueueForegroundAnnotationDraw(() => drawColorSphere(mvp, color, false, model, clipStates.front));
+                } else {
+                  enqueueTransparentDraw(getModelDistanceToCamera(model), 3, drawEndpoint);
+                }
               } else {
                 drawEndpoint();
               }
@@ -6165,7 +6287,7 @@ function drawColorCylinder(
         }
       }
 
-      const hoveredHit = hoveredSceneHitRef.current;
+      const hoveredHit = previewSceneHitRef.current;
       if (!capturePassActive && activeToolRef.current === "pencil" && hoveredHit) {
         const previewSize = annotationSizeRef.current;
         const previewColor = annotationColorRef.current;
@@ -6191,11 +6313,29 @@ function drawColorCylinder(
         }
 
         if (annotationShapeRef.current === "freehand") {
-          drawBrushStamp(hoveredHit.position, hoveredHit.normal, previewSize, Math.max(0.0015, annotationDepthRef.current), [r, g, b, clamp(previewOpacity * 0.85, 0.05, 1)], view, projection);
+          drawBrushStamp(
+            hoveredHit.position,
+            hoveredHit.normal,
+            previewSize,
+            Math.max(0.0015, annotationDepthRef.current),
+            [r, g, b, clamp(previewOpacity * 0.85, 0.05, 1)],
+            view,
+            projection,
+            false
+          );
         }
 
         if (annotationShapeRef.current === "eraser") {
-          drawBrushStamp(hoveredHit.position, hoveredHit.normal, previewSize, Math.max(0.0015, annotationDepthRef.current), [1, 0.3, 0.3, 0.45], view, projection);
+          drawBrushStamp(
+            hoveredHit.position,
+            hoveredHit.normal,
+            previewSize,
+            Math.max(0.0015, annotationDepthRef.current),
+            [1, 0.3, 0.3, 0.45],
+            view,
+            projection,
+            false
+          );
         }
 
         if (annotationShapeRef.current === "line") {
@@ -6203,22 +6343,43 @@ function drawColorCylinder(
           const previewEnd = getLinePreviewEndHit();
 
           if (startHit) {
-            const lineModel = previewEnd ? makeLineModelMatrix(startHit.position, previewEnd.position, Math.max(0.002, previewSize)) : null;
+            const linePreviewLift = Math.max(previewSize * 0.22, 0.003);
+            const liftedStartPosition: [number, number, number] = [
+              startHit.position[0] + startHit.normal[0] * linePreviewLift,
+              startHit.position[1] + startHit.normal[1] * linePreviewLift,
+              startHit.position[2] + startHit.normal[2] * linePreviewLift,
+            ];
+            const liftedEndPosition: [number, number, number] | null = previewEnd
+              ? [
+                  previewEnd.position[0] + startHit.normal[0] * linePreviewLift,
+                  previewEnd.position[1] + startHit.normal[1] * linePreviewLift,
+                  previewEnd.position[2] + startHit.normal[2] * linePreviewLift,
+                ]
+              : null;
+            const lineModel = liftedEndPosition
+              ? makeLineModelMatrix(
+                  liftedStartPosition,
+                  liftedEndPosition,
+                  Math.max(0.002, previewSize)
+                )
+              : null;
             if (lineModel) {
               const mv = mat4.create();
               const mvp = mat4.create();
               mat4.multiply(mv, view, lineModel);
               mat4.multiply(mvp, projection, mv);
-              drawColorCylinder(mvp, [r, g, b, clamp(previewOpacity, 0.05, 1)]);
+              drawColorCylinder(
+                mvp,
+                [r, g, b, clamp(previewOpacity, 0.05, 1)],
+                false
+              );
             }
 
-            for (const point of [startHit.position, hoveredHit.position]) {
-              const isHoveredPoint = point === hoveredHit.position;
-              const renderPoint = isHoveredPoint ? liftedHoveredPosition : point;
+            for (const point of [liftedStartPosition, liftedHoveredPosition]) {
               const model = mat4.create();
               const mv = mat4.create();
               const mvp = mat4.create();
-              mat4.translate(model, model, renderPoint);
+              mat4.translate(model, model, point);
               mat4.scale(model, model, [Math.max(previewSize * 1.2, 0.008), Math.max(previewSize * 1.2, 0.008), Math.max(previewSize * 1.2, 0.008)]);
               mat4.multiply(mv, view, model);
               mat4.multiply(mvp, projection, mv);
@@ -6240,19 +6401,38 @@ function drawColorCylinder(
           const preview = getShapePreviewPoints();
           if (preview) {
             const strokeRadius = Math.max(0.0015, previewSize * 0.28);
-            drawPolylineCylinders(preview.points, true, strokeRadius, [r, g, b, clamp(previewOpacity, 0.05, 1)], view, projection);
+            const previewLift = Math.max(strokeRadius * 1.8, previewSize * 0.22, 0.003);
+            const liftedPreviewPoints = offsetPointsAlongNormal(preview.points, preview.start.normal, previewLift);
+            drawPolylineCylinders(
+              liftedPreviewPoints,
+              true,
+              strokeRadius,
+              [r, g, b, clamp(previewOpacity, 0.05, 1)],
+              view,
+              projection,
+              false
+            );
 
             const endpointScale = Math.max(previewSize * 1.0, 0.008);
             const anchorPoints = preview.shape === "rectangle"
-              ? [preview.points[0], preview.points[2]]
-              : [preview.start.position, preview.current.position];
+              ? [liftedPreviewPoints[0], liftedPreviewPoints[2]]
+              : [
+                  [
+                    preview.start.position[0] + preview.start.normal[0] * previewLift,
+                    preview.start.position[1] + preview.start.normal[1] * previewLift,
+                    preview.start.position[2] + preview.start.normal[2] * previewLift,
+                  ] as [number, number, number],
+                  [
+                    preview.current.position[0] + preview.start.normal[0] * previewLift,
+                    preview.current.position[1] + preview.start.normal[1] * previewLift,
+                    preview.current.position[2] + preview.start.normal[2] * previewLift,
+                  ] as [number, number, number],
+                ];
             for (const point of anchorPoints) {
-              const isCurrentPoint = point === preview.current.position;
-              const renderPoint = isCurrentPoint ? liftedHoveredPosition : point;
               const model = mat4.create();
               const mv = mat4.create();
               const mvp = mat4.create();
-              mat4.translate(model, model, renderPoint);
+              mat4.translate(model, model, point);
               mat4.scale(model, model, [endpointScale, endpointScale, endpointScale]);
               mat4.multiply(mv, view, model);
               mat4.multiply(mvp, projection, mv);
@@ -6276,15 +6456,18 @@ function drawColorCylinder(
         const previewColor: [number, number, number, number] = [0.46, 0.84, 1.0, 0.92];
         const previewAnchorColor: [number, number, number, number] = [0.82, 0.94, 1.0, 0.98];
         if (preview) {
+          const previewLift = 0.0045;
+          const liftedPreviewPoints = offsetPointsAlongNormal(preview.points, preview.start.normal, previewLift);
           drawPolylineCylinders(
-            preview.points,
+            liftedPreviewPoints,
             true,
             0.003,
             previewColor,
             view,
-            projection
+            projection,
+            false
           );
-          for (const point of [preview.points[0], preview.points[2]]) {
+          for (const point of [liftedPreviewPoints[0], liftedPreviewPoints[2]]) {
             const model = mat4.create();
             const mv = mat4.create();
             const mvp = mat4.create();
@@ -6292,7 +6475,7 @@ function drawColorCylinder(
             mat4.scale(model, model, [0.01, 0.01, 0.01]);
             mat4.multiply(mv, view, model);
             mat4.multiply(mvp, projection, mv);
-            drawColorSphere(mvp, previewAnchorColor);
+            drawColorSphere(mvp, previewAnchorColor, false);
           }
         } else if (hoveredHit?.kind === "plane") {
           const model = mat4.create();
@@ -6302,16 +6485,34 @@ function drawColorCylinder(
           mat4.scale(model, model, [0.008, 0.008, 0.008]);
           mat4.multiply(mv, view, model);
           mat4.multiply(mvp, projection, mv);
-          drawColorSphere(mvp, previewAnchorColor);
+          drawColorSphere(mvp, previewAnchorColor, false);
         }
       }
 
       if (!capturePassActive && freehandPoints.length > 0 && freehandDrawing) {
         const [r, g, b] = hexToRgb01(annotationColorRef.current);
-        drawFreehandStroke(freehandPoints, freehandNormals, Math.max(0.002, annotationSizeRef.current), Math.max(0.0015, annotationDepthRef.current), [r, g, b, clamp(annotationOpacityRef.current, 0.05, 1)], view, projection);
+        drawFreehandStroke(
+          freehandPoints,
+          freehandNormals,
+          Math.max(0.002, annotationSizeRef.current),
+          Math.max(0.0015, annotationDepthRef.current),
+          [r, g, b, clamp(annotationOpacityRef.current, 0.05, 1)],
+          view,
+          projection,
+          false
+        );
       }
       if (!capturePassActive && erasePath.length > 0 && eraseDrawing) {
-        drawFreehandStroke(erasePath, erasePath.map(() => [0, 0, 1] as [number, number, number]), Math.max(0.002, annotationSizeRef.current), Math.max(0.0015, annotationDepthRef.current), [1, 0.3, 0.3, 0.25], view, projection);
+        drawFreehandStroke(
+          erasePath,
+          erasePath.map(() => [0, 0, 1] as [number, number, number]),
+          Math.max(0.002, annotationSizeRef.current),
+          Math.max(0.0015, annotationDepthRef.current),
+          [1, 0.3, 0.3, 0.25],
+          view,
+          projection,
+          false
+        );
       }
 
       if (capturePassActive) {
@@ -6348,7 +6549,7 @@ function drawColorCylinder(
         setSelectionRect(null);
         shapeDragStartHitRef.current = null;
         shapeDragCurrentHitRef.current = null;
-        publishHoveredSceneHit(null);
+        publishHoveredSceneHit(null, { clearPreview: true });
         return;
       }
 
@@ -6363,6 +6564,7 @@ function drawColorCylinder(
         erasePath = [];
         freehandAttachedLayerId = undefined;
         freehandAttachedLayerName = undefined;
+        publishHoveredSceneHit(null, { clearPreview: true });
         return;
       }
       if (activeToolRef.current !== "mouse") return;
@@ -6661,7 +6863,7 @@ function drawColorCylinder(
 
     function onMouseDown(e: MouseEvent) {
       if (activeToolRef.current === "mouse") {
-        if (camera.mode === "orbit") {
+        if (isOrbitLikeMode(camera.mode)) {
           if (e.button === 0) {
             dragging = true;
             dragMode = "rotate";
@@ -6811,7 +7013,7 @@ function drawColorCylinder(
       }
 
       if (activeToolRef.current === "pencil") {
-        if (camera.mode === "orbit" && (e.button === 1 || e.button === 2)) {
+        if (isOrbitLikeMode(camera.mode) && (e.button === 1 || e.button === 2)) {
           e.preventDefault();
           dragging = true;
           dragMode = "pan";
@@ -6998,14 +7200,14 @@ function drawColorCylinder(
       setSelectionRect(null);
       shapeDragStartHitRef.current = null;
       shapeDragCurrentHitRef.current = null;
-      publishHoveredSceneHit(null);
+      publishHoveredSceneHit(null, { clearPreview: true });
     }
 
     function onMouseMove(e: MouseEvent) {
       if (isCaptureInteractionTool(activeToolRef.current)) {
         if (isInteractiveOverlayTarget(e.target)) {
           if (!selectRectDragging) {
-            publishHoveredSceneHit(null);
+            publishHoveredSceneHit(null, { clearPreview: true });
           }
           return;
         }
@@ -7024,7 +7226,7 @@ function drawColorCylinder(
       if (isRectInteractionTool(activeToolRef.current)) {
         if (isInteractiveOverlayTarget(e.target)) {
           if (!selectRectDragging) {
-            publishHoveredSceneHit(null);
+            publishHoveredSceneHit(null, { clearPreview: true });
           }
           return;
         }
@@ -7095,7 +7297,7 @@ function drawColorCylinder(
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
 
-        if (dragging && camera.mode === "orbit" && dragMode === "pan") {
+        if (dragging && isOrbitLikeMode(camera.mode) && dragMode === "pan") {
           panOrbitTarget(dx, dy);
           publishCameraIfNeeded(camera);
           return;
@@ -7231,7 +7433,12 @@ function drawColorCylinder(
       e.preventDefault();
 
       if (camera.mode === "fly") {
-        targetFovDeg = clamp(targetFovDeg + e.deltaY * 0.02, 20, 90);
+        targetFovDegRef.current = clamp(targetFovDegRef.current + e.deltaY * 0.02, 20, 90);
+        return;
+      }
+
+      if (camera.mode === "ortho") {
+        targetOrthoSizeRef.current = clamp(targetOrthoSizeRef.current + e.deltaY * 0.01, 0.1, 20);
         return;
       }
 

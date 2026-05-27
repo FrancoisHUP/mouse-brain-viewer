@@ -21,7 +21,7 @@ export const captureExtension = defineToolExtension({
   capabilities: ["toolbar.activate", "capture.openEditor", "capture.manage"],
   toolbarPresentation: { variant: "capture" },
   onToolbarSelect(context) {
-      context.commands.openCaptureEditor();
+    context.commands.activateToolbarTool("capture");
     return true;
   },
   onCapturePrimarySelect(context, event) {
