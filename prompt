@@ -1,13 +1,18 @@
 ==========================
-[TODO] add tablette pencil support.
+[TODO] change the orientation of one slice to the layers > selected layer panel
+[TODO] In the import, I should add more filtering and search option (at least having categories for built-in, external, local source and by type of files?). 
+
 [TODO] add a report bug right click button? This should open a panel for the user to report a but in a csv google shiet. This sheet should be public, but other should not be able to erase some reported bugs. In this list there should be the state of the application at the moement it happens, the description, the user id. 
 
+[TODO] add tablette pencil support.
 [TODO] add world coordinate mouse position. 
+
 [TODO] In the add layer panel, I should reference other source and the user should be able to search for a specific data type, acquisition, specimen, etc. This should help the user to search from specific data. All the public data should be available and esay to import.  https://neurodata.io/project/ocp/  ; https://connectivity.brain-map.org/bda-aav 
+
 [TODO] Export : Annotations should be downloadable inany 3D format (nrrd, zarr, ome-zarr, tiff, zip, gz) 
 [TODO] when the user fetches data from an external remote source, he should be able to add a secret token to the call. One this feature is done, the secret should never be shared in the state of the viewer. 
 
-STREAMING : this should handle the stream from servers (zarr files) , but also could support an aquisition stream ?
+STREAMING : this should handle the stream from servers (zarr files), but also could support an aquisition stream ?
 
 [todo] add a version notes window. Only to show the current version and to display the changes of the latest versions. 
 
@@ -20,9 +25,11 @@ STREAMING : this should handle the stream from servers (zarr files) , but also c
 }
 
 
-[TODO] add html and markdown support for creating note with LLM (chat assistant). 
+AI {
+  [TODO] add html and markdown support for creating note with LLM (chat assistant). 
+  [TOOL] add 2D/3D ai annotations (using segmentation browser model)
+}
 
-[TOOL] add 2D/3D ai annotations (using segmentation browser model)
 
 ==========================
 
@@ -96,18 +103,17 @@ Extracter {
 [NTH] I want to add some template. I want to have a square template around the volume, I want to add a grid in 3 main axis so it look a bit like a graph. I want to have a grid version too.
 
 --- small fixes
-[fix] The assistant should work lie the other tool bar button where when the user select another tool, it should close the assitant panel (right now the user nned to click again on the assistant to close it and it does not allow the user to change view when click on a different tool)
+[fix] The assistant should work like the other tool bar button where when the user select another tool, it should close the assitant panel (right now the user nned to click again on the assistant to close it and it does not allow the user to change view when click on a different tool)
 [fix] move the orientation of one slice into the apperance section in the layers panel. 
 
 
 --- BUG LIST
-[bug] the saved hook is not in the state, so every time I realod the window I got to save in a new spot. Also the user should be able to save under a saved viewer. Right not it's not possible.
-[bug] When a user import a data source at lower resolution, it import the source at the highest resolution (local hosted data )
+[bug] the saved hook is not in the state, so every time I realod the window I got to save in a new spot. 
+[bug] When a user import a data source at lower resolution, it import the source at the highest resolution (local hosted data)
 [bug] RAS Axis are on top of everything. 
-[bug] Wehen we change the opacity of canonical axis, there a rendering problem where on slice is being render before the other (the order of rendering changes) 
 [bug] Importing the allen mouse brain still have an axis flip. Also the preset are all over the place.  
-[bug] in the Data source manager panel, when there's only one element in the list, the export button open up to the top (because itès also the last element). 
-[bug] annotation when passing through a surface with opacity at 99%, we should see a part of the point totally visiable and the part begin the object almost nt visible. Right now the point is half visible for the entirety. 
+
+
 --- Check list
 
 

@@ -1841,8 +1841,6 @@ export default function WebGLCanvas({
 
     const canvas: HTMLCanvasElement = canvasElement;
     const gl: WebGL2RenderingContext = glContext;
-    const extColorBufferFloat = gl.getExtension("EXT_color_buffer_float");
-
     const colorVertexShaderSource = `
       attribute vec3 aPosition;
       uniform mat4 uMVP;
@@ -1971,18 +1969,31 @@ export default function WebGLCanvas({
       precision mediump float;
       in vec2 vTexCoord;
       uniform sampler2D uSceneTexture;
-      uniform sampler2D uAccumTexture;
-      uniform sampler2D uRevealTexture;
+      uniform sampler2D uPeelTexture0;
+      uniform sampler2D uPeelTexture1;
+      uniform sampler2D uPeelTexture2;
+      uniform sampler2D uPeelTexture3;
+      uniform int uPeelLayerCount;
       out vec4 outColor;
+      vec4 compositeOver(vec4 front, vec4 back) {
+        return front + back * (1.0 - front.a);
+      }
       void main() {
         vec2 sampleCoord = vec2(vTexCoord.x, 1.0 - vTexCoord.y);
-        vec4 scene = texture(uSceneTexture, sampleCoord);
-        vec4 accum = texture(uAccumTexture, sampleCoord);
-        float reveal = clamp(texture(uRevealTexture, sampleCoord).r, 0.0, 1.0);
-        float transparentAlpha = clamp(1.0 - reveal, 0.0, 1.0);
-        vec3 transparentColor = accum.a > 1e-5 ? accum.rgb / accum.a : vec3(0.0);
-        vec3 finalColor = transparentColor * transparentAlpha + scene.rgb * reveal;
-        outColor = vec4(finalColor, 1.0);
+        vec4 color = texture(uSceneTexture, sampleCoord);
+        if (uPeelLayerCount > 3) {
+          color = compositeOver(texture(uPeelTexture3, sampleCoord), color);
+        }
+        if (uPeelLayerCount > 2) {
+          color = compositeOver(texture(uPeelTexture2, sampleCoord), color);
+        }
+        if (uPeelLayerCount > 1) {
+          color = compositeOver(texture(uPeelTexture1, sampleCoord), color);
+        }
+        if (uPeelLayerCount > 0) {
+          color = compositeOver(texture(uPeelTexture0, sampleCoord), color);
+        }
+        outColor = vec4(color.rgb, 1.0);
       }
     `;
 
@@ -2004,12 +2015,16 @@ export default function WebGLCanvas({
       uniform float uClipEnabled;
       uniform vec4 uClipPlane;
       uniform float uClipKeepSign;
-      uniform int uOitPassMode;
+      uniform sampler2D uOpaqueDepthTexture;
+      uniform sampler2D uPrevDepthTexture;
+      uniform float uUsePrevDepth;
       in vec3 vWorldPosition;
       out vec4 outColor;
-      float computeWeight(float alpha) {
-        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
-        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
+      vec2 getDepthCoord() {
+        return vec2(
+          gl_FragCoord.x / float(textureSize(uOpaqueDepthTexture, 0).x),
+          gl_FragCoord.y / float(textureSize(uOpaqueDepthTexture, 0).y)
+        );
       }
       void main() {
         if (uClipEnabled > 0.5) {
@@ -2019,12 +2034,16 @@ export default function WebGLCanvas({
           }
         }
         float alpha = clamp(uColor.a, 0.0, 1.0);
-        if (uOitPassMode == 1) {
-          float weight = computeWeight(alpha);
-          outColor = vec4(uColor.rgb * alpha, alpha) * weight;
-        } else {
-          outColor = vec4(alpha, alpha, alpha, alpha);
+        if (alpha <= 0.0001) discard;
+        vec2 depthCoord = getDepthCoord();
+        float fragDepth = gl_FragCoord.z;
+        float opaqueDepth = texture(uOpaqueDepthTexture, depthCoord).r;
+        if (fragDepth >= opaqueDepth - 1e-6) discard;
+        if (uUsePrevDepth > 0.5) {
+          float prevDepth = texture(uPrevDepthTexture, depthCoord).r;
+          if (fragDepth <= prevDepth + 1e-6) discard;
         }
+        outColor = vec4(uColor.rgb * alpha, alpha);
       }
     `;
 
@@ -2049,13 +2068,17 @@ export default function WebGLCanvas({
       uniform float uClipEnabled;
       uniform vec4 uClipPlane;
       uniform float uClipKeepSign;
-      uniform int uOitPassMode;
+      uniform sampler2D uOpaqueDepthTexture;
+      uniform sampler2D uPrevDepthTexture;
+      uniform float uUsePrevDepth;
       in vec3 vWorldPosition;
       in vec3 vVertexColor;
       out vec4 outColor;
-      float computeWeight(float alpha) {
-        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
-        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
+      vec2 getDepthCoord() {
+        return vec2(
+          gl_FragCoord.x / float(textureSize(uOpaqueDepthTexture, 0).x),
+          gl_FragCoord.y / float(textureSize(uOpaqueDepthTexture, 0).y)
+        );
       }
       void main() {
         if (uClipEnabled > 0.5) {
@@ -2065,12 +2088,16 @@ export default function WebGLCanvas({
           }
         }
         float alpha = clamp(uAlpha, 0.0, 1.0);
-        if (uOitPassMode == 1) {
-          float weight = computeWeight(alpha);
-          outColor = vec4(vVertexColor * alpha, alpha) * weight;
-        } else {
-          outColor = vec4(alpha, alpha, alpha, alpha);
+        if (alpha <= 0.0001) discard;
+        vec2 depthCoord = getDepthCoord();
+        float fragDepth = gl_FragCoord.z;
+        float opaqueDepth = texture(uOpaqueDepthTexture, depthCoord).r;
+        if (fragDepth >= opaqueDepth - 1e-6) discard;
+        if (uUsePrevDepth > 0.5) {
+          float prevDepth = texture(uPrevDepthTexture, depthCoord).r;
+          if (fragDepth <= prevDepth + 1e-6) discard;
         }
+        outColor = vec4(vVertexColor * alpha, alpha);
       }
     `;
 
@@ -2094,11 +2121,15 @@ export default function WebGLCanvas({
       uniform float uWindowMin;
       uniform float uWindowMax;
       uniform float uUseWindowing;
-      uniform int uOitPassMode;
+      uniform sampler2D uOpaqueDepthTexture;
+      uniform sampler2D uPrevDepthTexture;
+      uniform float uUsePrevDepth;
       out vec4 outColor;
-      float computeWeight(float alpha) {
-        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
-        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
+      vec2 getDepthCoord() {
+        return vec2(
+          gl_FragCoord.x / float(textureSize(uOpaqueDepthTexture, 0).x),
+          gl_FragCoord.y / float(textureSize(uOpaqueDepthTexture, 0).y)
+        );
       }
       void main() {
         vec4 tex = texture(uTexture, vTexCoord);
@@ -2111,12 +2142,16 @@ export default function WebGLCanvas({
           shaded = vec4(tex.rgb * uBrightness, tex.a * uAlpha);
         }
         float alpha = clamp(shaded.a, 0.0, 1.0);
-        if (uOitPassMode == 1) {
-          float weight = computeWeight(alpha);
-          outColor = vec4(shaded.rgb * alpha, alpha) * weight;
-        } else {
-          outColor = vec4(alpha, alpha, alpha, alpha);
+        if (alpha <= 0.0001) discard;
+        vec2 depthCoord = getDepthCoord();
+        float fragDepth = gl_FragCoord.z;
+        float opaqueDepth = texture(uOpaqueDepthTexture, depthCoord).r;
+        if (fragDepth >= opaqueDepth - 1e-6) discard;
+        if (uUsePrevDepth > 0.5) {
+          float prevDepth = texture(uPrevDepthTexture, depthCoord).r;
+          if (fragDepth <= prevDepth + 1e-6) discard;
         }
+        outColor = vec4(shaded.rgb * alpha, alpha);
       }
     `;
 
@@ -2128,11 +2163,15 @@ export default function WebGLCanvas({
       uniform float uBrightness;
       uniform float uWindowMin;
       uniform float uWindowMax;
-      uniform int uOitPassMode;
+      uniform sampler2D uOpaqueDepthTexture;
+      uniform sampler2D uPrevDepthTexture;
+      uniform float uUsePrevDepth;
       out vec4 outColor;
-      float computeWeight(float alpha) {
-        float depthFactor = pow(clamp(1.0 - gl_FragCoord.z, 0.0, 1.0), 3.0);
-        return clamp(max(alpha, 1e-2) * mix(1.0, 64.0, depthFactor), 1e-2, 64.0);
+      vec2 getDepthCoord() {
+        return vec2(
+          gl_FragCoord.x / float(textureSize(uOpaqueDepthTexture, 0).x),
+          gl_FragCoord.y / float(textureSize(uOpaqueDepthTexture, 0).y)
+        );
       }
       void main() {
         vec4 tex = texture(uTexture, vTexCoord);
@@ -2140,12 +2179,16 @@ export default function WebGLCanvas({
         float v = clamp((tex.r - uWindowMin) / safeRange, 0.0, 1.0);
         float alpha = clamp(v * uAlpha, 0.0, 1.0);
         vec3 color = vec3(v * uBrightness);
-        if (uOitPassMode == 1) {
-          float weight = computeWeight(alpha);
-          outColor = vec4(color * alpha, alpha) * weight;
-        } else {
-          outColor = vec4(alpha, alpha, alpha, alpha);
+        if (alpha <= 0.0001) discard;
+        vec2 depthCoord = getDepthCoord();
+        float fragDepth = gl_FragCoord.z;
+        float opaqueDepth = texture(uOpaqueDepthTexture, depthCoord).r;
+        if (fragDepth >= opaqueDepth - 1e-6) discard;
+        if (uUsePrevDepth > 0.5) {
+          float prevDepth = texture(uPrevDepthTexture, depthCoord).r;
+          if (fragDepth <= prevDepth + 1e-6) discard;
         }
+        outColor = vec4(color * alpha, alpha);
       }
     `;
 
@@ -2198,8 +2241,11 @@ export default function WebGLCanvas({
     const aOitCompositePosition = gl.getAttribLocation(oitCompositeProgram, "aPosition");
     const aOitCompositeTexCoord = gl.getAttribLocation(oitCompositeProgram, "aTexCoord");
     const uOitSceneTexture = gl.getUniformLocation(oitCompositeProgram, "uSceneTexture");
-    const uOitAccumTexture = gl.getUniformLocation(oitCompositeProgram, "uAccumTexture");
-    const uOitRevealTexture = gl.getUniformLocation(oitCompositeProgram, "uRevealTexture");
+    const uOitPeelTexture0 = gl.getUniformLocation(oitCompositeProgram, "uPeelTexture0");
+    const uOitPeelTexture1 = gl.getUniformLocation(oitCompositeProgram, "uPeelTexture1");
+    const uOitPeelTexture2 = gl.getUniformLocation(oitCompositeProgram, "uPeelTexture2");
+    const uOitPeelTexture3 = gl.getUniformLocation(oitCompositeProgram, "uPeelTexture3");
+    const uOitPeelLayerCount = gl.getUniformLocation(oitCompositeProgram, "uPeelLayerCount");
 
     const aOitColorPosition = gl.getAttribLocation(oitColorProgram, "aPosition");
     const uOitColorMVP = gl.getUniformLocation(oitColorProgram, "uMVP");
@@ -2208,7 +2254,9 @@ export default function WebGLCanvas({
     const uOitColorClipEnabled = gl.getUniformLocation(oitColorProgram, "uClipEnabled");
     const uOitColorClipPlane = gl.getUniformLocation(oitColorProgram, "uClipPlane");
     const uOitColorClipKeepSign = gl.getUniformLocation(oitColorProgram, "uClipKeepSign");
-    const uOitColorPassMode = gl.getUniformLocation(oitColorProgram, "uOitPassMode");
+    const uOitColorOpaqueDepthTexture = gl.getUniformLocation(oitColorProgram, "uOpaqueDepthTexture");
+    const uOitColorPrevDepthTexture = gl.getUniformLocation(oitColorProgram, "uPrevDepthTexture");
+    const uOitColorUsePrevDepth = gl.getUniformLocation(oitColorProgram, "uUsePrevDepth");
 
     const aOitStreamlinePosition = gl.getAttribLocation(oitStreamlineColorProgram, "aPosition");
     const aOitStreamlineVertexColor = gl.getAttribLocation(oitStreamlineColorProgram, "aVertexColor");
@@ -2218,7 +2266,9 @@ export default function WebGLCanvas({
     const uOitStreamlineClipEnabled = gl.getUniformLocation(oitStreamlineColorProgram, "uClipEnabled");
     const uOitStreamlineClipPlane = gl.getUniformLocation(oitStreamlineColorProgram, "uClipPlane");
     const uOitStreamlineClipKeepSign = gl.getUniformLocation(oitStreamlineColorProgram, "uClipKeepSign");
-    const uOitStreamlinePassMode = gl.getUniformLocation(oitStreamlineColorProgram, "uOitPassMode");
+    const uOitStreamlineOpaqueDepthTexture = gl.getUniformLocation(oitStreamlineColorProgram, "uOpaqueDepthTexture");
+    const uOitStreamlinePrevDepthTexture = gl.getUniformLocation(oitStreamlineColorProgram, "uPrevDepthTexture");
+    const uOitStreamlineUsePrevDepth = gl.getUniformLocation(oitStreamlineColorProgram, "uUsePrevDepth");
 
     const aOitTexPosition = gl.getAttribLocation(oitTextureProgram, "aPosition");
     const aOitTexCoord = gl.getAttribLocation(oitTextureProgram, "aTexCoord");
@@ -2229,7 +2279,9 @@ export default function WebGLCanvas({
     const uOitTexWindowMin = gl.getUniformLocation(oitTextureProgram, "uWindowMin");
     const uOitTexWindowMax = gl.getUniformLocation(oitTextureProgram, "uWindowMax");
     const uOitTexUseWindowing = gl.getUniformLocation(oitTextureProgram, "uUseWindowing");
-    const uOitTexPassMode = gl.getUniformLocation(oitTextureProgram, "uOitPassMode");
+    const uOitTexOpaqueDepthTexture = gl.getUniformLocation(oitTextureProgram, "uOpaqueDepthTexture");
+    const uOitTexPrevDepthTexture = gl.getUniformLocation(oitTextureProgram, "uPrevDepthTexture");
+    const uOitTexUsePrevDepth = gl.getUniformLocation(oitTextureProgram, "uUsePrevDepth");
 
     const aOitVolTexPosition = gl.getAttribLocation(oitVolumeTextureProgram, "aPosition");
     const aOitVolTexCoord = gl.getAttribLocation(oitVolumeTextureProgram, "aTexCoord");
@@ -2239,7 +2291,9 @@ export default function WebGLCanvas({
     const uOitVolBrightness = gl.getUniformLocation(oitVolumeTextureProgram, "uBrightness");
     const uOitVolWindowMin = gl.getUniformLocation(oitVolumeTextureProgram, "uWindowMin");
     const uOitVolWindowMax = gl.getUniformLocation(oitVolumeTextureProgram, "uWindowMax");
-    const uOitVolPassMode = gl.getUniformLocation(oitVolumeTextureProgram, "uOitPassMode");
+    const uOitVolOpaqueDepthTexture = gl.getUniformLocation(oitVolumeTextureProgram, "uOpaqueDepthTexture");
+    const uOitVolPrevDepthTexture = gl.getUniformLocation(oitVolumeTextureProgram, "uPrevDepthTexture");
+    const uOitVolUsePrevDepth = gl.getUniformLocation(oitVolumeTextureProgram, "uUsePrevDepth");
 
     const maxVertexAttribs = gl.getParameter(gl.MAX_VERTEX_ATTRIBS) as number;
 
@@ -2285,8 +2339,11 @@ export default function WebGLCanvas({
       aOitCompositePosition < 0 ||
       aOitCompositeTexCoord < 0 ||
       !uOitSceneTexture ||
-      !uOitAccumTexture ||
-      !uOitRevealTexture ||
+      !uOitPeelTexture0 ||
+      !uOitPeelTexture1 ||
+      !uOitPeelTexture2 ||
+      !uOitPeelTexture3 ||
+      !uOitPeelLayerCount ||
       aOitColorPosition < 0 ||
       !uOitColorMVP ||
       !uOitColorModel ||
@@ -2294,7 +2351,9 @@ export default function WebGLCanvas({
       !uOitColorClipEnabled ||
       !uOitColorClipPlane ||
       !uOitColorClipKeepSign ||
-      !uOitColorPassMode ||
+      !uOitColorOpaqueDepthTexture ||
+      !uOitColorPrevDepthTexture ||
+      !uOitColorUsePrevDepth ||
       aOitStreamlinePosition < 0 ||
       aOitStreamlineVertexColor < 0 ||
       !uOitStreamlineMVP ||
@@ -2303,7 +2362,9 @@ export default function WebGLCanvas({
       !uOitStreamlineClipEnabled ||
       !uOitStreamlineClipPlane ||
       !uOitStreamlineClipKeepSign ||
-      !uOitStreamlinePassMode ||
+      !uOitStreamlineOpaqueDepthTexture ||
+      !uOitStreamlinePrevDepthTexture ||
+      !uOitStreamlineUsePrevDepth ||
       aOitTexPosition < 0 ||
       aOitTexCoord < 0 ||
       !uOitTexMVP ||
@@ -2313,7 +2374,9 @@ export default function WebGLCanvas({
       !uOitTexWindowMin ||
       !uOitTexWindowMax ||
       !uOitTexUseWindowing ||
-      !uOitTexPassMode ||
+      !uOitTexOpaqueDepthTexture ||
+      !uOitTexPrevDepthTexture ||
+      !uOitTexUsePrevDepth ||
       aOitVolTexPosition < 0 ||
       aOitVolTexCoord < 0 ||
       !uOitVolTexMVP ||
@@ -2322,7 +2385,9 @@ export default function WebGLCanvas({
       !uOitVolBrightness ||
       !uOitVolWindowMin ||
       !uOitVolWindowMax ||
-      !uOitVolPassMode
+      !uOitVolOpaqueDepthTexture ||
+      !uOitVolPrevDepthTexture ||
+      !uOitVolUsePrevDepth
     ) {
       throw new Error("Failed to get shader locations");
     }
@@ -2363,19 +2428,21 @@ export default function WebGLCanvas({
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, planeIndices, gl.STATIC_DRAW);
 
-    type OitPassMode = "direct" | "accum" | "reveal";
+    const MAX_DEPTH_PEEL_LAYERS = 4;
+    type OitPassMode = "direct" | "peel";
     let oitPassMode: OitPassMode = "direct";
     let oitEnabled = true;
     let oitWarningLogged = false;
     let sceneFramebuffer: WebGLFramebuffer | null = null;
     let sceneColorTexture: WebGLTexture | null = null;
-    let sceneDepthRenderbuffer: WebGLRenderbuffer | null = null;
-    let oitAccumFramebuffer: WebGLFramebuffer | null = null;
-    let oitAccumTexture: WebGLTexture | null = null;
-    let oitRevealFramebuffer: WebGLFramebuffer | null = null;
-    let oitRevealTexture: WebGLTexture | null = null;
+    let sceneDepthTexture: WebGLTexture | null = null;
+    let peelFramebuffers: Array<WebGLFramebuffer | null> = [];
+    let peelColorTextures: Array<WebGLTexture | null> = [];
+    let peelDepthTextures: Array<WebGLTexture | null> = [];
     let oitFramebufferWidth = 0;
     let oitFramebufferHeight = 0;
+    let activePeelLayer = -1;
+    let peelLayerCountForComposite = 0;
 
     function disableOit(reason: string) {
       deleteOitTargets();
@@ -2392,18 +2459,22 @@ export default function WebGLCanvas({
     function deleteOitTargets() {
       if (sceneFramebuffer) gl.deleteFramebuffer(sceneFramebuffer);
       if (sceneColorTexture) gl.deleteTexture(sceneColorTexture);
-      if (sceneDepthRenderbuffer) gl.deleteRenderbuffer(sceneDepthRenderbuffer);
-      if (oitAccumFramebuffer) gl.deleteFramebuffer(oitAccumFramebuffer);
-      if (oitAccumTexture) gl.deleteTexture(oitAccumTexture);
-      if (oitRevealFramebuffer) gl.deleteFramebuffer(oitRevealFramebuffer);
-      if (oitRevealTexture) gl.deleteTexture(oitRevealTexture);
+      if (sceneDepthTexture) gl.deleteTexture(sceneDepthTexture);
+      for (const framebuffer of peelFramebuffers) {
+        if (framebuffer) gl.deleteFramebuffer(framebuffer);
+      }
+      for (const texture of peelColorTextures) {
+        if (texture) gl.deleteTexture(texture);
+      }
+      for (const texture of peelDepthTextures) {
+        if (texture) gl.deleteTexture(texture);
+      }
       sceneFramebuffer = null;
       sceneColorTexture = null;
-      sceneDepthRenderbuffer = null;
-      oitAccumFramebuffer = null;
-      oitAccumTexture = null;
-      oitRevealFramebuffer = null;
-      oitRevealTexture = null;
+      sceneDepthTexture = null;
+      peelFramebuffers = [];
+      peelColorTextures = [];
+      peelDepthTextures = [];
       oitFramebufferWidth = 0;
       oitFramebufferHeight = 0;
     }
@@ -2429,6 +2500,31 @@ export default function WebGLCanvas({
       return texture;
     }
 
+    function createDepthTexture(width: number, height: number) {
+      const texture = gl.createTexture();
+      if (!texture) {
+        throw new Error("Failed to create depth texture");
+      }
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.DEPTH_COMPONENT24,
+        width,
+        height,
+        0,
+        gl.DEPTH_COMPONENT,
+        gl.UNSIGNED_INT,
+        null
+      );
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return texture;
+    }
+
     function checkFramebufferComplete(framebuffer: WebGLFramebuffer, label: string) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
       const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
@@ -2443,11 +2539,13 @@ export default function WebGLCanvas({
       if (
         sceneFramebuffer &&
         sceneColorTexture &&
-        sceneDepthRenderbuffer &&
-        oitAccumFramebuffer &&
-        oitAccumTexture &&
-        oitRevealFramebuffer &&
-        oitRevealTexture &&
+        sceneDepthTexture &&
+        peelFramebuffers.length === MAX_DEPTH_PEEL_LAYERS &&
+        peelColorTextures.length === MAX_DEPTH_PEEL_LAYERS &&
+        peelDepthTextures.length === MAX_DEPTH_PEEL_LAYERS &&
+        peelFramebuffers.every(Boolean) &&
+        peelColorTextures.every(Boolean) &&
+        peelDepthTextures.every(Boolean) &&
         oitFramebufferWidth === width &&
         oitFramebufferHeight === height
       ) {
@@ -2457,46 +2555,43 @@ export default function WebGLCanvas({
       deleteOitTargets();
       try {
         sceneColorTexture = createFramebufferTexture(width, height, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
-        const accumInternalFormat = extColorBufferFloat ? gl.RGBA16F : gl.RGBA8;
-        const accumType = extColorBufferFloat ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
-        if (!extColorBufferFloat && !oitWarningLogged) {
-          console.warn("Transparency fallback: EXT_color_buffer_float unavailable, using lower-precision OIT accumulation.");
-          oitWarningLogged = true;
-        }
-        oitAccumTexture = createFramebufferTexture(width, height, accumInternalFormat, gl.RGBA, accumType);
-        oitRevealTexture = createFramebufferTexture(width, height, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
-
-        sceneDepthRenderbuffer = gl.createRenderbuffer();
-        if (!sceneDepthRenderbuffer) {
-          throw new Error("Failed to create OIT depth renderbuffer");
-        }
-        gl.bindRenderbuffer(gl.RENDERBUFFER, sceneDepthRenderbuffer);
-        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+        sceneDepthTexture = createDepthTexture(width, height);
 
         sceneFramebuffer = gl.createFramebuffer();
-        oitAccumFramebuffer = gl.createFramebuffer();
-        oitRevealFramebuffer = gl.createFramebuffer();
-        if (!sceneFramebuffer || !oitAccumFramebuffer || !oitRevealFramebuffer) {
-          throw new Error("Failed to create OIT framebuffers");
+        if (!sceneFramebuffer) {
+          throw new Error("Failed to create scene framebuffer");
+        }
+        peelFramebuffers = [];
+        peelColorTextures = [];
+        peelDepthTextures = [];
+        for (let i = 0; i < MAX_DEPTH_PEEL_LAYERS; i += 1) {
+          peelColorTextures.push(createFramebufferTexture(width, height, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE));
+          peelDepthTextures.push(createDepthTexture(width, height));
+          peelFramebuffers.push(gl.createFramebuffer());
+        }
+        if (peelFramebuffers.some((framebuffer) => !framebuffer)) {
+          throw new Error("Failed to create depth peel framebuffers");
         }
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFramebuffer);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneColorTexture, 0);
-        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepthRenderbuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, sceneDepthTexture, 0);
         checkFramebufferComplete(sceneFramebuffer, "Opaque scene");
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, oitAccumFramebuffer);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, oitAccumTexture, 0);
-        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepthRenderbuffer);
-        checkFramebufferComplete(oitAccumFramebuffer, "OIT accumulation");
-
-        gl.bindFramebuffer(gl.FRAMEBUFFER, oitRevealFramebuffer);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, oitRevealTexture, 0);
-        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepthRenderbuffer);
-        checkFramebufferComplete(oitRevealFramebuffer, "OIT revealage");
+        for (let i = 0; i < MAX_DEPTH_PEEL_LAYERS; i += 1) {
+          const framebuffer = peelFramebuffers[i];
+          const colorTexture = peelColorTextures[i];
+          const depthTexture = peelDepthTextures[i];
+          if (!framebuffer || !colorTexture || !depthTexture) {
+            throw new Error("Depth peel resources are incomplete");
+          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTexture, 0);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTexture, 0);
+          checkFramebufferComplete(framebuffer, `Depth peel ${i}`);
+        }
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.bindRenderbuffer(gl.RENDERBUFFER, null);
 
         oitFramebufferWidth = width;
         oitFramebufferHeight = height;
@@ -4094,6 +4189,31 @@ export default function WebGLCanvas({
       }
     }
 
+    function bindPeelDepthTextures(
+      opaqueDepthUniform: WebGLUniformLocation | null,
+      prevDepthUniform: WebGLUniformLocation | null,
+      usePrevDepthUniform: WebGLUniformLocation | null
+    ) {
+      if (!sceneDepthTexture) {
+        throw new Error("Scene depth texture is unavailable for transparency peeling.");
+      }
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, sceneDepthTexture);
+      gl.uniform1i(opaqueDepthUniform!, 1);
+      if (activePeelLayer > 0 && peelDepthTextures[activePeelLayer - 1]) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, peelDepthTextures[activePeelLayer - 1]);
+        gl.uniform1i(prevDepthUniform!, 2);
+        gl.uniform1f(usePrevDepthUniform!, 1);
+      } else {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.uniform1i(prevDepthUniform!, 2);
+        gl.uniform1f(usePrevDepthUniform!, 0);
+      }
+      gl.activeTexture(gl.TEXTURE0);
+    }
+
     function drawColorSphere(
       mvp: mat4,
       color: [number, number, number, number],
@@ -4103,18 +4223,14 @@ export default function WebGLCanvas({
     ) {
       resetVertexAttribArrays();
 
-      if (oitPassMode !== "direct") {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
-
+      if (oitPassMode === "peel") {
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
         gl.useProgram(oitColorProgram);
         gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
         gl.uniformMatrix4fv(uOitColorModel, false, model);
         gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        bindPeelDepthTextures(uOitColorOpaqueDepthTexture, uOitColorPrevDepthTexture, uOitColorUsePrevDepth);
         if (clipState) {
           gl.uniform1f(uOitColorClipEnabled, 1);
           gl.uniform4f(
@@ -4130,7 +4246,6 @@ export default function WebGLCanvas({
           gl.uniform4f(uOitColorClipPlane, 0, 0, 1, 0);
           gl.uniform1f(uOitColorClipKeepSign, 1);
         }
-        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, sphereVertexBuffer);
         gl.enableVertexAttribArray(aOitColorPosition);
@@ -4138,7 +4253,6 @@ export default function WebGLCanvas({
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, sphereIndexBuffer);
         gl.drawElements(gl.TRIANGLES, sphereGeometry.indices.length, gl.UNSIGNED_SHORT, 0);
-        gl.depthMask(true);
         return;
       }
 
@@ -4262,18 +4376,14 @@ function drawColorCylinder(
     ) {
       resetVertexAttribArrays();
 
-      if (oitPassMode !== "direct") {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
-
+      if (oitPassMode === "peel") {
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
         gl.useProgram(oitColorProgram);
         gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
         gl.uniformMatrix4fv(uOitColorModel, false, model);
         gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        bindPeelDepthTextures(uOitColorOpaqueDepthTexture, uOitColorPrevDepthTexture, uOitColorUsePrevDepth);
         if (clipState) {
           gl.uniform1f(uOitColorClipEnabled, 1);
           gl.uniform4f(
@@ -4289,7 +4399,6 @@ function drawColorCylinder(
           gl.uniform4f(uOitColorClipPlane, 0, 0, 1, 0);
           gl.uniform1f(uOitColorClipKeepSign, 1);
         }
-        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, cylinderVertexBuffer);
         gl.enableVertexAttribArray(aOitColorPosition);
@@ -4297,7 +4406,6 @@ function drawColorCylinder(
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cylinderIndexBuffer);
         gl.drawElements(gl.TRIANGLES, cylinderGeometry.indices.length, gl.UNSIGNED_SHORT, 0);
-        gl.depthMask(true);
         return;
       }
 
@@ -4605,29 +4713,23 @@ function drawColorCylinder(
 
       resetVertexAttribArrays();
 
-      if (oitPassMode !== "direct") {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
-
+      if (oitPassMode === "peel") {
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
         gl.useProgram(oitColorProgram);
         gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
         gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
         gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        bindPeelDepthTextures(uOitColorOpaqueDepthTexture, uOitColorPrevDepthTexture, uOitColorUsePrevDepth);
         gl.uniform1f(uOitColorClipEnabled, 0);
         gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
         gl.uniform1f(uOitColorClipKeepSign, 1);
-        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, entry.triangleBuffer);
         gl.enableVertexAttribArray(aOitColorPosition);
         gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
 
         gl.drawArrays(gl.TRIANGLES, 0, entry.triangleVertexCount);
-        gl.depthMask(true);
         return;
       }
 
@@ -4673,22 +4775,17 @@ function drawColorCylinder(
       resetVertexAttribArrays();
       const isTransparentPass = color[3] < 0.999;
 
-      if (oitPassMode !== "direct") {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
-
+      if (oitPassMode === "peel") {
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
         gl.useProgram(oitColorProgram);
         gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
         gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
         gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        bindPeelDepthTextures(uOitColorOpaqueDepthTexture, uOitColorPrevDepthTexture, uOitColorUsePrevDepth);
         gl.uniform1f(uOitColorClipEnabled, 0);
         gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
         gl.uniform1f(uOitColorClipKeepSign, 1);
-        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
         gl.enableVertexAttribArray(aOitColorPosition);
@@ -4696,7 +4793,6 @@ function drawColorCylinder(
 
         gl.lineWidth(lineWidth);
         gl.drawArrays(gl.LINES, 0, entry.lineVertexCount);
-        gl.depthMask(true);
         return;
       }
 
@@ -4738,24 +4834,19 @@ function drawColorCylinder(
       resetVertexAttribArrays();
       const isTransparentPass = color[3] < 0.999;
 
-      if (oitPassMode !== "direct") {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
-
+      if (oitPassMode === "peel") {
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
         if (colorMode === "single") {
           const baseColor = singleColor ?? [color[0], color[1], color[2]];
           gl.useProgram(oitColorProgram);
           gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
           gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
           gl.uniform4f(uOitColor, baseColor[0], baseColor[1], baseColor[2], color[3]);
+          bindPeelDepthTextures(uOitColorOpaqueDepthTexture, uOitColorPrevDepthTexture, uOitColorUsePrevDepth);
           gl.uniform1f(uOitColorClipEnabled, 0);
           gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
           gl.uniform1f(uOitColorClipKeepSign, 1);
-          gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
 
           gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
           gl.enableVertexAttribArray(aOitColorPosition);
@@ -4768,10 +4859,10 @@ function drawColorCylinder(
           gl.uniformMatrix4fv(uOitStreamlineMVP, false, mvp);
           gl.uniformMatrix4fv(uOitStreamlineModel, false, identityModelMatrix);
           gl.uniform1f(uOitStreamlineAlpha, color[3]);
+          bindPeelDepthTextures(uOitStreamlineOpaqueDepthTexture, uOitStreamlinePrevDepthTexture, uOitStreamlineUsePrevDepth);
           gl.uniform1f(uOitStreamlineClipEnabled, 0);
           gl.uniform4f(uOitStreamlineClipPlane, 0, 0, 0, 0);
           gl.uniform1f(uOitStreamlineClipKeepSign, 1);
-          gl.uniform1i(uOitStreamlinePassMode, oitPassMode === "accum" ? 1 : 2);
 
           gl.bindBuffer(gl.ARRAY_BUFFER, entry.lineBuffer);
           gl.enableVertexAttribArray(aOitStreamlinePosition);
@@ -4784,7 +4875,6 @@ function drawColorCylinder(
 
         gl.lineWidth(lineWidth);
         gl.drawArrays(gl.LINES, 0, entry.lineVertexCount);
-        gl.depthMask(true);
         return;
       }
 
@@ -5039,7 +5129,7 @@ function drawColorCylinder(
       resetVertexAttribArrays();
       const isTransparentPass = alpha < 0.999;
 
-      if (oitPassMode !== "direct") {
+      if (oitPassMode === "peel") {
         gl.useProgram(oitTextureProgram);
         gl.uniformMatrix4fv(uOitTexMVP, false, mvp);
         gl.uniform1f(uOitAlpha, alpha);
@@ -5047,7 +5137,7 @@ function drawColorCylinder(
         gl.uniform1f(uOitTexWindowMin, intensityWindow?.min ?? 0);
         gl.uniform1f(uOitTexWindowMax, intensityWindow?.max ?? 1);
         gl.uniform1f(uOitTexUseWindowing, intensityWindow ? 1 : 0);
-        gl.uniform1i(uOitTexPassMode, oitPassMode === "accum" ? 1 : 2);
+        bindPeelDepthTextures(uOitTexOpaqueDepthTexture, uOitTexPrevDepthTexture, uOitTexUsePrevDepth);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -5063,14 +5153,9 @@ function drawColorCylinder(
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
 
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
-        gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
+        gl.disable(gl.BLEND);
         gl.depthMask(true);
+        gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
         gl.bindTexture(gl.TEXTURE_2D, null);
         return;
       }
@@ -5119,14 +5204,14 @@ function drawColorCylinder(
     ) {
       resetVertexAttribArrays();
 
-      if (oitPassMode !== "direct") {
+      if (oitPassMode === "peel") {
         gl.useProgram(oitVolumeTextureProgram);
         gl.uniformMatrix4fv(uOitVolTexMVP, false, mvp);
         gl.uniform1f(uOitVolAlpha, alpha);
         gl.uniform1f(uOitVolBrightness, 1.12);
         gl.uniform1f(uOitVolWindowMin, intensityWindow.min);
         gl.uniform1f(uOitVolWindowMax, intensityWindow.max);
-        gl.uniform1i(uOitVolPassMode, oitPassMode === "accum" ? 1 : 2);
+        bindPeelDepthTextures(uOitVolOpaqueDepthTexture, uOitVolPrevDepthTexture, uOitVolUsePrevDepth);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -5142,14 +5227,9 @@ function drawColorCylinder(
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIndexBuffer);
 
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
-        gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
+        gl.disable(gl.BLEND);
         gl.depthMask(true);
+        gl.drawElements(gl.TRIANGLES, planeIndices.length, gl.UNSIGNED_SHORT, 0);
         gl.bindTexture(gl.TEXTURE_2D, null);
         return;
       }
@@ -5184,7 +5264,7 @@ function drawColorCylinder(
     }
 
     function compositeOitToScreen() {
-      if (!sceneColorTexture || !oitAccumTexture || !oitRevealTexture) {
+      if (!sceneColorTexture) {
         return;
       }
 
@@ -5204,12 +5284,21 @@ function drawColorCylinder(
       gl.uniform1i(uOitSceneTexture, 0);
 
       gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, oitAccumTexture);
-      gl.uniform1i(uOitAccumTexture, 1);
+      gl.bindTexture(gl.TEXTURE_2D, peelColorTextures[0] ?? null);
+      gl.uniform1i(uOitPeelTexture0, 1);
 
       gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, oitRevealTexture);
-      gl.uniform1i(uOitRevealTexture, 2);
+      gl.bindTexture(gl.TEXTURE_2D, peelColorTextures[1] ?? null);
+      gl.uniform1i(uOitPeelTexture1, 2);
+
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, peelColorTextures[2] ?? null);
+      gl.uniform1i(uOitPeelTexture2, 3);
+
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, peelColorTextures[3] ?? null);
+      gl.uniform1i(uOitPeelTexture3, 4);
+      gl.uniform1i(uOitPeelLayerCount, peelLayerCountForComposite);
 
       gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
       gl.enableVertexAttribArray(aOitCompositePosition);
@@ -5227,6 +5316,10 @@ function drawColorCylinder(
       gl.bindTexture(gl.TEXTURE_2D, null);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, null);
       gl.activeTexture(gl.TEXTURE0);
       gl.enable(gl.DEPTH_TEST);
       gl.depthMask(true);
@@ -5236,29 +5329,24 @@ function drawColorCylinder(
       resetVertexAttribArrays();
       const isTransparentPass = color[3] < 0.999;
 
-      if (oitPassMode !== "direct") {
+      if (oitPassMode === "peel") {
         gl.useProgram(oitColorProgram);
         gl.uniformMatrix4fv(uOitColorMVP, false, mvp);
         gl.uniformMatrix4fv(uOitColorModel, false, identityModelMatrix);
         gl.uniform4f(uOitColor, color[0], color[1], color[2], color[3]);
+        bindPeelDepthTextures(uOitColorOpaqueDepthTexture, uOitColorPrevDepthTexture, uOitColorUsePrevDepth);
         gl.uniform1f(uOitColorClipEnabled, 0);
         gl.uniform4f(uOitColorClipPlane, 0, 0, 0, 0);
         gl.uniform1f(uOitColorClipKeepSign, 1);
-        gl.uniform1i(uOitColorPassMode, oitPassMode === "accum" ? 1 : 2);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, planeVertexBuffer);
         gl.enableVertexAttribArray(aOitColorPosition);
         gl.vertexAttribPointer(aOitColorPosition, 3, gl.FLOAT, false, 0, 0);
 
-        gl.enable(gl.BLEND);
-        gl.blendFunc(
-          oitPassMode === "accum" ? gl.ONE : gl.ZERO,
-          oitPassMode === "accum" ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA
-        );
-        gl.depthMask(false);
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
         gl.lineWidth(lineWidth);
         gl.drawArrays(gl.LINE_LOOP, 0, 4);
-        gl.depthMask(true);
         return;
       }
 
@@ -5410,10 +5498,10 @@ function drawColorCylinder(
         oitEnabled &&
         !!sceneFramebuffer &&
         !!sceneColorTexture &&
-        !!oitAccumFramebuffer &&
-        !!oitAccumTexture &&
-        !!oitRevealFramebuffer &&
-        !!oitRevealTexture;
+        !!sceneDepthTexture &&
+        peelFramebuffers.length === MAX_DEPTH_PEEL_LAYERS &&
+        peelColorTextures.length === MAX_DEPTH_PEEL_LAYERS &&
+        peelDepthTextures.length === MAX_DEPTH_PEEL_LAYERS;
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, useOitThisFrame ? sceneFramebuffer : null);
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -5429,63 +5517,54 @@ function drawColorCylinder(
       const layers = collectResolvedVisibleLayers(layerTreeRef.current, true).filter(
         (layerEntry) => !captureLayerIdSet || captureLayerIdSet.has(layerEntry.layer.id)
       );
-      const transparentDrawCalls: Array<{ distanceToCamera: number; priority: number; draw: () => void }> = [];
+      const transparentDrawCalls: Array<() => void> = [];
       const foregroundAnnotationDrawCalls: Array<() => void> = [];
       const sceneSelectionIndicatorLayerIds = new Set<string>();
-      const enqueueTransparentDraw = (distanceToCamera: number, priority: number, draw: () => void) => {
-        transparentDrawCalls.push({ distanceToCamera, priority, draw });
+      const enqueueTransparentDraw = (_distanceToCamera: number, _priority: number, draw: () => void) => {
+        transparentDrawCalls.push(draw);
       };
       const enqueueForegroundAnnotationDraw = (draw: () => void) => {
         foregroundAnnotationDrawCalls.push(draw);
       };
       const flushTransparentDrawCalls = () => {
-        transparentDrawCalls.sort((a, b) => {
-          const distanceDelta = b.distanceToCamera - a.distanceToCamera;
-          if (Math.abs(distanceDelta) > 1e-4) {
-            return distanceDelta;
-          }
-          return a.priority - b.priority;
-        });
-
-        if (useOitThisFrame) {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, oitAccumFramebuffer);
-          gl.viewport(0, 0, canvas.width, canvas.height);
-          gl.clearColor(0, 0, 0, 0);
-          gl.clear(gl.COLOR_BUFFER_BIT);
-
-          gl.bindFramebuffer(gl.FRAMEBUFFER, oitRevealFramebuffer);
-          gl.viewport(0, 0, canvas.width, canvas.height);
-          gl.clearColor(1, 1, 1, 1);
-          gl.clear(gl.COLOR_BUFFER_BIT);
-        }
-
         if (transparentDrawCalls.length === 0) {
           oitPassMode = "direct";
           gl.depthMask(true);
+          peelLayerCountForComposite = 0;
           return;
         }
 
         gl.enable(gl.DEPTH_TEST);
-        gl.depthMask(false);
         if (useOitThisFrame) {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, oitAccumFramebuffer);
-          gl.viewport(0, 0, canvas.width, canvas.height);
-          oitPassMode = "accum";
-          for (const call of transparentDrawCalls) {
-            call.draw();
+          peelLayerCountForComposite = MAX_DEPTH_PEEL_LAYERS;
+          for (let layerIndex = 0; layerIndex < MAX_DEPTH_PEEL_LAYERS; layerIndex += 1) {
+            const framebuffer = peelFramebuffers[layerIndex];
+            if (!framebuffer) continue;
+            activePeelLayer = layerIndex;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0, 0, 0, 0);
+            gl.clearDepth(1);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            oitPassMode = "peel";
+            gl.depthMask(true);
+            for (const draw of transparentDrawCalls) {
+              draw();
+            }
           }
-
-          gl.bindFramebuffer(gl.FRAMEBUFFER, oitRevealFramebuffer);
-          gl.viewport(0, 0, canvas.width, canvas.height);
-          oitPassMode = "reveal";
         } else {
           gl.bindFramebuffer(gl.FRAMEBUFFER, null);
           oitPassMode = "direct";
+          peelLayerCountForComposite = 0;
         }
-        for (const call of transparentDrawCalls) {
-          call.draw();
+        if (!useOitThisFrame) {
+          gl.depthMask(false);
+          for (const draw of transparentDrawCalls) {
+            draw();
+          }
         }
 
+        activePeelLayer = -1;
         oitPassMode = "direct";
         gl.depthMask(true);
         transparentDrawCalls.length = 0;
@@ -5715,7 +5794,7 @@ function drawColorCylinder(
                   const lineMvp = mat4.create();
                   mat4.multiply(lineMv, view, lineModel);
                   mat4.multiply(lineMvp, projection, lineMv);
-                  const nearestPlane = getNearestTranslucentSlicePlane(getAveragePoint([start, end]), translucentSlicePlanes);
+                  const nearestPlane = useOitThisFrame ? null : getNearestTranslucentSlicePlane(getAveragePoint([start, end]), translucentSlicePlanes);
                   if (nearestPlane) {
                     drawColorCylinder(lineMvp, lineColor, true, lineModel, {
                       plane: nearestPlane.plane,
@@ -6015,7 +6094,7 @@ function drawColorCylinder(
             const drawPoint = () => drawColorSphere(mvp, color, opacity >= 0.999, model);
             if (opacity < 0.999) {
               const worldPoint = transformPointsByMatrix(layerEntry.worldMatrix, [point])[0];
-              const clipStates = getTranslucentSliceClipStates(worldPoint);
+              const clipStates = useOitThisFrame ? null : getTranslucentSliceClipStates(worldPoint);
               if (clipStates) {
                 drawColorSphere(mvp, color, false, model, clipStates.back);
                 enqueueForegroundAnnotationDraw(() => drawColorSphere(mvp, color, false, model, clipStates.front));
@@ -6043,7 +6122,7 @@ function drawColorCylinder(
               const color: [number, number, number, number] = [r, g, b, opacity];
               const drawLine = () => drawColorCylinder(mvp, color, opacity >= 0.999, lineModel);
               if (opacity < 0.999) {
-                const clipStates = getTranslucentSliceClipStates(getAveragePoint([start, end]));
+                const clipStates = useOitThisFrame ? null : getTranslucentSliceClipStates(getAveragePoint([start, end]));
                 if (clipStates) {
                   drawColorCylinder(mvp, color, false, lineModel, clipStates.back);
                   enqueueForegroundAnnotationDraw(() => drawColorCylinder(mvp, color, false, lineModel, clipStates.front));
@@ -6067,7 +6146,7 @@ function drawColorCylinder(
               const color: [number, number, number, number] = [r, g, b, opacity];
               const drawEndpoint = () => drawColorSphere(mvp, color, opacity >= 0.999, model);
               if (opacity < 0.999) {
-                const clipStates = getTranslucentSliceClipStates(point);
+                const clipStates = useOitThisFrame ? null : getTranslucentSliceClipStates(point);
                 if (clipStates) {
                   drawColorSphere(mvp, color, false, model, clipStates.back);
                   enqueueForegroundAnnotationDraw(() => drawColorSphere(mvp, color, false, model, clipStates.front));

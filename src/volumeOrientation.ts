@@ -70,7 +70,7 @@ export function getAxisSliceViewStateForOrientationPreset(
       return {
         xy: { flipZ: true },
         xz: { flipZ: true },
-        yz: { flipY: true, rotationDeg: 90 },
+        yz: { flipX: true, rotationDeg: 90 },
       };
     case "registered-to-allen":
       return {

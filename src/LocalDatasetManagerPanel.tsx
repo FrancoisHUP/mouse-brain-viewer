@@ -1965,7 +1965,9 @@ export default function LocalDatasetManagerPanel({
                   const typeLabel = item.sourceType === "local" ? "BROWSER DATA" : "EXTERNAL SOURCE";
                   const inspectionState = localInspectionStatus[item.id]?.status ?? (localInspectionCache[item.id] ? "ready" : "idle");
                   const inspectionError = localInspectionStatus[item.id]?.error ?? null;
-                  const flipMenusUp = itemIndex >= Math.max(0, filteredItems.length - 2);
+                  const flipMenusUp =
+                    filteredItems.length > 1 &&
+                    itemIndex >= Math.max(0, filteredItems.length - 2);
 
                   return (
                     <div
