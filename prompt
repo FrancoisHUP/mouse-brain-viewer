@@ -1,11 +1,11 @@
 ==========================
-[TODO] change the orientation of one slice to the layers > selected layer panel
-[TODO] In the import, I should add more filtering and search option (at least having categories for built-in, external, local source and by type of files?). 
 
 [TODO] add a report bug right click button? This should open a panel for the user to report a but in a csv google shiet. This sheet should be public, but other should not be able to erase some reported bugs. In this list there should be the state of the application at the moement it happens, the description, the user id. 
 
+[TODO] In the import, I should add more filtering and search option (at least having categories for built-in, external, local source and by type of files?). 
+
 [TODO] add tablette pencil support.
-[TODO] add world coordinate mouse position. 
+[TODO] add world coordinate mouse position. and a weathervane to indicate the orientation. 
 
 [TODO] In the add layer panel, I should reference other source and the user should be able to search for a specific data type, acquisition, specimen, etc. This should help the user to search from specific data. All the public data should be available and esay to import.  https://neurodata.io/project/ocp/  ; https://connectivity.brain-map.org/bda-aav 
 

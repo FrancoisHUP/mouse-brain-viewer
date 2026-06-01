@@ -7,6 +7,7 @@ import type {
   IntensityWindow,
   MeshStyle,
   StreamlineStyle,
+  SlicePlane,
   VolumeOrientationPresetId,
 } from '../../layerTypes';
 import type { SelectedLayerRuntimeInfo } from '../../WebGLCanvas';
@@ -68,6 +69,18 @@ function ResetIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M3 12a9 9 0 1 0 3-6.7" />
       <path d="M3 4v5h5" />
+    </svg>
+  );
+}
+
+function RecenterIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="6" />
+      <path d="M12 2v3" />
+      <path d="M12 19v3" />
+      <path d="M2 12h3" />
+      <path d="M19 12h3" />
     </svg>
   );
 }
@@ -373,6 +386,7 @@ function TransformEditor({
   onApplyTransformPreset,
   onRenameTransformPreset,
   onDeleteTransformPreset,
+  extraContent,
 }: {
   transform: NodeTransform | undefined;
   onUpdate: (patch: Partial<NodeTransform>) => void;
@@ -389,6 +403,7 @@ function TransformEditor({
   onApplyTransformPreset: (presetId: string) => void;
   onRenameTransformPreset: (presetId: string, name: string) => void;
   onDeleteTransformPreset: (presetId: string) => void;
+  extraContent?: ReactNode;
 }) {
   const translation = readTransformVector(transform?.translation, [0, 0, 0]);
   const rotation = readTransformVector(transform?.rotation, [0, 0, 0]);
@@ -789,7 +804,513 @@ function TransformEditor({
           />
         </div>
       </div>
+
+      {extraContent ? (
+        <div
+          style={{
+            marginTop: 4,
+            paddingTop: 12,
+            borderTop: '1px solid rgba(255,255,255,0.08)',
+            display: 'grid',
+            gap: 10,
+          }}
+        >
+          {extraContent}
+        </div>
+      ) : null}
     </Section>
+  );
+}
+
+type SliceTransformViewState = {
+  flipX: boolean;
+  flipY: boolean;
+  flipZ: boolean;
+  rotationDeg: number;
+  scale: number;
+  visible?: boolean;
+};
+
+function SliceAxisToggle({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        minHeight: 32,
+        minWidth: 0,
+        padding: '0 30px 0 10px',
+        borderRadius: '10px 10px 0 0',
+        borderTop: active ? '1px solid rgba(160,220,255,0.42)' : '1px solid rgba(255,255,255,0.08)',
+        borderLeft: active ? '1px solid rgba(160,220,255,0.42)' : '1px solid rgba(255,255,255,0.08)',
+        borderRight: active ? '1px solid rgba(160,220,255,0.42)' : '1px solid rgba(255,255,255,0.08)',
+        borderBottom: active ? '1px solid rgba(12,14,18,0.98)' : '1px solid rgba(255,255,255,0.08)',
+        background: active ? 'rgba(120,190,255,0.12)' : 'rgba(255,255,255,0.03)',
+        color: 'inherit',
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: 700,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        position: 'relative',
+        marginBottom: -1,
+        width: '100%',
+      }}
+    >
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function SliceVisibilityTabButton({
+  visible,
+  onClick,
+  label,
+}: {
+  visible: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={visible ? `Hide ${label}` : `Show ${label}`}
+      aria-label={visible ? `Hide ${label}` : `Show ${label}`}
+      style={{
+        position: 'absolute',
+        top: 4,
+        right: 4,
+        zIndex: 2,
+        width: 20,
+        minWidth: 20,
+        height: 20,
+        borderRadius: 999,
+        border: '1px solid rgba(255,255,255,0.10)',
+        background: visible ? 'rgba(120,190,255,0.12)' : 'rgba(255,255,255,0.05)',
+        color: visible ? '#dff3ff' : 'rgba(255,255,255,0.50)',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: visible ? '#dff3ff' : 'rgba(255,255,255,0.46)',
+          opacity: visible ? 1 : 0.72,
+        }}
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+          <circle cx="12" cy="12" r="2.8" />
+        </svg>
+      </span>
+    </button>
+  );
+}
+
+function ObliqueCreateIconButton({
+  onClick,
+}: {
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Create oblique slice from the active canonical plane"
+      aria-label="Create oblique slice from the active canonical plane"
+      style={{
+        height: 30,
+        width: 30,
+        borderRadius: 10,
+        border: '1px solid rgba(160,220,255,0.22)',
+        background: 'rgba(120,190,255,0.10)',
+        color: 'inherit',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      }}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 4v16" />
+        <path d="M4 12h16" />
+      </svg>
+    </button>
+  );
+}
+
+function SliceFlipToggle({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        minHeight: 32,
+        minWidth: 40,
+        padding: '0 12px',
+        borderRadius: 999,
+        border: active ? '1px solid rgba(160,220,255,0.58)' : '1px solid rgba(255,255,255,0.10)',
+        background: active ? 'rgba(120,190,255,0.18)' : 'rgba(255,255,255,0.04)',
+        color: 'inherit',
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function SliceTransformFields({
+  viewState,
+  onToggleFlip,
+  onSetRotationDeg,
+  onSetScale,
+  extraRows,
+}: {
+  viewState: SliceTransformViewState;
+  onToggleFlip: (axis: 'x' | 'y' | 'z') => void;
+  onSetRotationDeg: (value: number) => void;
+  onSetScale: (value: number) => void;
+  extraRows?: ReactNode;
+}) {
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ display: 'grid', gap: 6 }}>
+        <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+          Flip
+        </span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <SliceFlipToggle label="X" active={viewState.flipX} onClick={() => onToggleFlip('x')} />
+          <SliceFlipToggle label="Y" active={viewState.flipY} onClick={() => onToggleFlip('y')} />
+          <SliceFlipToggle label="Z" active={viewState.flipZ} onClick={() => onToggleFlip('z')} />
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr)',
+          gap: 10,
+          minWidth: 0,
+        }}
+      >
+        <NumberField
+          label="Rotation (deg)"
+          value={viewState.rotationDeg}
+          step={1}
+          onChange={onSetRotationDeg}
+        />
+        <NumberField
+          label="Scale"
+          value={viewState.scale}
+          step={0.01}
+          onChange={onSetScale}
+        />
+      </div>
+
+      {extraRows}
+    </div>
+  );
+}
+
+function CanonicalSliceTransformEditor({
+  activePlane,
+  viewStates,
+  canResetToCenter,
+  canCreateFreeSlice,
+  onSelectPlane,
+  onToggleVisibility,
+  onToggleFlip,
+  onSetRotationDeg,
+  onSetScale,
+  onResetView,
+  onResetToCenter,
+  onCreateFreeSlice,
+}: {
+  activePlane: SlicePlane;
+  viewStates: Record<SlicePlane, SliceTransformViewState>;
+  canResetToCenter: boolean;
+  canCreateFreeSlice: boolean;
+  onSelectPlane: (plane: SlicePlane) => void;
+  onToggleVisibility: (plane: SlicePlane) => void;
+  onToggleFlip: (plane: SlicePlane, axis: 'x' | 'y' | 'z') => void;
+  onSetRotationDeg: (plane: SlicePlane, value: number) => void;
+  onSetScale: (plane: SlicePlane, value: number) => void;
+  onResetView: (plane: SlicePlane) => void;
+  onResetToCenter: () => void;
+  onCreateFreeSlice: () => void;
+}) {
+  const activeView = viewStates[activePlane];
+
+  return (
+    <div style={{ display: 'grid', gap: 0 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Slice Transform</div>
+        <button
+          type="button"
+          onClick={onResetToCenter}
+          disabled={!canResetToCenter}
+          title="Reset canonical slices to center"
+          aria-label="Reset canonical slices to center"
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: 10,
+            border: '1px solid rgba(255,255,255,0.10)',
+            background: 'rgba(255,255,255,0.04)',
+            color: 'inherit',
+            cursor: canResetToCenter ? 'pointer' : 'default',
+            opacity: canResetToCenter ? 1 : 0.5,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <RecenterIcon />
+        </button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 0, alignItems: 'end' }}>
+        {(['xy', 'xz', 'yz'] as SlicePlane[]).map((plane) => (
+          <div key={plane} style={{ position: 'relative', minWidth: 0 }}>
+            <SliceAxisToggle
+              label={plane.toUpperCase()}
+              active={activePlane === plane}
+              onClick={() => onSelectPlane(plane)}
+            />
+            <SliceVisibilityTabButton
+              visible={viewStates[plane].visible !== false}
+              onClick={() => onToggleVisibility(plane)}
+              label={`${plane.toUpperCase()} slice`}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div
+        style={{
+          borderRadius: '0 0 12px 12px',
+          border: '1px solid rgba(255,255,255,0.08)',
+          background: 'rgba(255,255,255,0.03)',
+          padding: 12,
+          display: 'grid',
+          gap: 12,
+          marginTop: -1,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, minWidth: 0 }}>
+            {activePlane.toUpperCase() === 'XY' ? 'Horizontal XY' : activePlane.toUpperCase() === 'XZ' ? 'Coronal XZ' : 'Sagittal YZ'}
+          </div>
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', flexShrink: 0 }}>
+            {canCreateFreeSlice ? <ObliqueCreateIconButton onClick={onCreateFreeSlice} /> : null}
+            <button
+              type="button"
+              onClick={() => onResetView(activePlane)}
+              title="Reset this slice transform"
+              aria-label="Reset this slice transform"
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 10,
+                border: '1px solid rgba(255,255,255,0.10)',
+                background: 'rgba(255,255,255,0.04)',
+                color: 'inherit',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <ResetIcon />
+            </button>
+          </div>
+        </div>
+
+        <SliceTransformFields
+          viewState={activeView}
+          onToggleFlip={(axis) => onToggleFlip(activePlane, axis)}
+          onSetRotationDeg={(value) => onSetRotationDeg(activePlane, value)}
+          onSetScale={(value) => onSetScale(activePlane, value)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ObliqueSliceTransformEditor({
+  viewState,
+  onToggleFlip,
+  onSetRotationDeg,
+  onSetScale,
+  onResetView,
+  onResetToCenter,
+  onTilt,
+}: {
+  viewState: SliceTransformViewState;
+  onToggleFlip: (axis: 'x' | 'y' | 'z') => void;
+  onSetRotationDeg: (value: number) => void;
+  onSetScale: (value: number) => void;
+  onResetView: () => void;
+  onResetToCenter: () => void;
+  onTilt: (axis: 'u' | 'v', deltaDeg: number) => void;
+}) {
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Slice Transform</div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+          <button
+            type="button"
+            onClick={onResetView}
+            title="Reset this slice transform"
+            aria-label="Reset this slice transform"
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.10)',
+              background: 'rgba(255,255,255,0.04)',
+              color: 'inherit',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <ResetIcon />
+          </button>
+          <button
+            type="button"
+            onClick={onResetToCenter}
+            title="Reset oblique slice to center"
+            aria-label="Reset oblique slice to center"
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.10)',
+              background: 'rgba(255,255,255,0.04)',
+              color: 'inherit',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <RecenterIcon />
+          </button>
+        </div>
+      </div>
+
+      <SliceTransformFields
+        viewState={viewState}
+        onToggleFlip={onToggleFlip}
+        onSetRotationDeg={onSetRotationDeg}
+        onSetScale={onSetScale}
+        extraRows={
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                Tilt horizontal
+              </span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[-5, -1, 1, 5].map((delta) => (
+                  <button
+                    key={`u-${delta}`}
+                    type="button"
+                    onClick={() => onTilt('u', delta)}
+                    style={{
+                      minHeight: 32,
+                      padding: '0 12px',
+                      borderRadius: 999,
+                      border: '1px solid rgba(255,255,255,0.10)',
+                      background: 'rgba(255,255,255,0.04)',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {delta > 0 ? `+${delta}` : delta} deg
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <span data-theme-text="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2 }}>
+                Tilt vertical
+              </span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[-5, -1, 1, 5].map((delta) => (
+                  <button
+                    key={`v-${delta}`}
+                    type="button"
+                    onClick={() => onTilt('v', delta)}
+                    style={{
+                      minHeight: 32,
+                      padding: '0 12px',
+                      borderRadius: 999,
+                      border: '1px solid rgba(255,255,255,0.10)',
+                      background: 'rgba(255,255,255,0.04)',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {delta > 0 ? `+${delta}` : delta} deg
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        }
+      />
+    </div>
   );
 }
 
@@ -816,6 +1337,25 @@ export default function LayerInspectorPanel({
   onApplySelectedNodeTransformPreset,
   onRenameSelectedNodeTransformPreset,
   onDeleteSelectedNodeTransformPreset,
+  selectedCanonicalSlicePlane,
+  selectedCanonicalSliceViewStates,
+  selectedObliqueSliceViewState,
+  canResetSelectedCanonicalSlicesToCenter,
+  canCreateObliqueSliceFromCanonical,
+  onSelectCanonicalSlicePlane,
+  onToggleCanonicalSliceVisibility,
+  onToggleCanonicalSliceFlip,
+  onSetCanonicalSliceRotationDeg,
+  onSetCanonicalSliceScale,
+  onResetCanonicalSliceView,
+  onResetCanonicalSlicesToCenter,
+  onCreateObliqueSliceFromCanonical,
+  onToggleObliqueSliceFlip,
+  onSetObliqueSliceRotationDeg,
+  onSetObliqueSliceScale,
+  onResetObliqueSliceView,
+  onResetObliqueSliceToCenter,
+  onTiltObliqueSlice,
   onUpdateSelectedAnnotationLayer,
   onOpenMetadataWindow,
 }: {
@@ -841,6 +1381,25 @@ export default function LayerInspectorPanel({
   onApplySelectedNodeTransformPreset: (presetId: string) => void;
   onRenameSelectedNodeTransformPreset: (presetId: string, name: string) => void;
   onDeleteSelectedNodeTransformPreset: (presetId: string) => void;
+  selectedCanonicalSlicePlane: SlicePlane | null;
+  selectedCanonicalSliceViewStates: Record<SlicePlane, SliceTransformViewState>;
+  selectedObliqueSliceViewState: SliceTransformViewState | null;
+  canResetSelectedCanonicalSlicesToCenter: boolean;
+  canCreateObliqueSliceFromCanonical: boolean;
+  onSelectCanonicalSlicePlane: (plane: SlicePlane) => void;
+  onToggleCanonicalSliceVisibility: (plane: SlicePlane) => void;
+  onToggleCanonicalSliceFlip: (plane: SlicePlane, axis: 'x' | 'y' | 'z') => void;
+  onSetCanonicalSliceRotationDeg: (plane: SlicePlane, value: number) => void;
+  onSetCanonicalSliceScale: (plane: SlicePlane, value: number) => void;
+  onResetCanonicalSliceView: (plane: SlicePlane) => void;
+  onResetCanonicalSlicesToCenter: () => void;
+  onCreateObliqueSliceFromCanonical: () => void;
+  onToggleObliqueSliceFlip: (axis: 'x' | 'y' | 'z') => void;
+  onSetObliqueSliceRotationDeg: (value: number) => void;
+  onSetObliqueSliceScale: (value: number) => void;
+  onResetObliqueSliceView: () => void;
+  onResetObliqueSliceToCenter: () => void;
+  onTiltObliqueSlice: (axis: 'u' | 'v', deltaDeg: number) => void;
   onUpdateSelectedAnnotationLayer: (patch: Partial<NonNullable<LayerItemNode['annotation']>>) => void;
   onOpenMetadataWindow: () => void;
 }) {
@@ -889,6 +1448,8 @@ export default function LayerInspectorPanel({
     selectedNode?.kind === 'layer' && isVolumeOrientationAdjustableLayer(selectedNode);
   const selectedOrientationPreset =
     canAdjustOrientationPreset ? getEffectiveVolumeOrientationPresetForLayer(selectedNode) : null;
+  const canEditCanonicalSliceTransforms = !!selectedCanonicalSlicePlane;
+  const canEditObliqueSliceTransform = !!selectedObliqueSliceViewState;
 
   void isInspectorCollapsed;
   void onToggleCollapsed;
@@ -1088,6 +1649,34 @@ export default function LayerInspectorPanel({
                   onApplyTransformPreset={onApplySelectedNodeTransformPreset}
                   onRenameTransformPreset={onRenameSelectedNodeTransformPreset}
                   onDeleteTransformPreset={onDeleteSelectedNodeTransformPreset}
+                  extraContent={
+                    canEditCanonicalSliceTransforms ? (
+                      <CanonicalSliceTransformEditor
+                        activePlane={selectedCanonicalSlicePlane}
+                        viewStates={selectedCanonicalSliceViewStates}
+                        canResetToCenter={canResetSelectedCanonicalSlicesToCenter}
+                        canCreateFreeSlice={canCreateObliqueSliceFromCanonical}
+                        onSelectPlane={onSelectCanonicalSlicePlane}
+                        onToggleVisibility={onToggleCanonicalSliceVisibility}
+                        onToggleFlip={onToggleCanonicalSliceFlip}
+                        onSetRotationDeg={onSetCanonicalSliceRotationDeg}
+                        onSetScale={onSetCanonicalSliceScale}
+                        onResetView={onResetCanonicalSliceView}
+                        onResetToCenter={onResetCanonicalSlicesToCenter}
+                        onCreateFreeSlice={onCreateObliqueSliceFromCanonical}
+                      />
+                    ) : !canEditCanonicalSliceTransforms && canEditObliqueSliceTransform ? (
+                      <ObliqueSliceTransformEditor
+                        viewState={selectedObliqueSliceViewState}
+                        onToggleFlip={onToggleObliqueSliceFlip}
+                        onSetRotationDeg={onSetObliqueSliceRotationDeg}
+                        onSetScale={onSetObliqueSliceScale}
+                        onResetView={onResetObliqueSliceView}
+                        onResetToCenter={onResetObliqueSliceToCenter}
+                        onTilt={onTiltObliqueSlice}
+                      />
+                    ) : null
+                  }
                 />
               </>
             ) : null}

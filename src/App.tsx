@@ -2321,6 +2321,39 @@ export default function App({ startupSlices = [] }: AppProps) {
     setSliceToolPlane(plane);
   }
 
+  function handleSelectCanonicalSlicePlane(plane: SlicePlane) {
+    const targetId = selectedCanonicalSliceLayer?.id;
+    if (!targetId) return;
+    setSliceToolPlane(plane);
+    setLayerTree((prev) =>
+      updateNodeById(prev, targetId, (node) =>
+        node.kind !== "layer"
+          ? node
+          : {
+              ...node,
+              axisSliceState: {
+                ...node.axisSliceState,
+                activePlane: plane,
+              },
+            }
+      )
+    );
+  }
+
+  function handleSetCanonicalSliceViewState(
+    plane: SlicePlane,
+    patch: Partial<{
+      flipX: boolean;
+      flipY: boolean;
+      flipZ: boolean;
+      visible: boolean;
+      rotationDeg: number;
+      scale: number;
+    }>
+  ) {
+    handleUpdateCanonicalSliceViewState(plane, () => patch);
+  }
+
   function handleRotateCanonicalSlice(deltaDeg: number) {
     const plane = getCanonicalSliceToolPlane();
     if (!plane) return;
@@ -2359,6 +2392,17 @@ export default function App({ startupSlices = [] }: AppProps) {
   function handleResetCanonicalSliceView() {
     const plane = getCanonicalSliceToolPlane();
     if (!plane) return;
+    handleUpdateCanonicalSliceViewState(plane, () => ({
+      flipX: false,
+      flipY: false,
+      flipZ: false,
+      visible: true,
+      rotationDeg: 0,
+      scale: 1,
+    }));
+  }
+
+  function handleResetCanonicalSliceViewForPlane(plane: SlicePlane) {
     handleUpdateCanonicalSliceViewState(plane, () => ({
       flipX: false,
       flipY: false,
@@ -2418,6 +2462,12 @@ export default function App({ startupSlices = [] }: AppProps) {
         ...updater(normalized),
       };
     });
+  }
+
+  function handleSetObliqueSliceViewState(
+    patch: Partial<{ flipX: boolean; flipY: boolean; flipZ: boolean; rotationDeg: number; scale: number }>
+  ) {
+    handleUpdateObliqueSliceViewState(() => patch);
   }
 
   function handleCreateFreeSliceFromCanonical() {
@@ -2596,6 +2646,14 @@ export default function App({ startupSlices = [] }: AppProps) {
 
 
   const sliceToolTargetPlane = getCanonicalSliceToolPlane();
+  const canonicalInspectorPlane = selectedCanonicalSliceLayer
+    ? (selectedCanonicalSliceLayer.axisSliceState?.activePlane ?? "xy")
+    : null;
+  const canonicalInspectorViewStates: Record<SlicePlane, ReturnType<typeof getCanonicalSliceViewState>> = {
+    xy: getCanonicalSliceViewState("xy"),
+    xz: getCanonicalSliceViewState("xz"),
+    yz: getCanonicalSliceViewState("yz"),
+  };
   const sliceToolViewState = selectedObliqueSliceLayer
     ? getObliqueSliceViewState()
     : sliceToolTargetPlane
@@ -2640,6 +2698,53 @@ export default function App({ startupSlices = [] }: AppProps) {
         onApplySelectedNodeTransformPreset={applySelectedNodeTransformPreset}
         onRenameSelectedNodeTransformPreset={renameSelectedNodeTransformPreset}
         onDeleteSelectedNodeTransformPreset={deleteSelectedNodeTransformPreset}
+        selectedCanonicalSlicePlane={canonicalInspectorPlane}
+        selectedCanonicalSliceViewStates={canonicalInspectorViewStates}
+        selectedObliqueSliceViewState={selectedObliqueSliceLayer ? getObliqueSliceViewState() : null}
+        canResetSelectedCanonicalSlicesToCenter={!!selectedCanonicalSliceLayer && !!selectedLayerRuntimeInfo?.dims}
+        canCreateObliqueSliceFromCanonical={!!selectedCanonicalSliceLayer && !!canonicalInspectorPlane && !!selectedLayerRuntimeInfo?.dims}
+        onSelectCanonicalSlicePlane={handleSelectCanonicalSlicePlane}
+        onToggleCanonicalSliceVisibility={handleToggleCanonicalSliceVisibility}
+        onToggleCanonicalSliceFlip={(plane, axis) =>
+          handleSetCanonicalSliceViewState(plane, {
+            ...(axis === "x" ? { flipX: !canonicalInspectorViewStates[plane].flipX } : {}),
+            ...(axis === "y" ? { flipY: !canonicalInspectorViewStates[plane].flipY } : {}),
+            ...(axis === "z" ? { flipZ: !canonicalInspectorViewStates[plane].flipZ } : {}),
+          })
+        }
+        onSetCanonicalSliceRotationDeg={(plane, value) =>
+          handleSetCanonicalSliceViewState(plane, {
+            rotationDeg: Number.isFinite(value) ? value : canonicalInspectorViewStates[plane].rotationDeg,
+          })
+        }
+        onSetCanonicalSliceScale={(plane, value) =>
+          handleSetCanonicalSliceViewState(plane, {
+            scale: Math.max(0.05, Math.min(6, Number.isFinite(value) ? value : canonicalInspectorViewStates[plane].scale)),
+          })
+        }
+        onResetCanonicalSliceView={handleResetCanonicalSliceViewForPlane}
+        onResetCanonicalSlicesToCenter={handleCenterCanonicalSlices}
+        onCreateObliqueSliceFromCanonical={handleCreateFreeSliceFromCanonical}
+        onToggleObliqueSliceFlip={(axis) =>
+          handleSetObliqueSliceViewState({
+            ...(axis === "x" ? { flipX: !getObliqueSliceViewState().flipX } : {}),
+            ...(axis === "y" ? { flipY: !getObliqueSliceViewState().flipY } : {}),
+            ...(axis === "z" ? { flipZ: !getObliqueSliceViewState().flipZ } : {}),
+          })
+        }
+        onSetObliqueSliceRotationDeg={(value) =>
+          handleSetObliqueSliceViewState({
+            rotationDeg: Number.isFinite(value) ? value : getObliqueSliceViewState().rotationDeg,
+          })
+        }
+        onSetObliqueSliceScale={(value) =>
+          handleSetObliqueSliceViewState({
+            scale: Math.max(0.05, Math.min(6, Number.isFinite(value) ? value : getObliqueSliceViewState().scale)),
+          })
+        }
+        onResetObliqueSliceView={handleResetObliqueSliceView}
+        onResetObliqueSliceToCenter={handleResetObliqueSliceToCenter}
+        onTiltObliqueSlice={handleTiltObliqueSlice}
         onUpdateSelectedAnnotationLayer={updateSelectedAnnotationLayer}
         onOpenMetadataWindow={openMetadataWindow}
       />
