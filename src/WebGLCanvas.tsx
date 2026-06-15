@@ -1834,7 +1834,11 @@ export default function WebGLCanvas({
     const canvasElement = canvasRef.current;
     if (!canvasElement) return;
 
-    const glContext = canvasElement.getContext("webgl2", { preserveDrawingBuffer: true });
+    const glContext = canvasElement.getContext("webgl2", {
+      preserveDrawingBuffer: true,
+      alpha: true,
+      premultipliedAlpha: false,
+    });
     if (!glContext) {
       throw new Error("WebGL2 not supported");
     }
@@ -1993,7 +1997,7 @@ export default function WebGLCanvas({
         if (uPeelLayerCount > 0) {
           color = compositeOver(texture(uPeelTexture0, sampleCoord), color);
         }
-        outColor = vec4(color.rgb, 1.0);
+        outColor = color;
       }
     `;
 
@@ -5509,7 +5513,12 @@ function drawColorCylinder(
       gl.depthMask(true);
       oitPassMode = "direct";
       const [bgR, bgG, bgB] = hexToRgb01(backgroundColor);
-      gl.clearColor(bgR, bgG, bgB, capturePassActive ? 0.0 : 1.0);
+      gl.clearColor(
+        capturePassActive ? 0.0 : bgR,
+        capturePassActive ? 0.0 : bgG,
+        capturePassActive ? 0.0 : bgB,
+        capturePassActive ? 0.0 : 1.0
+      );
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
       const { projection, view, forward } = getViewProjectionMatrices();

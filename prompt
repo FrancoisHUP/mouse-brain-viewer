@@ -1,36 +1,30 @@
 ==========================
-
 [TODO] add a report bug right click button? This should open a panel for the user to report a but in a csv google shiet. This sheet should be public, but other should not be able to erase some reported bugs. In this list there should be the state of the application at the moement it happens, the description, the user id. 
-
-[TODO] In the import, I should add more filtering and search option (at least having categories for built-in, external, local source and by type of files?). 
-
 [TODO] add tablette pencil support.
 [TODO] add world coordinate mouse position. and a weathervane to indicate the orientation. 
-
-[TODO] In the add layer panel, I should reference other source and the user should be able to search for a specific data type, acquisition, specimen, etc. This should help the user to search from specific data. All the public data should be available and esay to import.  https://neurodata.io/project/ocp/  ; https://connectivity.brain-map.org/bda-aav 
-
 [TODO] Export : Annotations should be downloadable inany 3D format (nrrd, zarr, ome-zarr, tiff, zip, gz) 
-[TODO] when the user fetches data from an external remote source, he should be able to add a secret token to the call. One this feature is done, the secret should never be shared in the state of the viewer. 
-
-STREAMING : this should handle the stream from servers (zarr files), but also could support an aquisition stream ?
-
 [todo] add a version notes window. Only to show the current version and to display the changes of the latest versions. 
 
-[TOOL] zoom tool, where the user can ask for region of high resolution. 
-{ ALLEN TOOL
-  [TOOL] ajouter un system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
-  [todo] explorateur dexpérience du allen : ajouter une engin de recherche pour les données du allen (images, virus volumetrique).
-  The user should be able to browser for experiementation from the allen (Mouse Connectivity Atlas) 
-  Tue user should be able to ask to enhance a region, and the viewer should load the data from a server at highest resolution (stream the data).
-}
 
+{ IMPORT
+  [TODO] In the import, I should add more filtering and search option (at least having categories for built-in, external, local source and by type of files?). 
+  [TODO] In the add layer panel, I should reference other source and the user should be able to search for a specific data type, acquisition, specimen, etc. This should help the user to search from specific data. All the public data should be available and esay to import.  https://neurodata.io/project/ocp/  ; https://connectivity.brain-map.org/bda-aav 
+  [TODO] when the user fetches data from an external remote source, he should be able to add a secret token to the call. One this feature is done, the secret should never be shared in the state of the viewer. 
+  STREAMING : this should handle the stream from servers (zarr files), but also could support an aquisition stream ?
+
+  [TOOL] zoom tool, where the user can ask for region of high resolution. 
+  { ALLEN TOOL
+    [TOOL] ajouter un system de recherche de region : point une région du cerveau pour avoir un overlay des régions présentes au pointeur ou dans la régions du pointeur. 
+    [todo] explorateur dexpérience du allen : ajouter une engin de recherche pour les données du allen (images, virus volumetrique).
+    The user should be able to browser for experiementation from the allen (Mouse Connectivity Atlas) 
+    Tue user should be able to ask to enhance a region, and the viewer should load the data from a server at highest resolution (stream the data).
+  }
+}
 
 AI {
   [TODO] add html and markdown support for creating note with LLM (chat assistant). 
   [TOOL] add 2D/3D ai annotations (using segmentation browser model)
 }
-
-
 ==========================
 
 
@@ -111,8 +105,6 @@ Extracter {
 [bug] the saved hook is not in the state, so every time I realod the window I got to save in a new spot. 
 [bug] When a user import a data source at lower resolution, it import the source at the highest resolution (local hosted data)
 [bug] RAS Axis are on top of everything. 
-[bug] Importing the allen mouse brain still have an axis flip. Also the preset are all over the place.  
-
 
 --- Check list
 

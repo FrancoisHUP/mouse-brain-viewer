@@ -722,7 +722,14 @@ export default function AutomationPipelinePanel({
     item: AutomationLibraryItem;
     point: { x: number; y: number } | null;
   } | null>(null);
-  const activePipeline = pipelines.find((pipeline) => pipeline.id === activePipelineId) ?? pipelines[0] ?? null;
+  const fallbackPipeline = useMemo(
+    () => createEmptyAutomationPipeline("Untitled pipeline"),
+    []
+  );
+  const activePipeline =
+    pipelines.find((pipeline) => pipeline.id === activePipelineId) ??
+    pipelines[0] ??
+    fallbackPipeline;
   const automationLibrary = useMemo(
     () => [...AUTOMATION_LIBRARY, ...customTools.map(customToolToLibraryItem)],
     [customTools]

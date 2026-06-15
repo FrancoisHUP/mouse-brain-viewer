@@ -1677,7 +1677,7 @@ export default function App({ startupSlices = [] }: AppProps) {
   const captureTimelineDragRef = useRef<{ sceneId: string; startMs: number; originClientX: number; hasMoved: boolean } | null>(null);
   const captureTimelinePastRef = useRef<CaptureTimelineHistorySnapshot[]>([]);
   const captureTimelineFutureRef = useRef<CaptureTimelineHistorySnapshot[]>([]);
-  const pendingCaptureStillRef = useRef<{ scene: PersistedCaptureScene; fileName: string } | null>(null);
+  const pendingCaptureStillRef = useRef<{ scene: PersistedCaptureScene; fileName: string; persistStill: boolean } | null>(null);
 
   const [localSceneLoadState, setLocalSceneLoadState] = useState<{ active: boolean; pending: number }>({ active: false, pending: 0 });
   const [dismissLocalSceneLoadNotice, setDismissLocalSceneLoadNotice] = useState(false);
@@ -6608,17 +6608,26 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function handleRequestCaptureImage(
     layerIds?: string[] | null,
-    sliceCrop?: CaptureSliceCropRequest | null
+    sliceCrop?: CaptureSliceCropRequest | null,
+    options?: {
+      pendingStill?: {
+        scene: PersistedCaptureScene;
+        fileName: string;
+        persistStill: boolean;
+      } | null;
+    }
   ) {
     const requestedLayerIds = Array.from(new Set((layerIds ?? visibleCaptureLayerIds).filter((id) => typeof id === "string" && id.length > 0)));
     if (!requestedLayerIds.length) return;
     const stillFileName = sliceCrop ? null : buildCaptureFileName();
-    pendingCaptureStillRef.current = stillFileName
-      ? {
-          scene: buildCurrentCaptureStill(stillFileName),
-          fileName: stillFileName,
-        }
-      : null;
+    pendingCaptureStillRef.current = options?.pendingStill
+      ?? (stillFileName
+        ? {
+            scene: buildCurrentCaptureStill(stillFileName),
+            fileName: stillFileName,
+            persistStill: true,
+          }
+        : null);
     setCaptureRequestLayerIds(requestedLayerIds);
     setCaptureRequestSliceCrop(sliceCrop ?? null);
     setIsCapturePending(true);
@@ -6929,18 +6938,47 @@ export default function App({ startupSlices = [] }: AppProps) {
 
   function handleDownloadCaptureScene(sceneId: string) {
     const scene = captureScenes.find((entry) => entry.id === sceneId);
-    const imageDataUrl = scene?.thumbnailDataUrl;
-    if (!scene || !imageDataUrl) return;
-    const blob = dataUrlToBlob(imageDataUrl);
-    if (!blob) {
+    if (!scene) return;
+    const resolvedViewerState = resolveCaptureSceneViewerState(scene);
+    const exportLayerIds = (
+      resolvedViewerState
+        ? collectAllLayerItems(resolvedViewerState.scene.layerTree)
+            .filter((layer) => layer.visible !== false)
+            .map((layer) => layer.id)
+        : scene.selectedLayerIds
+    ).filter((layerId, index, list) => list.indexOf(layerId) === index)
+      .filter((layerId) => {
+        const node = findNodeById(layerTree, layerId);
+        return !!node && node.kind === "layer";
+      });
+    if (!exportLayerIds.length) {
       enqueueToast({
         tone: "error",
         title: "Scene screen shot unavailable",
-        message: "This timeline scene preview could not be prepared for download.",
+        message: "This timeline scene no longer has any available layers to export.",
       }, { dedupeKey: `capture-scene-download:${sceneId}`, dedupeWindowMs: 3000 });
       return;
     }
-    downloadBlob(blob, `${scene.name || "scene"}-${formatCaptureTimelineTime(scene.timestampMs ?? 0).replace(/[^0-9a-z]+/gi, "-")}.png`);
+    stopCaptureTimelinePlayback({ resetSceneId: scene.id });
+    setCaptureTimelineCursorMs(scene.timestampMs ?? 0);
+    applyCaptureScene(scene, {
+      preserveActiveTool: true,
+      suppressAutoCommit: true,
+      syncCamera: true,
+    });
+    const safeSceneName = (scene.name || "scene").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "scene";
+    const fileName = `${safeSceneName}-${formatCaptureTimelineTime(scene.timestampMs ?? 0).replace(/[^0-9a-z]+/gi, "-")}.png`;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        handleRequestCaptureImage(exportLayerIds, null, {
+          pendingStill: {
+            scene,
+            fileName,
+            persistStill: false,
+          },
+        });
+      });
+    });
   }
 
   function getCaptureTimelineMsFromClientX(clientX: number) {
@@ -7082,7 +7120,7 @@ export default function App({ startupSlices = [] }: AppProps) {
     const fileName = pendingStill?.fileName ?? buildCaptureFileName();
     downloadBlob(result.blob, fileName);
 
-    if (!pendingStill) {
+    if (!pendingStill?.persistStill) {
       return;
     }
 
